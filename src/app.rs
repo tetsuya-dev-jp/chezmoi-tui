@@ -109,6 +109,7 @@ pub struct App {
     pub detail_kind: DetailKind,
     pub detail_title: String,
     pub detail_text: String,
+    pub detail_target: Option<PathBuf>,
     pub logs: Vec<String>,
     pub modal: ModalState,
     pub busy: bool,
@@ -133,6 +134,7 @@ impl App {
             detail_kind: DetailKind::Diff,
             detail_title: "Diff / Preview".to_string(),
             detail_text: String::new(),
+            detail_target: None,
             logs: Vec::new(),
             modal: ModalState::None,
             busy: false,
@@ -306,12 +308,14 @@ impl App {
             None => "Diff: (all)".to_string(),
         };
         self.detail_text = text;
+        self.detail_target = target.map(Path::to_path_buf);
     }
 
     pub fn set_detail_preview(&mut self, target: &Path, content: String) {
         self.detail_kind = DetailKind::Preview;
         self.detail_title = format!("Preview: {}", target.display());
         self.detail_text = content;
+        self.detail_target = Some(target.to_path_buf());
     }
 
     fn rebuild_visible_entries_reset(&mut self) {

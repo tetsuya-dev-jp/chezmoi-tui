@@ -4,6 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use std::path::Path;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let outer = Layout::default()
@@ -75,7 +76,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.detail_kind == DetailKind::Diff {
         colorized_diff_lines(&app.detail_text)
     } else {
-        app.detail_text.lines().map(Line::from).collect()
+        colorized_preview_lines(app.detail_target.as_deref(), &app.detail_text)
     };
 
     let paragraph = Paragraph::new(lines)
@@ -284,27 +285,274 @@ fn draw_modal(frame: &mut Frame, app: &App) {
     }
 }
 
-fn colorized_diff_lines(diff: &str) -> Vec<Line<'_>> {
+fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
     diff.lines()
         .map(|line| {
             if line.starts_with("+++") || line.starts_with("---") {
-                Line::from(Span::styled(line, Style::default().fg(Color::Cyan)))
+                Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(Color::Cyan),
+                ))
             } else if line.starts_with("@@") {
                 Line::from(Span::styled(
-                    line,
+                    line.to_string(),
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ))
             } else if line.starts_with('+') {
-                Line::from(Span::styled(line, Style::default().fg(Color::Green)))
+                Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(Color::Green),
+                ))
             } else if line.starts_with('-') {
-                Line::from(Span::styled(line, Style::default().fg(Color::Red)))
+                Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(Color::Red),
+                ))
             } else {
-                Line::raw(line)
+                Line::from(line.to_string())
             }
         })
         .collect()
+}
+
+fn colorized_preview_lines(path: Option<&Path>, content: &str) -> Vec<Line<'static>> {
+    let language = detect_preview_language(path);
+    content
+        .lines()
+        .map(|line| colorized_preview_line(line, language))
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewLanguage {
+    Rust,
+    Shell,
+    Lua,
+    Python,
+    JsTs,
+    Json,
+    Toml,
+    Yaml,
+    Plain,
+}
+
+fn detect_preview_language(path: Option<&Path>) -> PreviewLanguage {
+    let ext = path
+        .and_then(|p| p.extension().and_then(|e| e.to_str()))
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("rs") => PreviewLanguage::Rust,
+        Some("sh") | Some("bash") | Some("zsh") | Some("fish") => PreviewLanguage::Shell,
+        Some("lua") => PreviewLanguage::Lua,
+        Some("py") => PreviewLanguage::Python,
+        Some("js") | Some("mjs") | Some("cjs") | Some("ts") | Some("tsx") | Some("jsx") => {
+            PreviewLanguage::JsTs
+        }
+        Some("json") => PreviewLanguage::Json,
+        Some("toml") => PreviewLanguage::Toml,
+        Some("yaml") | Some("yml") => PreviewLanguage::Yaml,
+        _ => {
+            let name = path
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()))
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            match name.as_str() {
+                ".zshrc" | ".bashrc" | ".bash_profile" => PreviewLanguage::Shell,
+                "justfile" | "makefile" => PreviewLanguage::Plain,
+                _ => PreviewLanguage::Plain,
+            }
+        }
+    }
+}
+
+fn colorized_preview_line(line: &str, language: PreviewLanguage) -> Line<'static> {
+    let (code, comment) = split_comment(line, language);
+    let mut spans = colorize_code_tokens(code, language);
+
+    if let Some(comment) = comment {
+        spans.push(Span::styled(
+            comment.to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    if spans.is_empty() {
+        Line::from(String::new())
+    } else {
+        Line::from(spans)
+    }
+}
+
+fn split_comment(line: &str, language: PreviewLanguage) -> (&str, Option<&str>) {
+    let marker = match language {
+        PreviewLanguage::Rust | PreviewLanguage::JsTs => Some("//"),
+        PreviewLanguage::Shell
+        | PreviewLanguage::Python
+        | PreviewLanguage::Toml
+        | PreviewLanguage::Yaml => Some("#"),
+        PreviewLanguage::Lua => Some("--"),
+        PreviewLanguage::Json | PreviewLanguage::Plain => None,
+    };
+
+    if let Some(marker) = marker
+        && let Some(idx) = line.find(marker)
+    {
+        return (&line[..idx], Some(&line[idx..]));
+    }
+
+    (line, None)
+}
+
+fn colorize_code_tokens(code: &str, language: PreviewLanguage) -> Vec<Span<'static>> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        let ch = chars[i];
+
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == quote && chars[i.saturating_sub(1)] != '\\' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            let key_style = if is_object_key(&chars, i, language) {
+                Style::default().fg(Color::LightCyan)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            spans.push(Span::styled(token, key_style));
+            continue;
+        }
+
+        if ch.is_ascii_digit() {
+            let start = i;
+            i += 1;
+            while i < chars.len()
+                && (chars[i].is_ascii_hexdigit()
+                    || chars[i] == '_'
+                    || chars[i] == '.'
+                    || chars[i] == 'x'
+                    || chars[i] == 'X')
+            {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            spans.push(Span::styled(token, Style::default().fg(Color::Magenta)));
+            continue;
+        }
+
+        if is_word_start(ch) {
+            let start = i;
+            i += 1;
+            while i < chars.len() && is_word(chars[i]) {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            if preview_keywords(language).contains(&token.as_str()) {
+                spans.push(Span::styled(
+                    token,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::from(token));
+            }
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        while i < chars.len() && !is_word_start(chars[i]) && !chars[i].is_ascii_digit() {
+            if chars[i] == '"' || chars[i] == '\'' {
+                break;
+            }
+            i += 1;
+        }
+        let token: String = chars[start..i].iter().collect();
+        spans.push(Span::styled(token, Style::default().fg(Color::Gray)));
+    }
+
+    spans
+}
+
+fn is_word_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_word(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn is_object_key(chars: &[char], from: usize, language: PreviewLanguage) -> bool {
+    if !matches!(
+        language,
+        PreviewLanguage::Json | PreviewLanguage::Toml | PreviewLanguage::Yaml
+    ) {
+        return false;
+    }
+
+    let mut i = from;
+    while i < chars.len() && chars[i].is_whitespace() {
+        i += 1;
+    }
+    i < chars.len() && chars[i] == ':'
+}
+
+fn preview_keywords(language: PreviewLanguage) -> &'static [&'static str] {
+    match language {
+        PreviewLanguage::Rust => &[
+            "fn", "let", "mut", "pub", "struct", "enum", "impl", "use", "mod", "match", "if",
+            "else", "for", "while", "loop", "return", "async", "await", "trait", "where", "self",
+            "Self",
+        ],
+        PreviewLanguage::Shell => &[
+            "if", "then", "else", "fi", "for", "in", "do", "done", "case", "esac", "function",
+            "export", "local",
+        ],
+        PreviewLanguage::Lua => &[
+            "local", "function", "if", "then", "else", "elseif", "end", "for", "in", "do", "while",
+            "repeat", "until", "return",
+        ],
+        PreviewLanguage::Python => &[
+            "def", "class", "if", "elif", "else", "for", "while", "try", "except", "finally",
+            "return", "import", "from", "as", "with", "lambda",
+        ],
+        PreviewLanguage::JsTs => &[
+            "function",
+            "const",
+            "let",
+            "var",
+            "if",
+            "else",
+            "for",
+            "while",
+            "return",
+            "import",
+            "from",
+            "export",
+            "class",
+            "extends",
+            "async",
+            "await",
+            "type",
+            "interface",
+        ],
+        PreviewLanguage::Json => &["true", "false", "null"],
+        PreviewLanguage::Toml => &["true", "false"],
+        PreviewLanguage::Yaml => &["true", "false", "null"],
+        PreviewLanguage::Plain => &[],
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
