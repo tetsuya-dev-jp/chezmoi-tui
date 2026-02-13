@@ -86,6 +86,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
+        .scroll((app.detail_scroll.min(u16::MAX as usize) as u16, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
@@ -137,7 +138,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(
-            "j/k move h/l collapse/expand tab focus d diff v preview a action e edit r refresh q quit",
+            "tab focus | List:j/k move | Detail:j/k PgUp/PgDn Ctrl+u/d scroll | d diff v preview",
             Style::default().fg(Color::Gray),
         ),
     ]);

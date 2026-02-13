@@ -110,6 +110,7 @@ pub struct App {
     pub detail_title: String,
     pub detail_text: String,
     pub detail_target: Option<PathBuf>,
+    pub detail_scroll: usize,
     pub logs: Vec<String>,
     pub modal: ModalState,
     pub busy: bool,
@@ -135,6 +136,7 @@ impl App {
             detail_title: "Diff / Preview".to_string(),
             detail_text: String::new(),
             detail_target: None,
+            detail_scroll: 0,
             logs: Vec::new(),
             modal: ModalState::None,
             busy: false,
@@ -147,7 +149,7 @@ impl App {
 
         app.rebuild_visible_entries_reset();
         app.log(
-            "起動: r=refresh d=diff v=preview a=action e=edit h/l=collapse/expand tab=focus q=quit"
+            "起動: r=refresh d=diff v=preview a=action e=edit h/l=collapse/expand tab=focus q=quit (Detailではj/k,PgUp/PgDnでスクロール)"
                 .to_string(),
         );
         app
@@ -301,6 +303,27 @@ impl App {
         Action::ALL.get(index).copied()
     }
 
+    pub fn scroll_detail_up(&mut self, lines: usize) -> bool {
+        if self.detail_scroll == 0 {
+            return false;
+        }
+        self.detail_scroll = self.detail_scroll.saturating_sub(lines);
+        true
+    }
+
+    pub fn scroll_detail_down(&mut self, lines: usize) -> bool {
+        let max = self.detail_max_scroll();
+        if self.detail_scroll >= max {
+            return false;
+        }
+        self.detail_scroll = (self.detail_scroll + lines).min(max);
+        true
+    }
+
+    fn detail_max_scroll(&self) -> usize {
+        self.detail_text.lines().count().saturating_sub(1)
+    }
+
     pub fn set_detail_diff(&mut self, target: Option<&Path>, text: String) {
         self.detail_kind = DetailKind::Diff;
         self.detail_title = match target {
@@ -309,6 +332,7 @@ impl App {
         };
         self.detail_text = text;
         self.detail_target = target.map(Path::to_path_buf);
+        self.detail_scroll = 0;
     }
 
     pub fn set_detail_preview(&mut self, target: &Path, content: String) {
@@ -316,6 +340,7 @@ impl App {
         self.detail_title = format!("Preview: {}", target.display());
         self.detail_text = content;
         self.detail_target = Some(target.to_path_buf());
+        self.detail_scroll = 0;
     }
 
     fn rebuild_visible_entries_reset(&mut self) {
@@ -483,6 +508,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::domain::ChangeKind;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -541,5 +567,21 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn detail_scroll_is_clamped() {
+        let mut app = App::new(AppConfig::default());
+        app.set_detail_preview(Path::new(".config/test.txt"), "a\nb\nc\nd\ne".to_string());
+        assert!(app.scroll_detail_down(2));
+        assert_eq!(app.detail_scroll, 2);
+        assert!(app.scroll_detail_down(100));
+        assert_eq!(app.detail_scroll, 4);
+        assert!(!app.scroll_detail_down(1));
+        assert!(app.scroll_detail_up(3));
+        assert_eq!(app.detail_scroll, 1);
+        assert!(app.scroll_detail_up(10));
+        assert_eq!(app.detail_scroll, 0);
+        assert!(!app.scroll_detail_up(1));
     }
 }

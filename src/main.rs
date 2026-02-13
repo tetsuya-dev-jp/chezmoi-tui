@@ -326,8 +326,30 @@ fn handle_key_without_modal(
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Tab => app.focus = app.focus.next(),
-        KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.focus == crate::app::PaneFocus::Detail {
+                app.scroll_detail_down(1);
+            } else {
+                app.select_next();
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.focus == crate::app::PaneFocus::Detail {
+                app.scroll_detail_up(1);
+            } else {
+                app.select_prev();
+            }
+        }
+        KeyCode::PageDown => {
+            if app.focus == crate::app::PaneFocus::Detail {
+                app.scroll_detail_down(20);
+            }
+        }
+        KeyCode::PageUp => {
+            if app.focus == crate::app::PaneFocus::Detail {
+                app.scroll_detail_up(20);
+            }
+        }
         KeyCode::Char('l') | KeyCode::Right => {
             if app.expand_selected_directory() {
                 app.log("ディレクトリを展開しました".to_string());
@@ -348,7 +370,26 @@ fn handle_key_without_modal(
         KeyCode::Char('2') => app.switch_view(ListView::Managed),
         KeyCode::Char('3') => app.switch_view(ListView::Unmanaged),
         KeyCode::Char('r') => send_task(app, task_tx, BackendTask::RefreshAll)?,
-        KeyCode::Char('d') | KeyCode::Enter => {
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == crate::app::PaneFocus::Detail {
+                app.scroll_detail_down(20);
+            }
+        }
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+            if app.focus == crate::app::PaneFocus::Detail {
+                app.scroll_detail_up(20);
+            }
+        }
+        KeyCode::Char('d') if key.modifiers.is_empty() => {
+            send_task(
+                app,
+                task_tx,
+                BackendTask::LoadDiff {
+                    target: app.selected_path(),
+                },
+            )?;
+        }
+        KeyCode::Enter => {
             send_task(
                 app,
                 task_tx,
