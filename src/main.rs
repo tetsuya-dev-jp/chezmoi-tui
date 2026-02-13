@@ -16,12 +16,17 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use std::fs;
 use std::io;
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+
+const PREVIEW_MAX_BYTES: usize = 64 * 1024;
+const PREVIEW_BINARY_SAMPLE_BYTES: usize = 4096;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -162,6 +167,31 @@ async fn worker_loop(
                     }
                 }
             }
+            BackendTask::LoadPreview { target, absolute } => {
+                let result =
+                    tokio::task::spawn_blocking(move || load_file_preview(&absolute)).await;
+                match result {
+                    Ok(Ok(content)) => {
+                        if event_tx
+                            .send(BackendEvent::PreviewLoaded { target, content })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    other => {
+                        if event_tx
+                            .send(BackendEvent::Error {
+                                context: "preview".to_string(),
+                                message: format!("preview failed: {:?}", flatten_error(other)),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
             BackendTask::RunAction { request } => {
                 let c = client.clone();
                 let req = request.clone();
@@ -224,12 +254,17 @@ fn handle_backend_event(
             ));
         }
         BackendEvent::DiffLoaded { target, diff } => {
-            app.diff_text = diff.text;
+            app.set_detail_diff(target.as_deref(), diff.text);
             app.busy = false;
             let target = target
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "(all)".to_string());
             app.log(format!("diff loaded: {target}"));
+        }
+        BackendEvent::PreviewLoaded { target, content } => {
+            app.set_detail_preview(&target, content);
+            app.busy = false;
+            app.log(format!("preview loaded: {}", target.display()));
         }
         BackendEvent::ActionFinished { request, result } => {
             app.busy = false;
@@ -322,6 +357,12 @@ fn handle_key_without_modal(
                 },
             )?;
         }
+        KeyCode::Char('v') => match (app.selected_path(), app.selected_absolute_path()) {
+            (Some(target), Some(absolute)) => {
+                send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })?;
+            }
+            _ => app.log("preview対象が選択されていません".to_string()),
+        },
         KeyCode::Char('a') => app.open_action_menu(),
         KeyCode::Char('e') => {
             let request = ActionRequest {
@@ -592,6 +633,31 @@ fn squash_lines(input: &str) -> String {
         .join(" | ")
 }
 
+fn load_file_preview(path: &Path) -> Result<String> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("preview target metadata failed: {}", path.display()))?;
+    if metadata.file_type().is_dir() {
+        return Ok("ディレクトリです。展開して中のファイルを選択してください。".to_string());
+    }
+
+    let bytes = fs::read(path).with_context(|| format!("failed to read: {}", path.display()))?;
+    let sample_len = bytes.len().min(PREVIEW_BINARY_SAMPLE_BYTES);
+    if bytes[..sample_len].contains(&0) {
+        return Ok("バイナリファイルのためプレビューできません。".to_string());
+    }
+
+    let limit = bytes.len().min(PREVIEW_MAX_BYTES);
+    let mut text = String::from_utf8_lossy(&bytes[..limit]).to_string();
+    if bytes.len() > PREVIEW_MAX_BYTES {
+        text.push_str(&format!(
+            "\n\n--- preview truncated at {} bytes (file size: {} bytes) ---",
+            PREVIEW_MAX_BYTES,
+            bytes.len()
+        ));
+    }
+    Ok(text)
+}
+
 fn setup_terminal() -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
     execute!(io::stdout(), EnterAlternateScreen).context("failed to enter alternate screen")?;
@@ -624,5 +690,26 @@ mod tests {
         let text = "a\n\n b\n c \n d\n e\n f\n";
         let got = squash_lines(text);
         assert_eq!(got, "a | b | c | d | e");
+    }
+
+    #[test]
+    fn preview_rejects_binary_files() {
+        let file =
+            std::env::temp_dir().join(format!("chezmoi_tui_preview_bin_{}", std::process::id()));
+        std::fs::write(&file, [0, 159, 146, 150]).expect("write binary");
+        let got = load_file_preview(&file).expect("preview");
+        assert!(got.contains("バイナリファイル"));
+        let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn preview_truncates_large_text() {
+        let file =
+            std::env::temp_dir().join(format!("chezmoi_tui_preview_txt_{}", std::process::id()));
+        let payload = "a".repeat(PREVIEW_MAX_BYTES + 128);
+        std::fs::write(&file, payload).expect("write text");
+        let got = load_file_preview(&file).expect("preview");
+        assert!(got.contains("preview truncated"));
+        let _ = std::fs::remove_file(file);
     }
 }

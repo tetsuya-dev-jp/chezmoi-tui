@@ -24,6 +24,12 @@ impl PaneFocus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailKind {
+    Diff,
+    Preview,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmStep {
     Primary,
     DangerPhrase,
@@ -56,6 +62,7 @@ pub enum ModalState {
 pub enum BackendTask {
     RefreshAll,
     LoadDiff { target: Option<PathBuf> },
+    LoadPreview { target: PathBuf, absolute: PathBuf },
     RunAction { request: ActionRequest },
 }
 
@@ -69,6 +76,10 @@ pub enum BackendEvent {
     DiffLoaded {
         target: Option<PathBuf>,
         diff: DiffText,
+    },
+    PreviewLoaded {
+        target: PathBuf,
+        content: String,
     },
     ActionFinished {
         request: ActionRequest,
@@ -95,7 +106,9 @@ pub struct App {
     pub managed_entries: Vec<PathBuf>,
     pub unmanaged_entries: Vec<PathBuf>,
     pub selected_index: usize,
-    pub diff_text: String,
+    pub detail_kind: DetailKind,
+    pub detail_title: String,
+    pub detail_text: String,
     pub logs: Vec<String>,
     pub modal: ModalState,
     pub busy: bool,
@@ -117,7 +130,9 @@ impl App {
             managed_entries: Vec::new(),
             unmanaged_entries: Vec::new(),
             selected_index: 0,
-            diff_text: String::new(),
+            detail_kind: DetailKind::Diff,
+            detail_title: "Diff / Preview".to_string(),
+            detail_text: String::new(),
             logs: Vec::new(),
             modal: ModalState::None,
             busy: false,
@@ -130,7 +145,7 @@ impl App {
 
         app.rebuild_visible_entries_reset();
         app.log(
-            "起動: r=refresh d=diff a=action e=edit h/l=collapse/expand tab=focus q=quit"
+            "起動: r=refresh d=diff v=preview a=action e=edit h/l=collapse/expand tab=focus q=quit"
                 .to_string(),
         );
         app
@@ -178,6 +193,10 @@ impl App {
         self.visible_entries
             .get(self.selected_index)
             .map(|entry| entry.path.clone())
+    }
+
+    pub fn selected_absolute_path(&self) -> Option<PathBuf> {
+        self.selected_path().map(|path| self.resolve_path(&path))
     }
 
     pub fn selected_is_directory(&self) -> bool {
@@ -278,6 +297,21 @@ impl App {
 
     pub fn action_by_index(index: usize) -> Option<Action> {
         Action::ALL.get(index).copied()
+    }
+
+    pub fn set_detail_diff(&mut self, target: Option<&Path>, text: String) {
+        self.detail_kind = DetailKind::Diff;
+        self.detail_title = match target {
+            Some(path) => format!("Diff: {}", path.display()),
+            None => "Diff: (all)".to_string(),
+        };
+        self.detail_text = text;
+    }
+
+    pub fn set_detail_preview(&mut self, target: &Path, content: String) {
+        self.detail_kind = DetailKind::Preview;
+        self.detail_title = format!("Preview: {}", target.display());
+        self.detail_text = content;
     }
 
     fn rebuild_visible_entries_reset(&mut self) {

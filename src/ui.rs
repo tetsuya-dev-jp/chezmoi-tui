@@ -1,4 +1,4 @@
-use crate::app::{App, ConfirmStep, InputKind, ModalState, PaneFocus};
+use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, PaneFocus};
 use crate::domain::Action;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -67,19 +67,21 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
         Style::default()
     };
 
-    let lines = if app.diff_text.trim().is_empty() {
+    let lines = if app.detail_text.trim().is_empty() {
         vec![
-            Line::from("差分が未ロードです。"),
-            Line::from("Enter または d で選択中ターゲットの diff を表示します。"),
+            Line::from("詳細が未ロードです。"),
+            Line::from("Enter / d: diff, v: ファイル本文プレビュー"),
         ]
+    } else if app.detail_kind == DetailKind::Diff {
+        colorized_diff_lines(&app.detail_text)
     } else {
-        colorized_diff_lines(&app.diff_text)
+        app.detail_text.lines().map(Line::from).collect()
     };
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(" Diff / Detail ")
+                .title(format!(" {} ", app.detail_title))
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
@@ -134,7 +136,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(
-            "j/k move h/l collapse/expand tab focus d diff a action e edit r refresh q quit",
+            "j/k move h/l collapse/expand tab focus d diff v preview a action e edit r refresh q quit",
             Style::default().fg(Color::Gray),
         ),
     ]);
