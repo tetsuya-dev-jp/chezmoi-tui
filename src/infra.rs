@@ -1,0 +1,310 @@
+use crate::domain::{Action, ActionRequest, ChangeKind, CommandResult, DiffText, StatusEntry};
+use anyhow::{Context, Result, bail};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Instant;
+
+pub trait ChezmoiClient: Send + Sync {
+    fn status(&self) -> Result<Vec<StatusEntry>>;
+    fn managed(&self) -> Result<Vec<PathBuf>>;
+    fn unmanaged(&self) -> Result<Vec<PathBuf>>;
+    fn diff(&self, target: Option<&Path>) -> Result<DiffText>;
+    fn run(&self, request: &ActionRequest) -> Result<CommandResult>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellChezmoiClient {
+    binary: String,
+}
+
+impl Default for ShellChezmoiClient {
+    fn default() -> Self {
+        Self {
+            binary: "chezmoi".to_string(),
+        }
+    }
+}
+
+impl ShellChezmoiClient {
+    fn run_raw(&self, args: &[String]) -> Result<CommandResult> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.args(args);
+
+        let started = Instant::now();
+        let output = cmd
+            .output()
+            .with_context(|| format!("failed to execute {} {:?}", self.binary, args))?;
+        let duration_ms = started.elapsed().as_millis() as u64;
+
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        Ok(CommandResult {
+            exit_code,
+            stdout,
+            stderr,
+            duration_ms,
+        })
+    }
+}
+
+impl ChezmoiClient for ShellChezmoiClient {
+    fn status(&self) -> Result<Vec<StatusEntry>> {
+        let result = self.run_raw(&["status".to_string()])?;
+        if result.exit_code != 0 {
+            bail!("chezmoi status failed: {}", result.stderr.trim());
+        }
+        parse_status_output(&result.stdout)
+    }
+
+    fn managed(&self) -> Result<Vec<PathBuf>> {
+        let result = self.run_raw(&[
+            "managed".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])?;
+        if result.exit_code != 0 {
+            bail!("chezmoi managed failed: {}", result.stderr.trim());
+        }
+        parse_managed_output(&result.stdout)
+    }
+
+    fn unmanaged(&self) -> Result<Vec<PathBuf>> {
+        let result = self.run_raw(&["unmanaged".to_string()])?;
+        if result.exit_code != 0 {
+            bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
+        }
+        parse_unmanaged_output(&result.stdout)
+    }
+
+    fn diff(&self, target: Option<&Path>) -> Result<DiffText> {
+        let args = diff_args(target);
+
+        let result = self.run_raw(&args)?;
+        if result.exit_code != 0 {
+            // diffは差分がある場合でも0。ここが非0なら実行エラーとみなす。
+            bail!("chezmoi diff failed: {}", result.stderr.trim());
+        }
+
+        Ok(DiffText {
+            text: result.stdout,
+        })
+    }
+
+    fn run(&self, request: &ActionRequest) -> Result<CommandResult> {
+        let args = action_to_args(request)?;
+        self.run_raw(&args)
+    }
+}
+
+pub fn parse_status_output(output: &str) -> Result<Vec<StatusEntry>> {
+    let mut entries = Vec::new();
+
+    for (idx, raw) in output.lines().enumerate() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+
+        let chars: Vec<char> = raw.chars().collect();
+        if chars.len() < 4 {
+            bail!("invalid status line {}: {:?}", idx + 1, raw);
+        }
+
+        let first = chars[0];
+        let second = chars[1];
+        let path = chars[3..].iter().collect::<String>();
+
+        entries.push(StatusEntry {
+            path: PathBuf::from(path),
+            actual_vs_state: ChangeKind::from_status_char(first),
+            actual_vs_target: ChangeKind::from_status_char(second),
+        });
+    }
+
+    Ok(entries)
+}
+
+pub fn parse_managed_output(output: &str) -> Result<Vec<PathBuf>> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if let Ok(json) = serde_json::from_str::<Value>(trimmed)
+        && let Some(array) = json.as_array()
+    {
+        let mut paths = Vec::with_capacity(array.len());
+        for item in array {
+            if let Some(path) = item.as_str() {
+                paths.push(PathBuf::from(path));
+            }
+        }
+        return Ok(paths);
+    }
+
+    Ok(trimmed
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect())
+}
+
+pub fn parse_unmanaged_output(output: &str) -> Result<Vec<PathBuf>> {
+    Ok(output
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect())
+}
+
+pub fn action_to_args(request: &ActionRequest) -> Result<Vec<String>> {
+    let action = request.action;
+    let target = request.target.as_ref().map(|p| p.display().to_string());
+
+    let args = match action {
+        Action::Apply => vec!["apply".to_string()],
+        Action::Update => vec!["update".to_string()],
+        Action::ReAdd => vec!["re-add".to_string()],
+        Action::Merge => {
+            let mut args = vec!["merge".to_string()];
+            if let Some(path) = target {
+                args.push("--".to_string());
+                args.push(path);
+            }
+            args
+        }
+        Action::MergeAll => vec!["merge-all".to_string()],
+        Action::Add => vec![
+            "add".to_string(),
+            "--".to_string(),
+            required_target(target, action)?,
+        ],
+        Action::Edit => vec![
+            "edit".to_string(),
+            "--".to_string(),
+            required_target(target, action)?,
+        ],
+        Action::Forget => vec![
+            "forget".to_string(),
+            "--".to_string(),
+            required_target(target, action)?,
+        ],
+        Action::Chattr => vec![
+            "chattr".to_string(),
+            "--".to_string(),
+            request
+                .chattr_attrs
+                .clone()
+                .context("chattr requires attributes")?,
+            required_target(target, action)?,
+        ],
+        Action::Destroy => vec![
+            "destroy".to_string(),
+            "--".to_string(),
+            required_target(target, action)?,
+        ],
+        Action::Purge => vec![
+            "purge".to_string(),
+            "--force".to_string(),
+            "--no-tty".to_string(),
+        ],
+    };
+
+    Ok(args)
+}
+
+fn required_target(target: Option<String>, action: Action) -> Result<String> {
+    target.with_context(|| format!("{} requires target", action.label()))
+}
+
+fn diff_args(target: Option<&Path>) -> Vec<String> {
+    let mut args = vec!["diff".to_string()];
+    if let Some(path) = target {
+        args.push("--".to_string());
+        args.push(path.display().to_string());
+    }
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn parse_status_roundtrip() {
+        let raw = " A .zshrc\nM  .gitconfig\nDR .local/bin/script\n";
+        let entries = parse_status_output(raw).expect("should parse");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].actual_vs_state, ChangeKind::None);
+        assert_eq!(entries[0].actual_vs_target, ChangeKind::Added);
+        assert_eq!(entries[0].path, PathBuf::from(".zshrc"));
+        assert_eq!(entries[2].actual_vs_state, ChangeKind::Deleted);
+        assert_eq!(entries[2].actual_vs_target, ChangeKind::Run);
+    }
+
+    #[test]
+    fn parse_managed_json_and_lines() {
+        let json = r#"[".zshrc", ".gitconfig"]"#;
+        assert_eq!(
+            parse_managed_output(json).expect("json parse"),
+            vec![PathBuf::from(".zshrc"), PathBuf::from(".gitconfig")]
+        );
+
+        let lines = ".zshrc\n.gitconfig\n";
+        assert_eq!(
+            parse_managed_output(lines).expect("line parse"),
+            vec![PathBuf::from(".zshrc"), PathBuf::from(".gitconfig")]
+        );
+    }
+
+    #[test]
+    fn parse_unmanaged_lines() {
+        let output = ".cache/file\n.local/tmp\n";
+        assert_eq!(
+            parse_unmanaged_output(output).expect("line parse"),
+            vec![PathBuf::from(".cache/file"), PathBuf::from(".local/tmp")]
+        );
+    }
+
+    #[test]
+    fn action_mapping_includes_danger_and_chattr() {
+        let purge = ActionRequest {
+            action: Action::Purge,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&purge).expect("purge args"),
+            vec!["purge", "--force", "--no-tty"]
+        );
+
+        let edit = ActionRequest {
+            action: Action::Edit,
+            target: Some(PathBuf::from(".zshrc")),
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&edit).expect("edit args"),
+            vec!["edit", "--", ".zshrc"]
+        );
+
+        let chattr = ActionRequest {
+            action: Action::Chattr,
+            target: Some(PathBuf::from(".zshrc")),
+            chattr_attrs: Some("private,template".to_string()),
+        };
+        assert_eq!(
+            action_to_args(&chattr).expect("chattr args"),
+            vec!["chattr", "--", "private,template", ".zshrc"]
+        );
+    }
+
+    #[test]
+    fn diff_target_args_are_option_safe() {
+        let got = diff_args(Some(Path::new("-n")));
+        assert_eq!(got, vec!["diff", "--", "-n"]);
+    }
+}

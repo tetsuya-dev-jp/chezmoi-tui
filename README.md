@@ -1,0 +1,53 @@
+# chezmoi-tui
+
+`chezmoi`の状態を視覚的に把握し、主要操作を安全に実行するためのRust製TUIです。
+
+## 対応状況 (MVP)
+
+- 3ペインUI
+  - 左: 一覧 (`status` / `managed` / `unmanaged`)
+  - 右上: diff/詳細
+  - 右下: 実行ログ
+- 操作メニュー
+  - `apply`, `update`, `re-add`, `merge`, `merge-all`
+  - `add`, `edit`, `forget`, `chattr`
+  - `destroy`, `purge`
+- 安全機構
+  - 全操作で確認ダイアログ
+  - `destroy`/`purge`は確認文字列入力を追加要求
+- 設定保存
+  - `~/.config/chezmoi-tui/config.toml` (XDG)
+
+## 必要条件
+
+- Rust 1.93+
+- `chezmoi` がPATH上に存在
+- macOS / Linux
+
+## 実行
+
+```bash
+cargo run
+```
+
+## キーバインド
+
+- `1` / `2` / `3`: 一覧切替 (`status`, `managed`, `unmanaged`)
+- `j` / `k` or `↑` / `↓`: 選択移動
+- `Tab`: ペインフォーカス移動
+- `Enter` or `d`: 選択対象のdiff取得
+- `a`: アクションメニュー
+- `e`: `edit`確認ダイアログ
+- `r`: 一覧更新
+- `q` or `Ctrl+C`: 終了
+
+## 実装メモ
+
+- `managed --format json`が環境によってプレーンテキスト出力になるケースを考慮し、JSON/行パースの両対応を実装しています。
+- `status`は2カラム記号を内部モデルへ変換して表示します。
+
+## テスト
+
+```bash
+cargo test
+```
