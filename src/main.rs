@@ -214,7 +214,7 @@ fn handle_backend_event(
             app.status_entries = status;
             app.managed_entries = managed;
             app.unmanaged_entries = unmanaged;
-            app.sync_selection_bounds();
+            app.rebuild_visible_entries();
             app.busy = false;
             app.log(format!(
                 "refresh: status={} managed={} unmanaged={}",
@@ -293,6 +293,22 @@ fn handle_key_without_modal(
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::Char('j') | KeyCode::Down => app.select_next(),
         KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.expand_selected_directory() {
+                app.log("ディレクトリを展開しました".to_string());
+            } else {
+                app.log(
+                    "展開できるディレクトリを選択してください (Unmanagedビューのみ)".to_string(),
+                );
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if app.collapse_selected_directory_or_parent() {
+                app.log("ディレクトリを折りたたみました".to_string());
+            } else {
+                app.log("折りたためるディレクトリがありません (Unmanagedビューのみ)".to_string());
+            }
+        }
         KeyCode::Char('1') => app.switch_view(ListView::Status),
         KeyCode::Char('2') => app.switch_view(ListView::Managed),
         KeyCode::Char('3') => app.switch_view(ListView::Unmanaged),
@@ -352,6 +368,14 @@ fn handle_action_menu_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
                 if action.needs_target() && request.target.is_none() {
                     app.log(format!("{}は対象ファイルが必要です", action.label()));
+                    app.close_modal();
+                    return Ok(());
+                }
+                if action == Action::Add && app.selected_is_directory() {
+                    app.log(
+                        "ディレクトリの一括addは無効です。展開して必要なファイルを選択してください"
+                            .to_string(),
+                    );
                     app.close_modal();
                     return Ok(());
                 }

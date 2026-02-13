@@ -1,6 +1,8 @@
 use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest, CommandResult, DiffText, ListView, StatusEntry};
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const MAX_LOG_LINES: usize = 500;
 
@@ -78,6 +80,13 @@ pub enum BackendEvent {
     },
 }
 
+#[derive(Debug, Clone)]
+struct VisibleEntry {
+    path: PathBuf,
+    depth: usize,
+    is_dir: bool,
+}
+
 pub struct App {
     pub config: AppConfig,
     pub focus: PaneFocus,
@@ -92,10 +101,14 @@ pub struct App {
     pub busy: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
+    destination_dir: PathBuf,
+    expanded_dirs: BTreeSet<PathBuf>,
+    visible_entries: Vec<VisibleEntry>,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
+        let destination_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let mut app = Self {
             config,
             focus: PaneFocus::List,
@@ -110,15 +123,22 @@ impl App {
             busy: false,
             pending_foreground: None,
             should_quit: false,
+            destination_dir,
+            expanded_dirs: BTreeSet::new(),
+            visible_entries: Vec::new(),
         };
 
-        app.log("起動: r=refresh d=diff a=action e=edit tab=focus q=quit".to_string());
+        app.rebuild_visible_entries_reset();
+        app.log(
+            "起動: r=refresh d=diff a=action e=edit h/l=collapse/expand tab=focus q=quit"
+                .to_string(),
+        );
         app
     }
 
     pub fn switch_view(&mut self, view: ListView) {
         self.view = view;
-        self.selected_index = 0;
+        self.rebuild_visible_entries_reset();
     }
 
     pub fn select_next(&mut self) {
@@ -144,42 +164,70 @@ impl App {
     }
 
     pub fn current_len(&self) -> usize {
-        match self.view {
-            ListView::Status => self.status_entries.len(),
-            ListView::Managed => self.managed_entries.len(),
-            ListView::Unmanaged => self.unmanaged_entries.len(),
-        }
+        self.visible_entries.len()
     }
 
     pub fn current_items(&self) -> Vec<String> {
-        match self.view {
-            ListView::Status => self
-                .status_entries
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-            ListView::Managed => self
-                .managed_entries
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect(),
-            ListView::Unmanaged => self
-                .unmanaged_entries
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect(),
-        }
+        self.visible_entries
+            .iter()
+            .map(|entry| self.format_visible_entry(entry))
+            .collect()
     }
 
     pub fn selected_path(&self) -> Option<PathBuf> {
-        match self.view {
-            ListView::Status => self
-                .status_entries
-                .get(self.selected_index)
-                .map(|entry| entry.path.clone()),
-            ListView::Managed => self.managed_entries.get(self.selected_index).cloned(),
-            ListView::Unmanaged => self.unmanaged_entries.get(self.selected_index).cloned(),
+        self.visible_entries
+            .get(self.selected_index)
+            .map(|entry| entry.path.clone())
+    }
+
+    pub fn selected_is_directory(&self) -> bool {
+        self.visible_entries
+            .get(self.selected_index)
+            .map(|entry| entry.is_dir)
+            .unwrap_or(false)
+    }
+
+    pub fn expand_selected_directory(&mut self) -> bool {
+        if self.view != ListView::Unmanaged {
+            return false;
         }
+
+        let Some(entry) = self.visible_entries.get(self.selected_index).cloned() else {
+            return false;
+        };
+        if !entry.is_dir {
+            return false;
+        }
+
+        let path = entry.path;
+        let changed = self.expanded_dirs.insert(path.clone());
+        if changed {
+            self.rebuild_visible_entries_with_selection(Some(path));
+        }
+        changed
+    }
+
+    pub fn collapse_selected_directory_or_parent(&mut self) -> bool {
+        if self.view != ListView::Unmanaged {
+            return false;
+        }
+
+        let Some(selected_path) = self.selected_path() else {
+            return false;
+        };
+
+        let mut current: Option<&Path> = Some(selected_path.as_path());
+        while let Some(path) = current {
+            let candidate = path.to_path_buf();
+            if self.expanded_dirs.contains(&candidate) {
+                self.collapse_tree(&candidate);
+                self.rebuild_visible_entries_with_selection(Some(candidate));
+                return true;
+            }
+            current = path.parent();
+        }
+
+        false
     }
 
     pub fn open_action_menu(&mut self) {
@@ -223,8 +271,173 @@ impl App {
         }
     }
 
+    pub fn rebuild_visible_entries(&mut self) {
+        let selected = self.selected_path();
+        self.rebuild_visible_entries_with_selection(selected);
+    }
+
     pub fn action_by_index(index: usize) -> Option<Action> {
         Action::ALL.get(index).copied()
+    }
+
+    fn rebuild_visible_entries_reset(&mut self) {
+        self.rebuild_visible_entries_with_selection(None);
+    }
+
+    fn rebuild_visible_entries_with_selection(&mut self, preferred: Option<PathBuf>) {
+        let previous = preferred.or_else(|| self.selected_path());
+        let base_paths = self.base_paths_for_view();
+        let mut seen = HashSet::new();
+        let mut entries = Vec::new();
+
+        if self.view == ListView::Unmanaged {
+            for base in base_paths {
+                self.push_visible_recursive(base, 0, &mut entries, &mut seen);
+            }
+        } else {
+            for path in base_paths {
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
+                let is_dir = self.path_is_directory(&path);
+                entries.push(VisibleEntry {
+                    path,
+                    depth: 0,
+                    is_dir,
+                });
+            }
+        }
+
+        self.visible_entries = entries;
+
+        if let Some(target) = previous
+            && let Some(idx) = self.visible_entries.iter().position(|e| e.path == target)
+        {
+            self.selected_index = idx;
+            return;
+        }
+
+        self.sync_selection_bounds();
+    }
+
+    fn base_paths_for_view(&self) -> Vec<PathBuf> {
+        match self.view {
+            ListView::Status => self
+                .status_entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect(),
+            ListView::Managed => self.managed_entries.clone(),
+            ListView::Unmanaged => self.unmanaged_entries.clone(),
+        }
+    }
+
+    fn push_visible_recursive(
+        &self,
+        path: PathBuf,
+        depth: usize,
+        out: &mut Vec<VisibleEntry>,
+        seen: &mut HashSet<PathBuf>,
+    ) {
+        if !seen.insert(path.clone()) {
+            return;
+        }
+
+        let is_dir = self.path_is_directory(&path);
+        out.push(VisibleEntry {
+            path: path.clone(),
+            depth,
+            is_dir,
+        });
+
+        if !is_dir || !self.expanded_dirs.contains(&path) {
+            return;
+        }
+
+        for child in self.read_children(&path) {
+            self.push_visible_recursive(child, depth + 1, out, seen);
+        }
+    }
+
+    fn read_children(&self, parent: &Path) -> Vec<PathBuf> {
+        let abs_parent = self.resolve_path(parent);
+        let Ok(read_dir) = fs::read_dir(abs_parent) else {
+            return Vec::new();
+        };
+
+        let mut children: Vec<PathBuf> = read_dir
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .map(|name| {
+                if parent.is_absolute() {
+                    self.resolve_path(parent).join(name)
+                } else {
+                    PathBuf::from(parent).join(name)
+                }
+            })
+            .collect();
+
+        children.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        children
+    }
+
+    fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
+        let mut label = String::new();
+        label.push_str(&"  ".repeat(entry.depth));
+
+        let expanded = self.expanded_dirs.contains(&entry.path);
+        let marker = if entry.is_dir {
+            if expanded { "[-]" } else { "[+]" }
+        } else {
+            "   "
+        };
+        label.push_str(marker);
+        label.push(' ');
+
+        let name = if entry.depth == 0 {
+            entry.path.display().to_string()
+        } else {
+            entry
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| entry.path.display().to_string())
+        };
+
+        label.push_str(&name);
+        if entry.is_dir {
+            label.push('/');
+        }
+
+        label
+    }
+
+    fn path_is_directory(&self, path: &Path) -> bool {
+        let abs = self.resolve_path(path);
+        fs::symlink_metadata(abs)
+            .map(|meta| meta.file_type().is_dir())
+            .unwrap_or(false)
+    }
+
+    fn resolve_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.destination_dir.join(path)
+        }
+    }
+
+    fn collapse_tree(&mut self, dir: &Path) {
+        let targets: Vec<PathBuf> = self
+            .expanded_dirs
+            .iter()
+            .filter(|p| p.starts_with(dir))
+            .cloned()
+            .collect();
+        for target in targets {
+            self.expanded_dirs.remove(&target);
+        }
     }
 }
 
@@ -232,6 +445,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::domain::ChangeKind;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn status_selection_returns_path() {
@@ -241,6 +455,7 @@ mod tests {
             actual_vs_state: ChangeKind::None,
             actual_vs_target: ChangeKind::Modified,
         }];
+        app.rebuild_visible_entries();
         assert_eq!(app.selected_path(), Some(PathBuf::from(".zshrc")));
     }
 
@@ -252,5 +467,41 @@ mod tests {
         app.selected_index = 5;
         app.sync_selection_bounds();
         assert_eq!(app.selected_index, 1);
+    }
+
+    #[test]
+    fn unmanaged_directory_can_expand_and_show_children() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_test_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let dir = temp_root.join(".config/nvim");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("init.lua"), "set number").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.destination_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(
+            app.current_items()
+                .iter()
+                .any(|line| line.contains(".config/"))
+        );
+
+        let expanded = app.expand_selected_directory();
+        assert!(expanded);
+        assert!(
+            app.current_items()
+                .iter()
+                .any(|line| line.contains("nvim/"))
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 }

@@ -8,6 +8,7 @@
   - 左: 一覧 (`status` / `managed` / `unmanaged`)
   - 右上: diff/詳細
   - 右下: 実行ログ
+  - `unmanaged` はディレクトリ展開対応（必要なファイルだけ選択可能）
 - 操作メニュー
   - `apply`, `update`, `re-add`, `merge`, `merge-all`
   - `add`, `edit`, `forget`, `chattr`
@@ -34,6 +35,8 @@ cargo run
 
 - `1` / `2` / `3`: 一覧切替 (`status`, `managed`, `unmanaged`)
 - `j` / `k` or `↑` / `↓`: 選択移動
+- `l` / `→`: ディレクトリ展開 (`unmanaged`ビュー)
+- `h` / `←`: ディレクトリ折りたたみ (`unmanaged`ビュー)
 - `Tab`: ペインフォーカス移動
 - `Enter` or `d`: 選択対象のdiff取得
 - `a`: アクションメニュー
@@ -45,6 +48,7 @@ cargo run
 
 - `managed --format json`が環境によってプレーンテキスト出力になるケースを考慮し、JSON/行パースの両対応を実装しています。
 - `status`は2カラム記号を内部モデルへ変換して表示します。
+- `add`でディレクトリを直接選択した場合は事故防止のため実行せず、展開して個別ファイルを選ぶ運用にしています。
 
 ## テスト
 

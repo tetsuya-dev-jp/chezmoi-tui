@@ -134,7 +134,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(
-            "j/k move tab focus d diff a action e edit r refresh q quit",
+            "j/k move h/l collapse/expand tab focus d diff a action e edit r refresh q quit",
             Style::default().fg(Color::Gray),
         ),
     ]);
