@@ -61,17 +61,9 @@ pub enum ModalState {
 #[derive(Debug, Clone)]
 pub enum BackendTask {
     RefreshAll,
-    LoadDiff {
-        target: Option<PathBuf>,
-    },
-    LoadPreview {
-        target: PathBuf,
-        absolute: PathBuf,
-        silent: bool,
-    },
-    RunAction {
-        request: ActionRequest,
-    },
+    LoadDiff { target: Option<PathBuf> },
+    LoadPreview { target: PathBuf, absolute: PathBuf },
+    RunAction { request: ActionRequest },
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +80,6 @@ pub enum BackendEvent {
     PreviewLoaded {
         target: PathBuf,
         content: String,
-        silent: bool,
     },
     ActionFinished {
         request: ActionRequest,
@@ -157,10 +148,6 @@ impl App {
         };
 
         app.rebuild_visible_entries_reset();
-        app.log(
-            "起動: r=refresh d=diff v=preview a=action e=edit h/l=collapse/expand tab=focus q=quit (Detailではj/k,PgUp/PgDnでスクロール)"
-                .to_string(),
-        );
         app
     }
 
@@ -349,6 +336,13 @@ impl App {
         self.detail_title = format!("Preview: {}", target.display());
         self.detail_text = content;
         self.detail_target = Some(target.to_path_buf());
+        self.detail_scroll = 0;
+    }
+
+    pub fn clear_detail(&mut self) {
+        self.detail_title = "Diff / Preview".to_string();
+        self.detail_text.clear();
+        self.detail_target = None;
         self.detail_scroll = 0;
     }
 
@@ -614,5 +608,17 @@ mod tests {
         assert!(app.scroll_detail_up(10));
         assert_eq!(app.detail_scroll, 0);
         assert!(!app.scroll_detail_up(1));
+    }
+
+    #[test]
+    fn clear_detail_resets_preview_state() {
+        let mut app = App::new(AppConfig::default());
+        app.set_detail_preview(Path::new(".config/test.txt"), "hello".to_string());
+        assert!(!app.detail_text.is_empty());
+        assert!(app.detail_target.is_some());
+        app.clear_detail();
+        assert!(app.detail_text.is_empty());
+        assert!(app.detail_target.is_none());
+        assert_eq!(app.detail_scroll, 0);
     }
 }

@@ -167,21 +167,13 @@ async fn worker_loop(
                     }
                 }
             }
-            BackendTask::LoadPreview {
-                target,
-                absolute,
-                silent,
-            } => {
+            BackendTask::LoadPreview { target, absolute } => {
                 let result =
                     tokio::task::spawn_blocking(move || load_file_preview(&absolute)).await;
                 match result {
                     Ok(Ok(content)) => {
                         if event_tx
-                            .send(BackendEvent::PreviewLoaded {
-                                target,
-                                content,
-                                silent,
-                            })
+                            .send(BackendEvent::PreviewLoaded { target, content })
                             .is_err()
                         {
                             break;
@@ -254,32 +246,15 @@ fn handle_backend_event(
             app.unmanaged_entries = unmanaged;
             app.rebuild_visible_entries();
             app.busy = false;
-            app.log(format!(
-                "refresh: status={} managed={} unmanaged={}",
-                app.status_entries.len(),
-                app.managed_entries.len(),
-                app.unmanaged_entries.len()
-            ));
             maybe_enqueue_unmanaged_preview(app, task_tx)?;
         }
         BackendEvent::DiffLoaded { target, diff } => {
             app.set_detail_diff(target.as_deref(), diff.text);
             app.busy = false;
-            let target = target
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "(all)".to_string());
-            app.log(format!("diff loaded: {target}"));
         }
-        BackendEvent::PreviewLoaded {
-            target,
-            content,
-            silent,
-        } => {
+        BackendEvent::PreviewLoaded { target, content } => {
             app.set_detail_preview(&target, content);
             app.busy = false;
-            if !silent {
-                app.log(format!("preview loaded: {}", target.display()));
-            }
         }
         BackendEvent::ActionFinished { request, result } => {
             app.busy = false;
@@ -295,9 +270,6 @@ fn handle_backend_event(
                 result.exit_code,
                 result.duration_ms
             ));
-            if !result.stdout.trim().is_empty() {
-                app.log(format!("stdout: {}", squash_lines(&result.stdout)));
-            }
             if !result.stderr.trim().is_empty() {
                 app.log(format!("stderr: {}", squash_lines(&result.stderr)));
             }
@@ -371,20 +343,12 @@ fn handle_key_without_modal(
         }
         KeyCode::Char('l') | KeyCode::Right => {
             if app.expand_selected_directory() {
-                app.log("ディレクトリを展開しました".to_string());
                 selection_changed = true;
-            } else {
-                app.log(
-                    "展開できるディレクトリを選択してください (Unmanagedビューのみ)".to_string(),
-                );
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
             if app.collapse_selected_directory_or_parent() {
-                app.log("ディレクトリを折りたたみました".to_string());
                 selection_changed = true;
-            } else {
-                app.log("折りたためるディレクトリがありません (Unmanagedビューのみ)".to_string());
             }
         }
         KeyCode::Char('1') => app.switch_view(ListView::Status),
@@ -405,6 +369,10 @@ fn handle_key_without_modal(
             }
         }
         KeyCode::Char('d') if key.modifiers.is_empty() => {
+            if app.view == ListView::Unmanaged && app.selected_is_directory() {
+                app.clear_detail();
+                return Ok(());
+            }
             send_task(
                 app,
                 task_tx,
@@ -414,6 +382,10 @@ fn handle_key_without_modal(
             )?;
         }
         KeyCode::Enter => {
+            if app.view == ListView::Unmanaged && app.selected_is_directory() {
+                app.clear_detail();
+                return Ok(());
+            }
             send_task(
                 app,
                 task_tx,
@@ -424,15 +396,11 @@ fn handle_key_without_modal(
         }
         KeyCode::Char('v') => match (app.selected_path(), app.selected_absolute_path()) {
             (Some(target), Some(absolute)) => {
-                send_task(
-                    app,
-                    task_tx,
-                    BackendTask::LoadPreview {
-                        target,
-                        absolute,
-                        silent: false,
-                    },
-                )?;
+                if app.view == ListView::Unmanaged && app.selected_is_directory() {
+                    app.clear_detail();
+                    return Ok(());
+                }
+                send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })?;
             }
             _ => app.log("preview対象が選択されていません".to_string()),
         },
@@ -647,11 +615,6 @@ fn run_foreground_action(
     task_tx: &UnboundedSender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
-    app.log(format!(
-        "foreground action start: {}",
-        request.action.label()
-    ));
-
     restore_terminal(terminal)?;
 
     let result = run_chezmoi_foreground(&request);
@@ -743,6 +706,7 @@ fn maybe_enqueue_unmanaged_preview(
         return Ok(());
     }
     if app.selected_is_directory() {
+        app.clear_detail();
         return Ok(());
     }
 
@@ -754,15 +718,7 @@ fn maybe_enqueue_unmanaged_preview(
         return Ok(());
     }
 
-    send_task(
-        app,
-        task_tx,
-        BackendTask::LoadPreview {
-            target,
-            absolute,
-            silent: true,
-        },
-    )
+    send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })
 }
 
 fn setup_terminal() -> Result<()> {

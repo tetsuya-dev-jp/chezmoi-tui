@@ -1,5 +1,5 @@
 use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, PaneFocus};
-use crate::domain::Action;
+use crate::domain::{Action, ListView};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
@@ -69,10 +69,14 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let lines = if app.detail_text.trim().is_empty() {
-        vec![
-            Line::from("詳細が未ロードです。"),
-            Line::from("Enter / d: diff, v: ファイル本文プレビュー"),
-        ]
+        if app.view == ListView::Unmanaged && app.selected_is_directory() {
+            vec![Line::from("")]
+        } else {
+            vec![
+                Line::from("詳細が未ロードです。"),
+                Line::from("Enter / d: diff, v: ファイル本文プレビュー"),
+            ]
+        }
     } else if app.detail_kind == DetailKind::Diff {
         colorized_diff_lines(&app.detail_text)
     } else {
