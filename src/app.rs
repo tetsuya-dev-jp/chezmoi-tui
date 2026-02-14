@@ -125,7 +125,7 @@ pub struct App {
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        let destination_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let destination_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut app = Self {
             config,
             focus: PaneFocus::List,
@@ -605,6 +605,19 @@ mod tests {
         app.rebuild_visible_entries();
 
         assert_eq!(app.selected_absolute_path(), Some(temp_root.join(".zshrc")));
+    }
+
+    #[test]
+    fn selected_absolute_path_uses_current_dir_by_default() {
+        let cwd = std::env::current_dir().expect("current dir");
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.rebuild_visible_entries();
+        assert_eq!(app.selected_absolute_path(), Some(cwd.join(".zshrc")));
     }
 
     #[test]
