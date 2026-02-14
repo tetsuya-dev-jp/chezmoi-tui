@@ -416,6 +416,8 @@ fn handle_key_without_modal(
             };
             if request.target.is_none() {
                 app.log("edit requires a target path".to_string());
+            } else if !app.selected_is_managed() {
+                app.log("edit is available only for managed files".to_string());
             } else {
                 execute_action_request(app, task_tx, request)?;
             }
@@ -469,6 +471,11 @@ fn handle_action_menu_key(
                         "Adding a whole directory is disabled. Expand it and select only required files."
                             .to_string(),
                     );
+                    app.close_modal();
+                    return Ok(());
+                }
+                if action == Action::Edit && !app.selected_is_managed() {
+                    app.log("edit is available only for managed files".to_string());
                     app.close_modal();
                     return Ok(());
                 }

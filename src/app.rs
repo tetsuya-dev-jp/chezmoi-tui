@@ -206,6 +206,19 @@ impl App {
             .unwrap_or(false)
     }
 
+    pub fn selected_is_managed(&self) -> bool {
+        let Some(selected) = self.selected_path() else {
+            return false;
+        };
+        let selected_abs = self.resolve_path(&selected);
+
+        self.managed_entries.iter().any(|managed| {
+            managed == &selected
+                || managed == &selected_abs
+                || self.resolve_path(managed.as_path()) == selected_abs
+        })
+    }
+
     pub fn expand_selected_directory(&mut self) -> bool {
         if self.view != ListView::Unmanaged {
             return false;
@@ -620,5 +633,21 @@ mod tests {
         assert!(app.detail_text.is_empty());
         assert!(app.detail_target.is_none());
         assert_eq!(app.detail_scroll, 0);
+    }
+
+    #[test]
+    fn selected_is_managed_checks_against_managed_entries() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.managed_entries = vec![PathBuf::from(".zshrc")];
+        app.rebuild_visible_entries();
+        assert!(app.selected_is_managed());
+
+        app.managed_entries = vec![PathBuf::from(".gitconfig")];
+        assert!(!app.selected_is_managed());
     }
 }
