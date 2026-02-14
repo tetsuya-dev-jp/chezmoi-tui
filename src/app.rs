@@ -107,6 +107,7 @@ pub struct App {
     pub managed_entries: Vec<PathBuf>,
     pub unmanaged_entries: Vec<PathBuf>,
     pub selected_index: usize,
+    list_scroll: usize,
     pub detail_kind: DetailKind,
     pub detail_title: String,
     pub detail_text: String,
@@ -133,6 +134,7 @@ impl App {
             managed_entries: Vec::new(),
             unmanaged_entries: Vec::new(),
             selected_index: 0,
+            list_scroll: 0,
             detail_kind: DetailKind::Diff,
             detail_title: "Diff / Preview".to_string(),
             detail_text: String::new(),
@@ -181,6 +183,30 @@ impl App {
 
     pub fn current_len(&self) -> usize {
         self.visible_entries.len()
+    }
+
+    pub fn list_scroll(&self) -> usize {
+        self.list_scroll
+    }
+
+    pub fn sync_list_scroll(&mut self, viewport_rows: usize) {
+        let len = self.current_len();
+        if len == 0 {
+            self.list_scroll = 0;
+            return;
+        }
+
+        let rows = viewport_rows.max(1);
+        if self.selected_index < self.list_scroll {
+            self.list_scroll = self.selected_index;
+        } else if self.selected_index >= self.list_scroll + rows {
+            self.list_scroll = self.selected_index + 1 - rows;
+        }
+
+        let max_offset = len.saturating_sub(rows);
+        if self.list_scroll > max_offset {
+            self.list_scroll = max_offset;
+        }
     }
 
     pub fn current_items(&self) -> Vec<String> {
@@ -302,6 +328,7 @@ impl App {
         let len = self.current_len();
         if len == 0 {
             self.selected_index = 0;
+            self.list_scroll = 0;
         } else if self.selected_index >= len {
             self.selected_index = len - 1;
         }
@@ -698,5 +725,30 @@ mod tests {
         let got = App::action_menu_indices("ad");
         assert_eq!(App::action_by_index(got[0]), Some(Action::Add));
         assert_eq!(App::action_by_index(got[1]), Some(Action::ReAdd));
+    }
+
+    #[test]
+    fn list_scroll_moves_only_at_view_edges() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = (0..20)
+            .map(|i| PathBuf::from(format!("file-{i}")))
+            .collect();
+        app.switch_view(ListView::Managed);
+
+        app.selected_index = 10;
+        app.sync_list_scroll(5);
+        assert_eq!(app.list_scroll(), 6);
+
+        app.selected_index = 9;
+        app.sync_list_scroll(5);
+        assert_eq!(app.list_scroll(), 6);
+
+        app.selected_index = 6;
+        app.sync_list_scroll(5);
+        assert_eq!(app.list_scroll(), 6);
+
+        app.selected_index = 5;
+        app.sync_list_scroll(5);
+        assert_eq!(app.list_scroll(), 5);
     }
 }

@@ -76,7 +76,7 @@ async fn run_app(
             run_foreground_action(terminal, &mut app, &task_tx, request)?;
         }
 
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         if event::poll(Duration::from_millis(100)).context("event poll failed")?
             && let Event::Key(key) = event::read().context("event read failed")?

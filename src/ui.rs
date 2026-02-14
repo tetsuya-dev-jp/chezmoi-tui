@@ -6,7 +6,7 @@ use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use std::path::Path;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
@@ -29,8 +29,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_modal(frame, app);
 }
 
-fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app.current_items().into_iter().map(ListItem::new).collect();
+    let viewport_rows = area.height.saturating_sub(2) as usize;
+    app.sync_list_scroll(viewport_rows);
 
     let border_style = if app.focus == PaneFocus::List {
         Style::default().fg(Color::Cyan)
@@ -53,7 +55,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         )
         .highlight_symbol("▶ ");
 
-    let mut state = ListState::default();
+    let mut state = ListState::default().with_offset(app.list_scroll());
     if app.current_len() > 0 {
         state.select(Some(app.selected_index));
     }
