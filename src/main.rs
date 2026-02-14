@@ -624,7 +624,10 @@ fn execute_action_request(
     task_tx: &UnboundedSender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
-    if request.action == Action::Edit {
+    if matches!(
+        request.action,
+        Action::Edit | Action::Merge | Action::MergeAll
+    ) {
         app.pending_foreground = Some(request);
         app.busy = true;
     } else {
