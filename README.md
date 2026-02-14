@@ -24,7 +24,7 @@ This project wraps core `chezmoi` operations in a 3-pane interface with safe def
 ### Run from source
 
 ```bash
-git clone https://github.com/example/chezmoi-tui.git
+git clone https://github.com/tetsuya-dev-jp/chezmoi-tui.git
 cd chezmoi-tui
 cargo run
 ```

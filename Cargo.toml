@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "A visual TUI wrapper around chezmoi"
-repository = "https://github.com/example/chezmoi-tui"
+repository = "https://github.com/tetsuya-dev-jp/chezmoi-tui"
+homepage = "https://github.com/tetsuya-dev-jp/chezmoi-tui"
+documentation = "https://docs.rs/chezmoi-tui"
+readme = "README.md"
+keywords = ["chezmoi", "dotfiles", "tui", "cli", "ratatui"]
+categories = ["command-line-utilities", "config"]
 
 [dependencies]
 anyhow = "1.0"
