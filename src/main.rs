@@ -246,7 +246,7 @@ fn handle_backend_event(
             app.unmanaged_entries = unmanaged;
             app.rebuild_visible_entries();
             app.busy = false;
-            maybe_enqueue_unmanaged_preview(app, task_tx)?;
+            maybe_enqueue_auto_detail(app, task_tx)?;
         }
         BackendEvent::DiffLoaded { target, diff } => {
             app.set_detail_diff(target.as_deref(), diff.text);
@@ -351,7 +351,10 @@ fn handle_key_without_modal(
                 selection_changed = true;
             }
         }
-        KeyCode::Char('1') => app.switch_view(ListView::Status),
+        KeyCode::Char('1') => {
+            app.switch_view(ListView::Status);
+            selection_changed = true;
+        }
         KeyCode::Char('2') => app.switch_view(ListView::Managed),
         KeyCode::Char('3') => {
             app.switch_view(ListView::Unmanaged);
@@ -421,7 +424,7 @@ fn handle_key_without_modal(
     }
 
     if selection_changed {
-        maybe_enqueue_unmanaged_preview(app, task_tx)?;
+        maybe_enqueue_auto_detail(app, task_tx)?;
     }
 
     Ok(())
@@ -719,6 +722,33 @@ fn maybe_enqueue_unmanaged_preview(
     }
 
     send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })
+}
+
+fn maybe_enqueue_status_diff(app: &mut App, task_tx: &UnboundedSender<BackendTask>) -> Result<()> {
+    if app.view != ListView::Status {
+        return Ok(());
+    }
+
+    let Some(target) = app.selected_absolute_path() else {
+        return Ok(());
+    };
+    if app.detail_kind == DetailKind::Diff && app.detail_target.as_ref() == Some(&target) {
+        return Ok(());
+    }
+
+    send_task(
+        app,
+        task_tx,
+        BackendTask::LoadDiff {
+            target: Some(target),
+        },
+    )
+}
+
+fn maybe_enqueue_auto_detail(app: &mut App, task_tx: &UnboundedSender<BackendTask>) -> Result<()> {
+    maybe_enqueue_status_diff(app, task_tx)?;
+    maybe_enqueue_unmanaged_preview(app, task_tx)?;
+    Ok(())
 }
 
 fn setup_terminal() -> Result<()> {
