@@ -626,7 +626,7 @@ fn execute_action_request(
 ) -> Result<()> {
     if matches!(
         request.action,
-        Action::Edit | Action::Merge | Action::MergeAll
+        Action::Edit | Action::Update | Action::Merge | Action::MergeAll
     ) {
         app.pending_foreground = Some(request);
         app.busy = true;
