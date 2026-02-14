@@ -14,7 +14,7 @@ A Rust TUI to visualize `chezmoi` state and run major operations safely.
 - `add`, `edit`, `forget`, `chattr`
 - `destroy`, `purge`
 - Safety mechanisms
-- Confirmation dialog for all actions
+- Confirmation dialog only for dangerous actions
 - Additional confirmation phrase required for `destroy` / `purge`
 - Config persistence
 - `~/.config/chezmoi-tui/config.toml` (XDG)
@@ -46,7 +46,7 @@ cargo run
 - `j` / `k`: scroll preview/diff when `Detail` pane is focused
 - `PgUp` / `PgDn`, `Ctrl+u` / `Ctrl+d`: larger scroll in `Detail` pane
 - `a`: open action menu
-- `e`: open `edit` confirmation dialog
+- `e`: run `edit` for selected file
 - `r`: refresh lists
 - `q` or `Ctrl+C`: quit
 

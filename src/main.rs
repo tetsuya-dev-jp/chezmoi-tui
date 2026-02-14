@@ -299,9 +299,9 @@ fn handle_key_event(
 
     match app.modal.clone() {
         ModalState::None => handle_key_without_modal(app, key, task_tx),
-        ModalState::ActionMenu { .. } => handle_action_menu_key(app, key),
+        ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
-        ModalState::Input { .. } => handle_input_key(app, key),
+        ModalState::Input { .. } => handle_input_key(app, key, task_tx),
     }
 }
 
@@ -417,7 +417,7 @@ fn handle_key_without_modal(
             if request.target.is_none() {
                 app.log("edit requires a target path".to_string());
             } else {
-                app.open_confirm(request);
+                execute_action_request(app, task_tx, request)?;
             }
         }
         _ => {}
@@ -430,7 +430,11 @@ fn handle_key_without_modal(
     Ok(())
 }
 
-fn handle_action_menu_key(app: &mut App, key: KeyEvent) -> Result<()> {
+fn handle_action_menu_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
     let ModalState::ActionMenu { selected } = &mut app.modal else {
         return Ok(());
     };
@@ -471,8 +475,11 @@ fn handle_action_menu_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
                 if action == Action::Chattr {
                     app.open_input(InputKind::ChattrAttrs, request);
-                } else {
+                } else if action.is_dangerous() {
                     app.open_confirm(request);
+                } else {
+                    app.close_modal();
+                    execute_action_request(app, task_tx, request)?;
                 }
             }
         }
@@ -546,19 +553,18 @@ fn handle_confirm_key(
 
     if let Some(request) = execute_request {
         app.close_modal();
-        if request.action == Action::Edit {
-            app.pending_foreground = Some(request);
-            app.busy = true;
-        } else {
-            send_task(app, task_tx, BackendTask::RunAction { request })?;
-        }
+        execute_action_request(app, task_tx, request)?;
     }
 
     Ok(())
 }
 
-fn handle_input_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    let mut open_confirm: Option<ActionRequest> = None;
+fn handle_input_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    let mut ready_request: Option<ActionRequest> = None;
 
     {
         let ModalState::Input {
@@ -582,7 +588,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     } else {
                         let mut req = request.clone();
                         req.chattr_attrs = Some(value.trim().to_string());
-                        open_confirm = Some(req);
+                        ready_request = Some(req);
                     }
                 }
             },
@@ -594,10 +600,29 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
 
-    if let Some(request) = open_confirm {
-        app.open_confirm(request);
+    if let Some(request) = ready_request {
+        if request.action.is_dangerous() {
+            app.open_confirm(request);
+        } else {
+            app.close_modal();
+            execute_action_request(app, task_tx, request)?;
+        }
     }
 
+    Ok(())
+}
+
+fn execute_action_request(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+    request: ActionRequest,
+) -> Result<()> {
+    if request.action == Action::Edit {
+        app.pending_foreground = Some(request);
+        app.busy = true;
+    } else {
+        send_task(app, task_tx, BackendTask::RunAction { request })?;
+    }
     Ok(())
 }
 
