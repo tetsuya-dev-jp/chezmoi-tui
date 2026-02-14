@@ -70,6 +70,7 @@ cargo run
 | `PgUp` / `PgDn` | Page scroll in detail pane |
 | `Ctrl+u` / `Ctrl+d` | Half-page scroll in detail pane |
 | `a` | Open action menu |
+| `(in Action Menu) type text` | Filter actions by command name |
 | `e` | Run `edit` on selected target |
 | `r` | Refresh all lists |
 | `q` or `Ctrl+C` | Quit |

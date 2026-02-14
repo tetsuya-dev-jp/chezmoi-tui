@@ -437,60 +437,93 @@ fn handle_action_menu_key(
     key: KeyEvent,
     task_tx: &UnboundedSender<BackendTask>,
 ) -> Result<()> {
-    let ModalState::ActionMenu { selected } = &mut app.modal else {
+    let mut selected_action: Option<Action> = None;
+    let mut no_action_match = false;
+
+    let ModalState::ActionMenu { selected, filter } = &mut app.modal else {
         return Ok(());
     };
 
     match key.code {
         KeyCode::Esc => app.close_modal(),
-        KeyCode::Char('j') | KeyCode::Down => {
-            *selected = (*selected + 1) % Action::ALL.len();
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if *selected == 0 {
-                *selected = Action::ALL.len() - 1;
-            } else {
-                *selected -= 1;
+        KeyCode::Down => {
+            let indices = App::action_menu_indices(filter);
+            if !indices.is_empty() {
+                *selected = (*selected + 1) % indices.len();
             }
         }
-        KeyCode::Enter => {
-            if let Some(action) = App::action_by_index(*selected) {
-                let request = ActionRequest {
-                    action,
-                    target: app.selected_absolute_path(),
-                    chattr_attrs: None,
-                };
-
-                if action.needs_target() && request.target.is_none() {
-                    app.log(format!("{} requires a target file", action.label()));
-                    app.close_modal();
-                    return Ok(());
-                }
-                if action == Action::Add && app.selected_is_directory() {
-                    app.log(
-                        "Adding a whole directory is disabled. Expand it and select only required files."
-                            .to_string(),
-                    );
-                    app.close_modal();
-                    return Ok(());
-                }
-                if action == Action::Edit && !app.selected_is_managed() {
-                    app.log("edit is available only for managed files".to_string());
-                    app.close_modal();
-                    return Ok(());
-                }
-
-                if action == Action::Chattr {
-                    app.open_input(InputKind::ChattrAttrs, request);
-                } else if action.is_dangerous() {
-                    app.open_confirm(request);
+        KeyCode::Up => {
+            let indices = App::action_menu_indices(filter);
+            if !indices.is_empty() {
+                if *selected == 0 {
+                    *selected = indices.len() - 1;
                 } else {
-                    app.close_modal();
-                    execute_action_request(app, task_tx, request)?;
+                    *selected -= 1;
                 }
+            }
+        }
+        KeyCode::Backspace => {
+            filter.pop();
+            *selected = 0;
+        }
+        KeyCode::Char(c)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::SUPER) =>
+        {
+            filter.push(c);
+            *selected = 0;
+        }
+        KeyCode::Enter => {
+            let indices = App::action_menu_indices(filter);
+            if let Some(index) = indices.get(*selected).copied() {
+                selected_action = App::action_by_index(index);
+            } else {
+                no_action_match = true;
             }
         }
         _ => {}
+    }
+
+    if no_action_match {
+        app.log("No action matches the current filter".to_string());
+        return Ok(());
+    }
+
+    if let Some(action) = selected_action {
+        let request = ActionRequest {
+            action,
+            target: app.selected_absolute_path(),
+            chattr_attrs: None,
+        };
+
+        if action.needs_target() && request.target.is_none() {
+            app.log(format!("{} requires a target file", action.label()));
+            app.close_modal();
+            return Ok(());
+        }
+        if action == Action::Add && app.selected_is_directory() {
+            app.log(
+                "Adding a whole directory is disabled. Expand it and select only required files."
+                    .to_string(),
+            );
+            app.close_modal();
+            return Ok(());
+        }
+        if action == Action::Edit && !app.selected_is_managed() {
+            app.log("edit is available only for managed files".to_string());
+            app.close_modal();
+            return Ok(());
+        }
+
+        if action == Action::Chattr {
+            app.open_input(InputKind::ChattrAttrs, request);
+        } else if action.is_dangerous() {
+            app.open_confirm(request);
+        } else {
+            app.close_modal();
+            execute_action_request(app, task_tx, request)?;
+        }
     }
 
     Ok(())

@@ -45,6 +45,7 @@ pub enum ModalState {
     None,
     ActionMenu {
         selected: usize,
+        filter: String,
     },
     Confirm {
         request: ActionRequest,
@@ -263,7 +264,10 @@ impl App {
     }
 
     pub fn open_action_menu(&mut self) {
-        self.modal = ModalState::ActionMenu { selected: 0 };
+        self.modal = ModalState::ActionMenu {
+            selected: 0,
+            filter: String::new(),
+        };
     }
 
     pub fn open_confirm(&mut self, request: ActionRequest) {
@@ -310,6 +314,21 @@ impl App {
 
     pub fn action_by_index(index: usize) -> Option<Action> {
         Action::ALL.get(index).copied()
+    }
+
+    pub fn action_menu_indices(filter: &str) -> Vec<usize> {
+        let query = filter.trim().to_ascii_lowercase();
+        let mut matches: Vec<(usize, String)> = Action::ALL
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| {
+                query.is_empty() || action.label().to_ascii_lowercase().contains(&query)
+            })
+            .map(|(index, action)| (index, action.label().to_ascii_lowercase()))
+            .collect();
+
+        matches.sort_by(|a, b| a.1.cmp(&b.1));
+        matches.into_iter().map(|(index, _)| index).collect()
     }
 
     pub fn scroll_detail_up(&mut self, lines: usize) -> bool {
@@ -649,5 +668,35 @@ mod tests {
 
         app.managed_entries = vec![PathBuf::from(".gitconfig")];
         assert!(!app.selected_is_managed());
+    }
+
+    #[test]
+    fn action_menu_indices_filters_by_label_only() {
+        let merge = App::action_menu_indices("merge");
+        assert!(
+            merge
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::Merge))
+        );
+        assert!(
+            merge
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::MergeAll))
+        );
+        assert!(!merge.is_empty());
+
+        let attrs = App::action_menu_indices("chattr");
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(App::action_by_index(attrs[0]), Some(Action::Chattr));
+
+        let by_description_only = App::action_menu_indices("attributes");
+        assert!(by_description_only.is_empty());
+    }
+
+    #[test]
+    fn action_menu_indices_are_sorted_alphabetically_by_label() {
+        let got = App::action_menu_indices("ad");
+        assert_eq!(App::action_by_index(got[0]), Some(Action::Add));
+        assert_eq!(App::action_by_index(got[1]), Some(Action::ReAdd));
     }
 }

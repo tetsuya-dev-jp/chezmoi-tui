@@ -1,5 +1,5 @@
 use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, PaneFocus};
-use crate::domain::{Action, ListView};
+use crate::domain::ListView;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
@@ -223,16 +223,52 @@ fn hint(key: &str, label: &str, emphasized: bool) -> Vec<Span<'static>> {
 fn draw_modal(frame: &mut Frame, app: &App) {
     match &app.modal {
         ModalState::None => {}
-        ModalState::ActionMenu { selected } => {
+        ModalState::ActionMenu { selected, filter } => {
             let area = centered_rect(60, 70, frame.area());
             frame.render_widget(Clear, area);
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .split(area);
 
-            let items: Vec<ListItem> = Action::ALL
-                .iter()
-                .map(|action| {
-                    ListItem::new(format!("{:<10} {}", action.label(), action.description()))
-                })
-                .collect();
+            let query = if filter.is_empty() {
+                "<type to filter>".to_string()
+            } else {
+                filter.to_string()
+            };
+            let query_style = if filter.is_empty() {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            let filter_widget = Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled("query: ", Style::default().fg(Color::Gray)),
+                    Span::styled(query, query_style),
+                ]),
+                Line::from("Backspace: delete  Up/Down: select  Enter: run  Esc: close"),
+            ])
+            .block(
+                Block::default()
+                    .title(" Action Filter ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::LightBlue)),
+            )
+            .wrap(Wrap { trim: false });
+            frame.render_widget(filter_widget, sections[0]);
+
+            let indices = App::action_menu_indices(filter);
+            let items: Vec<ListItem> = if indices.is_empty() {
+                vec![ListItem::new("No actions match the current filter")]
+            } else {
+                indices
+                    .iter()
+                    .filter_map(|index| App::action_by_index(*index))
+                    .map(|action| {
+                        ListItem::new(format!("{:<10} {}", action.label(), action.description()))
+                    })
+                    .collect()
+            };
 
             let list = List::new(items)
                 .block(
@@ -250,8 +286,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .highlight_symbol("▶ ");
 
             let mut state = ListState::default();
-            state.select(Some(*selected));
-            frame.render_stateful_widget(list, area, &mut state);
+            if !indices.is_empty() {
+                state.select(Some((*selected).min(indices.len().saturating_sub(1))));
+            }
+            frame.render_stateful_widget(list, sections[1], &mut state);
         }
         ModalState::Confirm {
             request,
