@@ -188,6 +188,8 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<String>> {
         ],
         Action::Forget => vec![
             "forget".to_string(),
+            "--force".to_string(),
+            "--no-tty".to_string(),
             "--".to_string(),
             required_target(target, action)?,
         ],
@@ -289,6 +291,16 @@ mod tests {
         assert_eq!(
             action_to_args(&edit).expect("edit args"),
             vec!["edit", "--", ".zshrc"]
+        );
+
+        let forget = ActionRequest {
+            action: Action::Forget,
+            target: Some(PathBuf::from(".zshrc")),
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&forget).expect("forget args"),
+            vec!["forget", "--force", "--no-tty", "--", ".zshrc"]
         );
 
         let chattr = ActionRequest {
