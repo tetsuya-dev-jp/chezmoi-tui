@@ -9,7 +9,7 @@ use std::path::Path;
 pub fn draw(frame: &mut Frame, app: &App) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(frame.area());
 
     let main = Layout::default()
@@ -121,30 +121,93 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let busy = if app.busy { "BUSY" } else { "IDLE" };
-    let text = Line::from(vec![
-        Span::styled(
-            format!(" {} ", busy),
-            if app.busy {
-                Style::default().bg(Color::Yellow).fg(Color::Black)
-            } else {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            },
-        ),
-        Span::raw("  "),
-        Span::styled(
-            "1:status 2:managed 3:unmanaged",
-            Style::default().fg(Color::Gray),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            "tab focus | List:j/k move | Detail:j/k PgUp/PgDn Ctrl+u/d scroll | d diff v preview",
-            Style::default().fg(Color::Gray),
-        ),
-    ]);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
 
-    let paragraph = Paragraph::new(text).alignment(Alignment::Left);
-    frame.render_widget(paragraph, area);
+    let mut top = Vec::new();
+    top.extend(badge(
+        if app.busy { " BUSY " } else { " IDLE " },
+        if app.busy {
+            Style::default().bg(Color::Yellow).fg(Color::Black)
+        } else {
+            Style::default().bg(Color::DarkGray).fg(Color::White)
+        },
+    ));
+    top.push(Span::raw(" "));
+    top.extend(badge(
+        format!(" VIEW {} ", app.view.title()),
+        Style::default().bg(Color::Blue).fg(Color::Black),
+    ));
+    top.push(Span::raw(" "));
+    top.extend(badge(
+        format!(" FOCUS {} ", focus_name(app.focus)),
+        Style::default().bg(Color::Cyan).fg(Color::Black),
+    ));
+    top.push(Span::raw(" "));
+    top.extend(badge(
+        format!(" ITEMS {} ", app.current_len()),
+        Style::default().bg(Color::DarkGray).fg(Color::White),
+    ));
+
+    let mut bottom = Vec::new();
+    bottom.extend(hint("1/2/3", "View", false));
+    bottom.extend(hint("Tab", "Focus", false));
+
+    if app.focus == PaneFocus::Detail {
+        bottom.extend(hint("j/k ↑/↓", "Scroll", true));
+        bottom.extend(hint("PgUp/PgDn", "Page", true));
+        bottom.extend(hint("Ctrl+u/d", "HalfPage", true));
+    } else {
+        bottom.extend(hint("j/k ↑/↓", "Move", true));
+        bottom.extend(hint("h/l ←/→", "Fold", false));
+    }
+
+    bottom.extend(hint("d", "Diff", false));
+    bottom.extend(hint("v", "Preview", false));
+    bottom.extend(hint("a", "Action", false));
+    bottom.extend(hint("q", "Quit", false));
+
+    let top_paragraph = Paragraph::new(Line::from(top))
+        .alignment(Alignment::Left)
+        .style(Style::default().bg(Color::Black));
+    let bottom_paragraph = Paragraph::new(Line::from(bottom))
+        .alignment(Alignment::Left)
+        .style(Style::default().bg(Color::Black));
+
+    frame.render_widget(top_paragraph, rows[0]);
+    frame.render_widget(bottom_paragraph, rows[1]);
+}
+
+fn focus_name(focus: PaneFocus) -> &'static str {
+    match focus {
+        PaneFocus::List => "List",
+        PaneFocus::Detail => "Detail",
+        PaneFocus::Log => "Log",
+    }
+}
+
+fn badge<T: Into<String>>(text: T, style: Style) -> Vec<Span<'static>> {
+    vec![Span::styled(text.into(), style)]
+}
+
+fn hint(key: &str, label: &str, emphasized: bool) -> Vec<Span<'static>> {
+    let key_style = if emphasized {
+        Style::default()
+            .bg(Color::LightBlue)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    };
+
+    vec![
+        Span::styled(format!(" {} ", key), key_style),
+        Span::raw(" "),
+        Span::styled(label.to_string(), Style::default().fg(Color::Gray)),
+        Span::raw("  "),
+    ]
 }
 
 fn draw_modal(frame: &mut Frame, app: &App) {
