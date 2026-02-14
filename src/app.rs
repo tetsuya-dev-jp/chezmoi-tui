@@ -61,9 +61,17 @@ pub enum ModalState {
 #[derive(Debug, Clone)]
 pub enum BackendTask {
     RefreshAll,
-    LoadDiff { target: Option<PathBuf> },
-    LoadPreview { target: PathBuf, absolute: PathBuf },
-    RunAction { request: ActionRequest },
+    LoadDiff {
+        target: Option<PathBuf>,
+    },
+    LoadPreview {
+        target: PathBuf,
+        absolute: PathBuf,
+        silent: bool,
+    },
+    RunAction {
+        request: ActionRequest,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +88,7 @@ pub enum BackendEvent {
     PreviewLoaded {
         target: PathBuf,
         content: String,
+        silent: bool,
     },
     ActionFinished {
         request: ActionRequest,

@@ -4,7 +4,7 @@ mod domain;
 mod infra;
 mod ui;
 
-use crate::app::{App, BackendEvent, BackendTask, ConfirmStep, InputKind, ModalState};
+use crate::app::{App, BackendEvent, BackendTask, ConfirmStep, DetailKind, InputKind, ModalState};
 use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest, ListView};
 use crate::infra::{ChezmoiClient, ShellChezmoiClient, action_to_args};
@@ -167,13 +167,21 @@ async fn worker_loop(
                     }
                 }
             }
-            BackendTask::LoadPreview { target, absolute } => {
+            BackendTask::LoadPreview {
+                target,
+                absolute,
+                silent,
+            } => {
                 let result =
                     tokio::task::spawn_blocking(move || load_file_preview(&absolute)).await;
                 match result {
                     Ok(Ok(content)) => {
                         if event_tx
-                            .send(BackendEvent::PreviewLoaded { target, content })
+                            .send(BackendEvent::PreviewLoaded {
+                                target,
+                                content,
+                                silent,
+                            })
                             .is_err()
                         {
                             break;
@@ -252,6 +260,7 @@ fn handle_backend_event(
                 app.managed_entries.len(),
                 app.unmanaged_entries.len()
             ));
+            maybe_enqueue_unmanaged_preview(app, task_tx)?;
         }
         BackendEvent::DiffLoaded { target, diff } => {
             app.set_detail_diff(target.as_deref(), diff.text);
@@ -261,10 +270,16 @@ fn handle_backend_event(
                 .unwrap_or_else(|| "(all)".to_string());
             app.log(format!("diff loaded: {target}"));
         }
-        BackendEvent::PreviewLoaded { target, content } => {
+        BackendEvent::PreviewLoaded {
+            target,
+            content,
+            silent,
+        } => {
             app.set_detail_preview(&target, content);
             app.busy = false;
-            app.log(format!("preview loaded: {}", target.display()));
+            if !silent {
+                app.log(format!("preview loaded: {}", target.display()));
+            }
         }
         BackendEvent::ActionFinished { request, result } => {
             app.busy = false;
@@ -323,6 +338,8 @@ fn handle_key_without_modal(
     key: KeyEvent,
     task_tx: &UnboundedSender<BackendTask>,
 ) -> Result<()> {
+    let mut selection_changed = false;
+
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Tab => app.focus = app.focus.next(),
@@ -331,6 +348,7 @@ fn handle_key_without_modal(
                 app.scroll_detail_down(1);
             } else {
                 app.select_next();
+                selection_changed = true;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
@@ -338,6 +356,7 @@ fn handle_key_without_modal(
                 app.scroll_detail_up(1);
             } else {
                 app.select_prev();
+                selection_changed = true;
             }
         }
         KeyCode::PageDown => {
@@ -353,6 +372,7 @@ fn handle_key_without_modal(
         KeyCode::Char('l') | KeyCode::Right => {
             if app.expand_selected_directory() {
                 app.log("ディレクトリを展開しました".to_string());
+                selection_changed = true;
             } else {
                 app.log(
                     "展開できるディレクトリを選択してください (Unmanagedビューのみ)".to_string(),
@@ -362,13 +382,17 @@ fn handle_key_without_modal(
         KeyCode::Char('h') | KeyCode::Left => {
             if app.collapse_selected_directory_or_parent() {
                 app.log("ディレクトリを折りたたみました".to_string());
+                selection_changed = true;
             } else {
                 app.log("折りたためるディレクトリがありません (Unmanagedビューのみ)".to_string());
             }
         }
         KeyCode::Char('1') => app.switch_view(ListView::Status),
         KeyCode::Char('2') => app.switch_view(ListView::Managed),
-        KeyCode::Char('3') => app.switch_view(ListView::Unmanaged),
+        KeyCode::Char('3') => {
+            app.switch_view(ListView::Unmanaged);
+            selection_changed = true;
+        }
         KeyCode::Char('r') => send_task(app, task_tx, BackendTask::RefreshAll)?,
         KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
             if app.focus == crate::app::PaneFocus::Detail {
@@ -400,7 +424,15 @@ fn handle_key_without_modal(
         }
         KeyCode::Char('v') => match (app.selected_path(), app.selected_absolute_path()) {
             (Some(target), Some(absolute)) => {
-                send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })?;
+                send_task(
+                    app,
+                    task_tx,
+                    BackendTask::LoadPreview {
+                        target,
+                        absolute,
+                        silent: false,
+                    },
+                )?;
             }
             _ => app.log("preview対象が選択されていません".to_string()),
         },
@@ -418,6 +450,10 @@ fn handle_key_without_modal(
             }
         }
         _ => {}
+    }
+
+    if selection_changed {
+        maybe_enqueue_unmanaged_preview(app, task_tx)?;
     }
 
     Ok(())
@@ -697,6 +733,36 @@ fn load_file_preview(path: &Path) -> Result<String> {
         ));
     }
     Ok(text)
+}
+
+fn maybe_enqueue_unmanaged_preview(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    if app.view != ListView::Unmanaged {
+        return Ok(());
+    }
+    if app.selected_is_directory() {
+        return Ok(());
+    }
+
+    let (Some(target), Some(absolute)) = (app.selected_path(), app.selected_absolute_path()) else {
+        return Ok(());
+    };
+
+    if app.detail_kind == DetailKind::Preview && app.detail_target.as_ref() == Some(&target) {
+        return Ok(());
+    }
+
+    send_task(
+        app,
+        task_tx,
+        BackendTask::LoadPreview {
+            target,
+            absolute,
+            silent: true,
+        },
+    )
 }
 
 fn setup_terminal() -> Result<()> {
