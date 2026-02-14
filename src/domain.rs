@@ -107,17 +107,17 @@ impl Action {
 
     pub fn description(self) -> &'static str {
         match self {
-            Action::Apply => "target stateをdestinationへ反映",
-            Action::Update => "sourceを更新して反映",
-            Action::ReAdd => "変更済みを再取り込み",
-            Action::Merge => "3-way mergeを実行",
-            Action::MergeAll => "全変更を3-way merge",
-            Action::Add => "既存ファイルを管理対象へ追加",
-            Action::Edit => "source stateを外部エディタで編集",
-            Action::Forget => "管理対象から除外",
-            Action::Chattr => "source属性を変更",
-            Action::Destroy => "source/destination/stateから削除",
-            Action::Purge => "chezmoi設定とデータを削除",
+            Action::Apply => "apply target state to destination",
+            Action::Update => "update source and apply changes",
+            Action::ReAdd => "re-import modified files",
+            Action::Merge => "run 3-way merge",
+            Action::MergeAll => "run 3-way merge for all changes",
+            Action::Add => "add existing file to managed set",
+            Action::Edit => "edit source state in external editor",
+            Action::Forget => "remove from managed set",
+            Action::Chattr => "change source attributes",
+            Action::Destroy => "delete from source/destination/state",
+            Action::Purge => "remove chezmoi config and data",
         }
     }
 

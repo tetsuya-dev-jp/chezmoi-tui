@@ -405,7 +405,7 @@ fn handle_key_without_modal(
                 }
                 send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })?;
             }
-            _ => app.log("preview対象が選択されていません".to_string()),
+            _ => app.log("No target selected for preview".to_string()),
         },
         KeyCode::Char('a') => app.open_action_menu(),
         KeyCode::Char('e') => {
@@ -415,7 +415,7 @@ fn handle_key_without_modal(
                 chattr_attrs: None,
             };
             if request.target.is_none() {
-                app.log("editは対象パスが必要です".to_string());
+                app.log("edit requires a target path".to_string());
             } else {
                 app.open_confirm(request);
             }
@@ -456,13 +456,13 @@ fn handle_action_menu_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 };
 
                 if action.needs_target() && request.target.is_none() {
-                    app.log(format!("{}は対象ファイルが必要です", action.label()));
+                    app.log(format!("{} requires a target file", action.label()));
                     app.close_modal();
                     return Ok(());
                 }
                 if action == Action::Add && app.selected_is_directory() {
                     app.log(
-                        "ディレクトリの一括addは無効です。展開して必要なファイルを選択してください"
+                        "Adding a whole directory is disabled. Expand it and select only required files."
                             .to_string(),
                     );
                     app.close_modal();
@@ -519,7 +519,7 @@ fn handle_confirm_key(
                             execute_request = Some(request.clone());
                         } else {
                             pending_log = Some(format!(
-                                "確認文字列が不一致です。required={} input={}",
+                                "Confirmation phrase mismatch. required={} input={}",
                                 phrase, typed
                             ));
                         }
@@ -578,7 +578,7 @@ fn handle_input_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Enter => match kind {
                 InputKind::ChattrAttrs => {
                     if value.trim().is_empty() {
-                        app.log("chattr attributesを入力してください".to_string());
+                        app.log("Please enter chattr attributes".to_string());
                     } else {
                         let mut req = request.clone();
                         req.chattr_attrs = Some(value.trim().to_string());
@@ -680,13 +680,13 @@ fn load_file_preview(path: &Path) -> Result<String> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("preview target metadata failed: {}", path.display()))?;
     if metadata.file_type().is_dir() {
-        return Ok("ディレクトリです。展開して中のファイルを選択してください。".to_string());
+        return Ok("This is a directory. Expand it and select a file inside.".to_string());
     }
 
     let bytes = fs::read(path).with_context(|| format!("failed to read: {}", path.display()))?;
     let sample_len = bytes.len().min(PREVIEW_BINARY_SAMPLE_BYTES);
     if bytes[..sample_len].contains(&0) {
-        return Ok("バイナリファイルのためプレビューできません。".to_string());
+        return Ok("Cannot preview binary file.".to_string());
     }
 
     let limit = bytes.len().min(PREVIEW_MAX_BYTES);
@@ -791,7 +791,7 @@ mod tests {
             std::env::temp_dir().join(format!("chezmoi_tui_preview_bin_{}", std::process::id()));
         std::fs::write(&file, [0, 159, 146, 150]).expect("write binary");
         let got = load_file_preview(&file).expect("preview");
-        assert!(got.contains("バイナリファイル"));
+        assert!(got.contains("binary file"));
         let _ = std::fs::remove_file(file);
     }
 

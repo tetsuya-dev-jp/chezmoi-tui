@@ -84,7 +84,7 @@ impl ChezmoiClient for ShellChezmoiClient {
 
         let result = self.run_raw(&args)?;
         if result.exit_code != 0 {
-            // diffは差分がある場合でも0。ここが非0なら実行エラーとみなす。
+            // chezmoi diff returns 0 even when differences exist; non-zero means execution error.
             bail!("chezmoi diff failed: {}", result.stderr.trim());
         }
 

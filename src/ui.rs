@@ -73,8 +73,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
             vec![Line::from("")]
         } else {
             vec![
-                Line::from("詳細が未ロードです。"),
-                Line::from("Enter / d: diff, v: ファイル本文プレビュー"),
+                Line::from("Detail is not loaded yet."),
+                Line::from("Enter / d: diff, v: file preview"),
             ]
         }
     } else if app.detail_kind == DetailKind::Diff {
@@ -278,15 +278,17 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
             match step {
                 ConfirmStep::Primary => {
-                    lines.push(Line::from("Enter: 実行  Esc: キャンセル"));
+                    lines.push(Line::from("Enter: Run  Esc: Cancel"));
                     if request.action.is_dangerous() {
                         lines.push(Line::from(
-                            "危険操作のため、次のステップで確認文字列が必要です。",
+                            "This is a dangerous action. A confirmation phrase is required next.",
                         ));
                     }
                 }
                 ConfirmStep::DangerPhrase => {
-                    lines.push(Line::from("確認文字列を入力して Enter で実行、Escで中止"));
+                    lines.push(Line::from(
+                        "Type the confirmation phrase and press Enter to run, Esc to cancel.",
+                    ));
                     if let Some(phrase) = request.action.confirm_phrase() {
                         lines.push(
                             Line::from(format!("required: {}", phrase)).style(
@@ -321,7 +323,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             frame.render_widget(Clear, area);
 
             let prompt = match kind {
-                InputKind::ChattrAttrs => "chattr attributes (例: private,template)",
+                InputKind::ChattrAttrs => "chattr attributes (e.g. private,template)",
             };
 
             let lines = vec![
@@ -337,7 +339,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from(prompt),
                 Line::from(format!("> {}", value)).style(Style::default().fg(Color::Yellow)),
-                Line::from("Enter: 確定  Esc: キャンセル"),
+                Line::from("Enter: Confirm  Esc: Cancel"),
             ];
 
             let p = Paragraph::new(lines)
@@ -354,35 +356,213 @@ fn draw_modal(frame: &mut Frame, app: &App) {
 }
 
 fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
-    diff.lines()
-        .map(|line| {
-            if line.starts_with("+++") || line.starts_with("---") {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Cyan),
-                ))
-            } else if line.starts_with("@@") {
-                Line::from(Span::styled(
-                    line.to_string(),
+    if diff.trim().is_empty() {
+        return vec![Line::from(Span::styled(
+            "No diff available.",
+            Style::default().fg(Color::DarkGray),
+        ))];
+    }
+
+    let mut out = Vec::new();
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    let mut in_hunk = false;
+
+    for raw in diff.lines() {
+        if raw.starts_with("diff --git ") {
+            in_hunk = false;
+            out.push(Line::from(vec![
+                Span::styled(
+                    " FILE ",
                     Style::default()
-                        .fg(Color::Yellow)
+                        .bg(Color::Blue)
+                        .fg(Color::Black)
                         .add_modifier(Modifier::BOLD),
-                ))
-            } else if line.starts_with('+') {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Green),
-                ))
-            } else if line.starts_with('-') {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Red),
-                ))
-            } else {
-                Line::from(line.to_string())
+                ),
+                Span::raw(" "),
+                Span::styled(raw.to_string(), Style::default().fg(Color::Cyan)),
+            ]));
+            continue;
+        }
+
+        if raw.starts_with("index ")
+            || raw.starts_with("new file mode")
+            || raw.starts_with("deleted file mode")
+            || raw.starts_with("similarity index")
+            || raw.starts_with("rename from ")
+            || raw.starts_with("rename to ")
+        {
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::DarkGray),
+            )));
+            continue;
+        }
+
+        if raw.starts_with("--- ") {
+            out.push(Line::from(vec![
+                Span::styled(
+                    " OLD ",
+                    Style::default()
+                        .bg(Color::Red)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(raw.to_string(), Style::default().fg(Color::Red)),
+            ]));
+            continue;
+        }
+
+        if raw.starts_with("+++ ") {
+            out.push(Line::from(vec![
+                Span::styled(
+                    " NEW ",
+                    Style::default()
+                        .bg(Color::Green)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(raw.to_string(), Style::default().fg(Color::Green)),
+            ]));
+            continue;
+        }
+
+        if raw.starts_with("@@") {
+            if let Some((old_start, new_start)) = parse_hunk_header(raw) {
+                old_line = old_start;
+                new_line = new_start;
+                in_hunk = true;
             }
-        })
-        .collect()
+            out.push(Line::from(vec![
+                Span::styled(
+                    " HUNK ",
+                    Style::default()
+                        .bg(Color::Yellow)
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(raw.to_string(), Style::default().fg(Color::Yellow)),
+            ]));
+            continue;
+        }
+
+        if raw.starts_with("\\ No newline at end of file") {
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+            continue;
+        }
+
+        if in_hunk {
+            if let Some(body) = raw.strip_prefix('+') {
+                out.push(render_diff_code_line(
+                    None,
+                    Some(new_line),
+                    '+',
+                    body,
+                    Style::default().fg(Color::Green).bg(Color::Rgb(12, 32, 12)),
+                ));
+                new_line += 1;
+                continue;
+            }
+
+            if let Some(body) = raw.strip_prefix('-') {
+                out.push(render_diff_code_line(
+                    Some(old_line),
+                    None,
+                    '-',
+                    body,
+                    Style::default().fg(Color::Red).bg(Color::Rgb(40, 14, 14)),
+                ));
+                old_line += 1;
+                continue;
+            }
+
+            if let Some(body) = raw.strip_prefix(' ') {
+                out.push(render_diff_code_line(
+                    Some(old_line),
+                    Some(new_line),
+                    ' ',
+                    body,
+                    Style::default().fg(Color::Gray),
+                ));
+                old_line += 1;
+                new_line += 1;
+                continue;
+            }
+        }
+
+        out.push(Line::from(raw.to_string()));
+    }
+
+    out
+}
+
+fn parse_hunk_header(header: &str) -> Option<(usize, usize)> {
+    let mut parts = header.split_whitespace();
+    let at1 = parts.next()?;
+    let old = parts.next()?;
+    let new = parts.next()?;
+    let at2 = parts.next()?;
+
+    if at1 != "@@" || at2 != "@@" {
+        return None;
+    }
+
+    let old_start = old
+        .strip_prefix('-')?
+        .split(',')
+        .next()?
+        .parse::<usize>()
+        .ok()?;
+    let new_start = new
+        .strip_prefix('+')?
+        .split(',')
+        .next()?
+        .parse::<usize>()
+        .ok()?;
+
+    Some((old_start, new_start))
+}
+
+fn render_diff_code_line(
+    old: Option<usize>,
+    new: Option<usize>,
+    marker: char,
+    body: &str,
+    body_style: Style,
+) -> Line<'static> {
+    let old_num = old.map_or_else(|| String::from(""), |n| n.to_string());
+    let new_num = new.map_or_else(|| String::from(""), |n| n.to_string());
+
+    let marker_style = match marker {
+        '+' => Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+        '-' => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        _ => Style::default().fg(Color::DarkGray),
+    };
+
+    Line::from(vec![
+        Span::styled(
+            format!("{:>5}", old_num),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:>5}", new_num),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(" | "),
+        Span::styled(format!("{marker} "), marker_style),
+        Span::styled(body.to_string(), body_style),
+    ])
 }
 
 fn colorized_preview_lines(path: Option<&Path>, content: &str) -> Vec<Line<'static>> {
@@ -641,4 +821,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hunk_header;
+
+    #[test]
+    fn parse_hunk_header_extracts_line_numbers() {
+        let parsed = parse_hunk_header("@@ -12,7 +30,9 @@ fn main()");
+        assert_eq!(parsed, Some((12, 30)));
+    }
+
+    #[test]
+    fn parse_hunk_header_rejects_invalid_header() {
+        let parsed = parse_hunk_header("@ -12 +30 @");
+        assert_eq!(parsed, None);
+    }
 }

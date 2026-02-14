@@ -1,62 +1,62 @@
 # chezmoi-tui
 
-`chezmoi`の状態を視覚的に把握し、主要操作を安全に実行するためのRust製TUIです。
+A Rust TUI to visualize `chezmoi` state and run major operations safely.
 
-## 対応状況 (MVP)
+## Current Features (MVP)
 
-- 3ペインUI
-  - 左: 一覧 (`status` / `managed` / `unmanaged`)
-  - 右上: diff/ファイル本文プレビュー
-  - 右下: 実行ログ
-  - `unmanaged` はディレクトリ展開対応（必要なファイルだけ選択可能）
-- 操作メニュー
-  - `apply`, `update`, `re-add`, `merge`, `merge-all`
-  - `add`, `edit`, `forget`, `chattr`
-  - `destroy`, `purge`
-- 安全機構
-  - 全操作で確認ダイアログ
-  - `destroy`/`purge`は確認文字列入力を追加要求
-- 設定保存
-  - `~/.config/chezmoi-tui/config.toml` (XDG)
+- 3-pane UI
+- Left: list (`status` / `managed` / `unmanaged`)
+- Top-right: diff / file content preview
+- Bottom-right: execution log
+- `unmanaged` supports directory expansion so you can select only required files
+- Action menu
+- `apply`, `update`, `re-add`, `merge`, `merge-all`
+- `add`, `edit`, `forget`, `chattr`
+- `destroy`, `purge`
+- Safety mechanisms
+- Confirmation dialog for all actions
+- Additional confirmation phrase required for `destroy` / `purge`
+- Config persistence
+- `~/.config/chezmoi-tui/config.toml` (XDG)
 
-## 必要条件
+## Requirements
 
 - Rust 1.93+
-- `chezmoi` がPATH上に存在
+- `chezmoi` available in `PATH`
 - macOS / Linux
 
-## 実行
+## Run
 
 ```bash
 cargo run
 ```
 
-## キーバインド
+## Keybindings
 
-- `1` / `2` / `3`: 一覧切替 (`status`, `managed`, `unmanaged`)
-- `j` / `k` or `↑` / `↓`: 選択移動
-- `l` / `→`: ディレクトリ展開 (`unmanaged`ビュー)
-- `h` / `←`: ディレクトリ折りたたみ (`unmanaged`ビュー)
-- `Tab`: ペインフォーカス移動
-- `Enter` or `d`: 選択対象のdiff取得
-- `v`: 選択対象のファイル本文プレビュー（read-only）
-  - 拡張子ベースでシンタックスハイライト表示
-- `unmanaged`ビューではファイル選択時に自動プレビュー
-  - ディレクトリ選択時は詳細ペインを空表示
-- `j` / `k`: `Detail`フォーカス時はプレビュー/差分をスクロール
-- `PgUp` / `PgDn`, `Ctrl+u` / `Ctrl+d`: `Detail`フォーカス時に大きくスクロール
-- `a`: アクションメニュー
-- `e`: `edit`確認ダイアログ
-- `r`: 一覧更新
-- `q` or `Ctrl+C`: 終了
+- `1` / `2` / `3`: switch list view (`status`, `managed`, `unmanaged`)
+- `j` / `k` or `↑` / `↓`: move selection
+- `l` / `→`: expand directory (`unmanaged` view)
+- `h` / `←`: collapse directory (`unmanaged` view)
+- `Tab`: move pane focus
+- `Enter` or `d`: load diff for selected target
+- `v`: preview selected file content (read-only)
+- Extension-based syntax highlighting is applied in preview
+- In `unmanaged` view, preview is loaded automatically when a file is selected
+- When a directory is selected, detail pane stays empty
+- `j` / `k`: scroll preview/diff when `Detail` pane is focused
+- `PgUp` / `PgDn`, `Ctrl+u` / `Ctrl+d`: larger scroll in `Detail` pane
+- `a`: open action menu
+- `e`: open `edit` confirmation dialog
+- `r`: refresh lists
+- `q` or `Ctrl+C`: quit
 
-## 実装メモ
+## Implementation Notes
 
-- `managed --format json`が環境によってプレーンテキスト出力になるケースを考慮し、JSON/行パースの両対応を実装しています。
-- `status`は2カラム記号を内部モデルへ変換して表示します。
-- `add`でディレクトリを直接選択した場合は事故防止のため実行せず、展開して個別ファイルを選ぶ運用にしています。
+- `managed --format json` can return plain text depending on environment, so both JSON and line-based parsing are supported.
+- `status` symbols are mapped into internal model entries.
+- Direct `add` on a directory is intentionally blocked to avoid accidents. Expand the directory and select files explicitly.
 
-## テスト
+## Tests
 
 ```bash
 cargo test
