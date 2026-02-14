@@ -106,11 +106,9 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = app
         .logs
         .iter()
-        .rev()
-        .take(200)
-        .rev()
         .map(|line| Line::from(line.as_str()))
         .collect();
+    let scroll = log_scroll_offset(lines.len(), area.height);
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -119,9 +117,17 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
+}
+
+fn log_scroll_offset(total_lines: usize, area_height: u16) -> u16 {
+    let visible_rows = area_height.saturating_sub(2) as usize;
+    total_lines
+        .saturating_sub(visible_rows.max(1))
+        .min(u16::MAX as usize) as u16
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -825,7 +831,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_hunk_header;
+    use super::{log_scroll_offset, parse_hunk_header};
 
     #[test]
     fn parse_hunk_header_extracts_line_numbers() {
@@ -837,5 +843,11 @@ mod tests {
     fn parse_hunk_header_rejects_invalid_header() {
         let parsed = parse_hunk_header("@ -12 +30 @");
         assert_eq!(parsed, None);
+    }
+
+    #[test]
+    fn log_scroll_offset_keeps_latest_visible() {
+        assert_eq!(log_scroll_offset(10, 6), 6);
+        assert_eq!(log_scroll_offset(3, 10), 0);
     }
 }
