@@ -385,7 +385,7 @@ fn handle_key_without_modal(
                 app,
                 task_tx,
                 BackendTask::LoadDiff {
-                    target: app.selected_path(),
+                    target: app.selected_absolute_path(),
                 },
             )?;
         }
@@ -394,7 +394,7 @@ fn handle_key_without_modal(
                 app,
                 task_tx,
                 BackendTask::LoadDiff {
-                    target: app.selected_path(),
+                    target: app.selected_absolute_path(),
                 },
             )?;
         }
@@ -408,7 +408,7 @@ fn handle_key_without_modal(
         KeyCode::Char('e') => {
             let request = ActionRequest {
                 action: Action::Edit,
-                target: app.selected_path(),
+                target: app.selected_absolute_path(),
                 chattr_attrs: None,
             };
             if request.target.is_none() {
@@ -444,7 +444,7 @@ fn handle_action_menu_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if let Some(action) = App::action_by_index(*selected) {
                 let request = ActionRequest {
                     action,
-                    target: app.selected_path(),
+                    target: app.selected_absolute_path(),
                     chattr_attrs: None,
                 };
 

@@ -524,6 +524,28 @@ mod tests {
     }
 
     #[test]
+    fn selected_absolute_path_uses_destination_dir() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_abs_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let mut app = App::new(AppConfig::default());
+        app.destination_dir = temp_root.clone();
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.rebuild_visible_entries();
+
+        assert_eq!(app.selected_absolute_path(), Some(temp_root.join(".zshrc")));
+    }
+
+    #[test]
     fn selection_is_bounded() {
         let mut app = App::new(AppConfig::default());
         app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
