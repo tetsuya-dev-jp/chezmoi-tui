@@ -153,6 +153,24 @@ pub struct ActionRequest {
     pub chattr_attrs: Option<String>,
 }
 
+impl ActionRequest {
+    pub fn requires_strict_confirmation(&self) -> bool {
+        matches!(self.action, Action::Destroy | Action::Purge)
+    }
+
+    pub fn confirmation_phrase(&self) -> Option<String> {
+        let base = self.action.confirm_phrase()?;
+        match self.action {
+            Action::Destroy => self
+                .target
+                .as_ref()
+                .map(|target| format!("{base} {}", target.display())),
+            Action::Purge => Some(format!("{base} ALL")),
+            _ => Some(base.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandResult {
     pub exit_code: i32,
@@ -175,5 +193,33 @@ impl ListView {
             ListView::Managed => "Managed",
             ListView::Unmanaged => "Unmanaged",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_request_confirmation_phrase_includes_target_for_destroy() {
+        let req = ActionRequest {
+            action: Action::Destroy,
+            target: Some(PathBuf::from("/tmp/demo.txt")),
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            req.confirmation_phrase(),
+            Some("DESTROY /tmp/demo.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn action_request_confirmation_phrase_is_all_for_purge() {
+        let req = ActionRequest {
+            action: Action::Purge,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert_eq!(req.confirmation_phrase(), Some("PURGE ALL".to_string()));
     }
 }

@@ -461,8 +461,15 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
             match step {
                 ConfirmStep::Primary => {
-                    lines.push(Line::from("Enter: Run  Esc: Cancel"));
-                    if request.action.is_dangerous() {
+                    if request.requires_strict_confirmation() {
+                        lines.push(Line::from("Enter: Continue  Esc: Cancel"));
+                        lines.push(Line::from(
+                            "This is a dangerous action. A confirmation phrase is always required.",
+                        ));
+                    } else {
+                        lines.push(Line::from("Enter: Run  Esc: Cancel"));
+                    }
+                    if request.action.is_dangerous() && !request.requires_strict_confirmation() {
                         lines.push(Line::from(
                             "This is a dangerous action. A confirmation phrase is required next.",
                         ));
@@ -472,7 +479,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     lines.push(Line::from(
                         "Type the confirmation phrase and press Enter to run, Esc to cancel.",
                     ));
-                    if let Some(phrase) = request.action.confirm_phrase() {
+                    if let Some(phrase) = request.confirmation_phrase() {
                         lines.push(
                             Line::from(format!("required: {}", phrase)).style(
                                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

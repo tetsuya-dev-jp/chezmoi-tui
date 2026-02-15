@@ -591,15 +591,18 @@ fn handle_confirm_key(
             }
             KeyCode::Enter => match step {
                 ConfirmStep::Primary => {
-                    if request.action.is_dangerous() && app.config.require_two_step_confirmation {
+                    if request.requires_strict_confirmation()
+                        || (request.action.is_dangerous()
+                            && app.config.require_two_step_confirmation)
+                    {
                         *step = ConfirmStep::DangerPhrase;
                     } else {
                         execute_request = Some(request.clone());
                     }
                 }
                 ConfirmStep::DangerPhrase => {
-                    if let Some(phrase) = request.action.confirm_phrase() {
-                        if typed == phrase {
+                    if let Some(phrase) = request.confirmation_phrase() {
+                        if typed.as_str() == phrase {
                             execute_request = Some(request.clone());
                         } else {
                             pending_log = Some(format!(
@@ -913,6 +916,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn flatten_error_formats_all_cases() {
@@ -969,5 +973,95 @@ mod tests {
 
         handle_help_key(&mut app, key).expect("handle help key");
         assert!(matches!(app.modal, ModalState::None));
+    }
+
+    #[test]
+    fn destroy_requires_phrase_even_when_two_step_config_is_disabled() {
+        let mut app = App::new(AppConfig::default());
+        app.config.require_two_step_confirmation = false;
+        app.modal = ModalState::Confirm {
+            request: ActionRequest {
+                action: Action::Destroy,
+                target: Some(PathBuf::from("/tmp/target.txt")),
+                chattr_attrs: None,
+            },
+            step: ConfirmStep::Primary,
+            typed: String::new(),
+        };
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_confirm_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle confirm");
+
+        assert!(matches!(
+            app.modal,
+            ModalState::Confirm {
+                step: ConfirmStep::DangerPhrase,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn destroy_phrase_must_include_target() {
+        let mut app = App::new(AppConfig::default());
+        app.modal = ModalState::Confirm {
+            request: ActionRequest {
+                action: Action::Destroy,
+                target: Some(PathBuf::from("/tmp/target.txt")),
+                chattr_attrs: None,
+            },
+            step: ConfirmStep::DangerPhrase,
+            typed: "DESTROY".to_string(),
+        };
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_confirm_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle confirm");
+
+        assert!(matches!(app.modal, ModalState::Confirm { .. }));
+        assert!(task_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn destroy_runs_only_after_full_phrase_match() {
+        let mut app = App::new(AppConfig::default());
+        app.modal = ModalState::Confirm {
+            request: ActionRequest {
+                action: Action::Destroy,
+                target: Some(PathBuf::from("/tmp/target.txt")),
+                chattr_attrs: None,
+            },
+            step: ConfirmStep::DangerPhrase,
+            typed: "DESTROY /tmp/target.txt".to_string(),
+        };
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_confirm_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle confirm");
+
+        assert!(matches!(app.modal, ModalState::None));
+        let task = task_rx.try_recv().expect("task dispatched");
+        assert!(matches!(
+            task,
+            BackendTask::RunAction {
+                request: ActionRequest {
+                    action: Action::Destroy,
+                    ..
+                }
+            }
+        ));
     }
 }
