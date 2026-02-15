@@ -639,6 +639,23 @@ impl App {
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
+        if self.view == ListView::Status {
+            let mut label = String::new();
+            if let Some(status) = self.status_entries.iter().find(|s| s.path == entry.path) {
+                label.push(status.actual_vs_state.as_symbol());
+                label.push(status.actual_vs_target.as_symbol());
+            } else {
+                label.push(' ');
+                label.push(' ');
+            }
+            label.push(' ');
+            label.push_str(&entry.path.display().to_string());
+            if entry.is_dir {
+                label.push('/');
+            }
+            return label;
+        }
+
         let mut label = String::new();
         label.push_str(&"  ".repeat(entry.depth));
 
@@ -730,6 +747,19 @@ mod tests {
         }];
         app.rebuild_visible_entries();
         assert_eq!(app.selected_path(), Some(PathBuf::from(".zshrc")));
+    }
+
+    #[test]
+    fn status_items_include_change_symbols() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::Modified,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.rebuild_visible_entries();
+        let items = app.current_items();
+        assert_eq!(items[0], "MM .zshrc");
     }
 
     #[test]
