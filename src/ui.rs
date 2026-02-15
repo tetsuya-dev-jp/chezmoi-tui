@@ -165,22 +165,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     ));
 
     let mut bottom = Vec::new();
-    bottom.extend(hint("1/2/3", "View", false));
-    bottom.extend(hint("Tab", "Focus", false));
-
-    if app.focus == PaneFocus::Detail || app.focus == PaneFocus::Log {
-        bottom.extend(hint("j/k ↑/↓", "Scroll", true));
-        bottom.extend(hint("PgUp/PgDn", "Page", true));
-        bottom.extend(hint("Ctrl+u/d", "HalfPage", true));
-    } else {
-        bottom.extend(hint("j/k ↑/↓", "Move", true));
-        bottom.extend(hint("h/l ←/→", "Fold", false));
+    for spec in status_bar_hint_specs(app) {
+        bottom.extend(hint(spec.key, spec.label, spec.emphasized));
     }
-
-    bottom.extend(hint("d", "Diff", false));
-    bottom.extend(hint("v", "Preview", false));
-    bottom.extend(hint("a", "Action", false));
-    bottom.extend(hint("q", "Quit", false));
 
     let top_paragraph = Paragraph::new(Line::from(top))
         .alignment(Alignment::Left)
@@ -203,6 +190,96 @@ fn focus_name(focus: PaneFocus) -> &'static str {
 
 fn badge<T: Into<String>>(text: T, style: Style) -> Vec<Span<'static>> {
     vec![Span::styled(text.into(), style)]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HintSpec {
+    key: &'static str,
+    label: &'static str,
+    emphasized: bool,
+}
+
+fn status_bar_hint_specs(app: &App) -> Vec<HintSpec> {
+    let mut specs = vec![
+        HintSpec {
+            key: "1/2/3",
+            label: "View",
+            emphasized: false,
+        },
+        HintSpec {
+            key: "Tab",
+            label: "Focus",
+            emphasized: false,
+        },
+    ];
+
+    match app.focus {
+        PaneFocus::Detail | PaneFocus::Log => {
+            specs.extend([
+                HintSpec {
+                    key: "j/k ↑/↓",
+                    label: "Scroll",
+                    emphasized: true,
+                },
+                HintSpec {
+                    key: "PgUp/PgDn",
+                    label: "Page",
+                    emphasized: true,
+                },
+                HintSpec {
+                    key: "Ctrl+u/d",
+                    label: "HalfPage",
+                    emphasized: true,
+                },
+            ]);
+        }
+        PaneFocus::List => {
+            specs.push(HintSpec {
+                key: "j/k ↑/↓",
+                label: "Move",
+                emphasized: true,
+            });
+            if matches!(app.view, ListView::Managed | ListView::Unmanaged) {
+                specs.push(HintSpec {
+                    key: "h/l ←/→",
+                    label: "Fold",
+                    emphasized: false,
+                });
+            }
+            if app.view != ListView::Unmanaged {
+                specs.push(HintSpec {
+                    key: "d",
+                    label: "Diff",
+                    emphasized: false,
+                });
+            }
+            specs.push(HintSpec {
+                key: "v",
+                label: "Preview",
+                emphasized: false,
+            });
+        }
+    }
+
+    specs.extend([
+        HintSpec {
+            key: "a",
+            label: "Action",
+            emphasized: false,
+        },
+        HintSpec {
+            key: "r",
+            label: "Refresh",
+            emphasized: false,
+        },
+        HintSpec {
+            key: "q",
+            label: "Quit",
+            emphasized: false,
+        },
+    ]);
+
+    specs
 }
 
 fn hint(key: &str, label: &str, emphasized: bool) -> Vec<Span<'static>> {
@@ -993,9 +1070,12 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::{
         ActionMenuRow, ActionMenuSection, action_menu_text, build_action_menu_rows,
-        log_scroll_offset, parse_hunk_header,
+        log_scroll_offset, parse_hunk_header, status_bar_hint_specs,
     };
+    use crate::app::{App, PaneFocus};
+    use crate::config::AppConfig;
     use crate::domain::Action;
+    use crate::domain::ListView;
 
     #[test]
     fn parse_hunk_header_extracts_line_numbers() {
@@ -1056,5 +1136,36 @@ mod tests {
         assert!(rows.contains(&ActionMenuRow::Action(Action::Apply)));
         assert!(rows.contains(&ActionMenuRow::Action(Action::Edit)));
         assert!(rows.contains(&ActionMenuRow::Action(Action::Purge)));
+    }
+
+    #[test]
+    fn status_bar_hints_hide_diff_in_unmanaged_list_view() {
+        let mut app = App::new(AppConfig::default());
+        app.focus = PaneFocus::List;
+        app.view = ListView::Unmanaged;
+
+        let specs = status_bar_hint_specs(&app);
+        let labels: Vec<&str> = specs.iter().map(|s| s.label).collect();
+
+        assert!(!labels.contains(&"Diff"));
+        assert!(labels.contains(&"Fold"));
+        assert!(labels.contains(&"Preview"));
+    }
+
+    #[test]
+    fn status_bar_hints_show_scroll_only_for_detail_focus() {
+        let mut app = App::new(AppConfig::default());
+        app.focus = PaneFocus::Detail;
+        app.view = ListView::Managed;
+
+        let specs = status_bar_hint_specs(&app);
+        let labels: Vec<&str> = specs.iter().map(|s| s.label).collect();
+
+        assert!(labels.contains(&"Scroll"));
+        assert!(labels.contains(&"Page"));
+        assert!(labels.contains(&"HalfPage"));
+        assert!(!labels.contains(&"Diff"));
+        assert!(!labels.contains(&"Preview"));
+        assert!(!labels.contains(&"Fold"));
     }
 }
