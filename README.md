@@ -92,6 +92,8 @@ cargo run
 - `destroy`
 - `purge`
 
+The action menu is view-aware and only shows relevant commands for each view.
+
 ## Development
 
 ```bash

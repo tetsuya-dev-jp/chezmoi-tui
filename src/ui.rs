@@ -259,7 +259,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false });
             frame.render_widget(filter_widget, sections[0]);
 
-            let indices = App::action_menu_indices(filter);
+            let indices = App::action_menu_indices(app.view, filter);
             let items: Vec<ListItem> = if indices.is_empty() {
                 vec![ListItem::new("No actions match the current filter")]
             } else {

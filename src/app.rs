@@ -347,19 +347,53 @@ impl App {
         Action::ALL.get(index).copied()
     }
 
-    pub fn action_menu_indices(filter: &str) -> Vec<usize> {
+    pub fn action_menu_indices(view: ListView, filter: &str) -> Vec<usize> {
         let query = filter.trim().to_ascii_lowercase();
         let mut matches: Vec<(usize, String)> = Action::ALL
             .iter()
             .enumerate()
             .filter(|(_, action)| {
-                query.is_empty() || action.label().to_ascii_lowercase().contains(&query)
+                Self::action_visible_in_view(view, **action)
+                    && (query.is_empty() || action.label().to_ascii_lowercase().contains(&query))
             })
             .map(|(index, action)| (index, action.label().to_ascii_lowercase()))
             .collect();
 
         matches.sort_by(|a, b| a.1.cmp(&b.1));
         matches.into_iter().map(|(index, _)| index).collect()
+    }
+
+    fn action_visible_in_view(view: ListView, action: Action) -> bool {
+        match view {
+            ListView::Status => matches!(
+                action,
+                Action::Apply
+                    | Action::Update
+                    | Action::ReAdd
+                    | Action::Merge
+                    | Action::MergeAll
+                    | Action::Edit
+                    | Action::Forget
+                    | Action::Chattr
+                    | Action::Purge
+            ),
+            ListView::Managed => matches!(
+                action,
+                Action::Apply
+                    | Action::Update
+                    | Action::Edit
+                    | Action::Forget
+                    | Action::Chattr
+                    | Action::Destroy
+                    | Action::Purge
+            ),
+            ListView::Unmanaged => {
+                matches!(
+                    action,
+                    Action::Add | Action::Apply | Action::Update | Action::Purge
+                )
+            }
+        }
     }
 
     pub fn scroll_detail_up(&mut self, lines: usize) -> bool {
@@ -731,7 +765,7 @@ mod tests {
 
     #[test]
     fn action_menu_indices_filters_by_label_only() {
-        let merge = App::action_menu_indices("merge");
+        let merge = App::action_menu_indices(ListView::Status, "merge");
         assert!(
             merge
                 .iter()
@@ -744,19 +778,45 @@ mod tests {
         );
         assert!(!merge.is_empty());
 
-        let attrs = App::action_menu_indices("chattr");
+        let attrs = App::action_menu_indices(ListView::Status, "chattr");
         assert_eq!(attrs.len(), 1);
         assert_eq!(App::action_by_index(attrs[0]), Some(Action::Chattr));
 
-        let by_description_only = App::action_menu_indices("attributes");
+        let by_description_only = App::action_menu_indices(ListView::Status, "attributes");
         assert!(by_description_only.is_empty());
     }
 
     #[test]
     fn action_menu_indices_are_sorted_alphabetically_by_label() {
-        let got = App::action_menu_indices("ad");
+        let got = App::action_menu_indices(ListView::Unmanaged, "ad");
         assert_eq!(App::action_by_index(got[0]), Some(Action::Add));
-        assert_eq!(App::action_by_index(got[1]), Some(Action::ReAdd));
+    }
+
+    #[test]
+    fn action_menu_indices_are_filtered_by_view() {
+        let unmanaged = App::action_menu_indices(ListView::Unmanaged, "");
+        assert!(
+            unmanaged
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::Add))
+        );
+        assert!(
+            !unmanaged
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::Edit))
+        );
+
+        let managed = App::action_menu_indices(ListView::Managed, "");
+        assert!(
+            managed
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::Destroy))
+        );
+        assert!(
+            !managed
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::Add))
+        );
     }
 
     #[test]

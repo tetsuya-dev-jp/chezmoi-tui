@@ -439,6 +439,7 @@ fn handle_action_menu_key(
 ) -> Result<()> {
     let mut selected_action: Option<Action> = None;
     let mut no_action_match = false;
+    let view = app.view;
 
     let ModalState::ActionMenu { selected, filter } = &mut app.modal else {
         return Ok(());
@@ -447,13 +448,13 @@ fn handle_action_menu_key(
     match key.code {
         KeyCode::Esc => app.close_modal(),
         KeyCode::Down => {
-            let indices = App::action_menu_indices(filter);
+            let indices = App::action_menu_indices(view, filter);
             if !indices.is_empty() {
                 *selected = (*selected + 1) % indices.len();
             }
         }
         KeyCode::Up => {
-            let indices = App::action_menu_indices(filter);
+            let indices = App::action_menu_indices(view, filter);
             if !indices.is_empty() {
                 if *selected == 0 {
                     *selected = indices.len() - 1;
@@ -475,7 +476,7 @@ fn handle_action_menu_key(
             *selected = 0;
         }
         KeyCode::Enter => {
-            let indices = App::action_menu_indices(filter);
+            let indices = App::action_menu_indices(view, filter);
             if let Some(index) = indices.get(*selected).copied() {
                 selected_action = App::action_by_index(index);
             } else {
