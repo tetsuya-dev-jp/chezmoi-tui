@@ -260,14 +260,30 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             frame.render_widget(filter_widget, sections[0]);
 
             let indices = App::action_menu_indices(app.view, filter);
-            let items: Vec<ListItem> = if indices.is_empty() {
-                vec![ListItem::new("No actions match the current filter")]
+            let actions: Vec<Action> = indices
+                .iter()
+                .filter_map(|index| App::action_by_index(*index))
+                .collect();
+
+            let (items, selectable_rows): (Vec<ListItem>, Vec<usize>) = if actions.is_empty() {
+                (
+                    vec![ListItem::new("No actions match the current filter")],
+                    Vec::new(),
+                )
             } else {
-                indices
-                    .iter()
-                    .filter_map(|index| App::action_by_index(*index))
-                    .map(action_menu_item)
-                    .collect()
+                let rows = build_action_menu_rows(&actions);
+                let mut selectable = Vec::new();
+                let items = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row_index, row)| {
+                        if matches!(row, ActionMenuRow::Action(_)) {
+                            selectable.push(row_index);
+                        }
+                        action_menu_row_item(row)
+                    })
+                    .collect();
+                (items, selectable)
             };
 
             let list = List::new(items)
@@ -287,7 +303,9 @@ fn draw_modal(frame: &mut Frame, app: &App) {
 
             let mut state = ListState::default();
             if !indices.is_empty() {
-                state.select(Some((*selected).min(indices.len().saturating_sub(1))));
+                let action_index = (*selected).min(indices.len().saturating_sub(1));
+                let row_index = selectable_rows.get(action_index).copied().unwrap_or(0);
+                state.select(Some(row_index));
             }
             frame.render_stateful_widget(list, sections[1], &mut state);
         }
@@ -399,15 +417,83 @@ fn draw_modal(frame: &mut Frame, app: &App) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionMenuSection {
+    Global,
+    SelectedItem,
+    Danger,
+}
+
+impl ActionMenuSection {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Global => "Global",
+            Self::SelectedItem => "Selected item",
+            Self::Danger => "Danger",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionMenuRow {
+    Header(ActionMenuSection),
+    Spacer,
+    Action(Action),
+}
+
+fn action_menu_section(action: Action) -> ActionMenuSection {
+    if action.is_dangerous() {
+        ActionMenuSection::Danger
+    } else if action.needs_target() {
+        ActionMenuSection::SelectedItem
+    } else {
+        ActionMenuSection::Global
+    }
+}
+
+fn build_action_menu_rows(actions: &[Action]) -> Vec<ActionMenuRow> {
+    let mut global = Vec::new();
+    let mut selected = Vec::new();
+    let mut danger = Vec::new();
+
+    for action in actions {
+        match action_menu_section(*action) {
+            ActionMenuSection::Global => global.push(*action),
+            ActionMenuSection::SelectedItem => selected.push(*action),
+            ActionMenuSection::Danger => danger.push(*action),
+        }
+    }
+
+    let sections = [
+        (ActionMenuSection::Global, global),
+        (ActionMenuSection::SelectedItem, selected),
+        (ActionMenuSection::Danger, danger),
+    ];
+
+    let mut rows = Vec::new();
+    for (section, actions) in sections {
+        if actions.is_empty() {
+            continue;
+        }
+        if !rows.is_empty() {
+            rows.push(ActionMenuRow::Spacer);
+        }
+        rows.push(ActionMenuRow::Header(section));
+        rows.extend(actions.into_iter().map(ActionMenuRow::Action));
+    }
+
+    rows
+}
+
 fn action_menu_text(action: Action) -> String {
     if action.is_dangerous() {
         format!(
-            "{:<10} !! {} [danger]",
+            "  {:<10} !! {} [danger]",
             action.label(),
             action.description()
         )
     } else {
-        format!("{:<10}    {}", action.label(), action.description())
+        format!("  {:<10}    {}", action.label(), action.description())
     }
 }
 
@@ -419,6 +505,19 @@ fn action_menu_item(action: Action) -> ListItem<'static> {
         Style::default().fg(Color::Gray)
     };
     ListItem::new(Line::styled(text, style))
+}
+
+fn action_menu_row_item(row: ActionMenuRow) -> ListItem<'static> {
+    match row {
+        ActionMenuRow::Header(section) => ListItem::new(Line::styled(
+            format!(" {} ", section.title()),
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+        )),
+        ActionMenuRow::Spacer => ListItem::new(Line::from("")),
+        ActionMenuRow::Action(action) => action_menu_item(action),
+    }
 }
 
 fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
@@ -891,7 +990,10 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{action_menu_text, log_scroll_offset, parse_hunk_header};
+    use super::{
+        ActionMenuRow, ActionMenuSection, action_menu_text, build_action_menu_rows,
+        log_scroll_offset, parse_hunk_header,
+    };
     use crate::domain::Action;
 
     #[test]
@@ -921,5 +1023,36 @@ mod tests {
         assert!(!safe.contains("[danger]"));
         assert!(danger.contains("!!"));
         assert!(danger.contains("[danger]"));
+    }
+
+    #[test]
+    fn action_menu_rows_are_grouped_into_sections() {
+        let rows = build_action_menu_rows(&[
+            Action::Apply,
+            Action::Update,
+            Action::Add,
+            Action::Edit,
+            Action::Destroy,
+            Action::Purge,
+        ]);
+
+        let global_idx = rows
+            .iter()
+            .position(|row| matches!(row, ActionMenuRow::Header(ActionMenuSection::Global)))
+            .expect("global header");
+        let selected_idx = rows
+            .iter()
+            .position(|row| matches!(row, ActionMenuRow::Header(ActionMenuSection::SelectedItem)))
+            .expect("selected header");
+        let danger_idx = rows
+            .iter()
+            .position(|row| matches!(row, ActionMenuRow::Header(ActionMenuSection::Danger)))
+            .expect("danger header");
+
+        assert!(global_idx < selected_idx);
+        assert!(selected_idx < danger_idx);
+        assert!(rows.contains(&ActionMenuRow::Action(Action::Apply)));
+        assert!(rows.contains(&ActionMenuRow::Action(Action::Edit)));
+        assert!(rows.contains(&ActionMenuRow::Action(Action::Purge)));
     }
 }
