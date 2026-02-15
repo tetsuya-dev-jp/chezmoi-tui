@@ -13,6 +13,9 @@ It is built for users who want a visual workflow for day-to-day dotfile manageme
 
 This project wraps core `chezmoi` operations in a 3-pane interface with safe defaults.
 
+By default, `status` and `managed` are resolved against your home destination,
+while `unmanaged` is resolved against the current working directory.
+
 ## Quick Start
 
 ### Requirements

@@ -724,14 +724,30 @@ fn run_foreground_action(
 
 fn run_chezmoi_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
     let args = action_to_args(request)?;
+    let destination_dir = infer_destination_for_target(request.target.as_deref());
     let started = Instant::now();
     let status = Command::new("chezmoi")
+        .arg("--destination")
+        .arg(destination_dir)
         .args(args)
         .status()
         .context("failed to start foreground chezmoi command")?;
     let elapsed = started.elapsed().as_millis() as u64;
 
     Ok((status.code().unwrap_or(-1), elapsed))
+}
+
+fn infer_destination_for_target(target: Option<&Path>) -> std::path::PathBuf {
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
+
+    match target {
+        Some(path) if path.is_absolute() && path.starts_with(&home_dir) => home_dir,
+        Some(path) if path.is_absolute() && path.starts_with(&working_dir) => working_dir,
+        Some(path) if path.is_absolute() => home_dir,
+        Some(_) => working_dir,
+        None => home_dir,
+    }
 }
 
 fn squash_lines(input: &str) -> String {

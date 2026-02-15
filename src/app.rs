@@ -118,14 +118,16 @@ pub struct App {
     pub busy: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
-    destination_dir: PathBuf,
+    home_dir: PathBuf,
+    working_dir: PathBuf,
     expanded_dirs: BTreeSet<PathBuf>,
     visible_entries: Vec<VisibleEntry>,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        let destination_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
         let mut app = Self {
             config,
             focus: PaneFocus::List,
@@ -145,7 +147,8 @@ impl App {
             busy: false,
             pending_foreground: None,
             should_quit: false,
-            destination_dir,
+            home_dir,
+            working_dir,
             expanded_dirs: BTreeSet::new(),
             visible_entries: Vec::new(),
         };
@@ -223,7 +226,8 @@ impl App {
     }
 
     pub fn selected_absolute_path(&self) -> Option<PathBuf> {
-        self.selected_path().map(|path| self.resolve_path(&path))
+        self.selected_path()
+            .map(|path| self.resolve_path_for_view(&path, self.view))
     }
 
     pub fn selected_is_directory(&self) -> bool {
@@ -237,12 +241,12 @@ impl App {
         let Some(selected) = self.selected_path() else {
             return false;
         };
-        let selected_abs = self.resolve_path(&selected);
+        let selected_abs = self.resolve_path_for_view(&selected, self.view);
 
         self.managed_entries.iter().any(|managed| {
             managed == &selected
                 || managed == &selected_abs
-                || self.resolve_path(managed.as_path()) == selected_abs
+                || self.resolve_with_base(managed.as_path(), &self.home_dir) == selected_abs
         })
     }
 
@@ -485,7 +489,7 @@ impl App {
     }
 
     fn read_children(&self, parent: &Path) -> Vec<PathBuf> {
-        let abs_parent = self.resolve_path(parent);
+        let abs_parent = self.resolve_with_base(parent, &self.working_dir);
         let Ok(read_dir) = fs::read_dir(abs_parent) else {
             return Vec::new();
         };
@@ -495,7 +499,7 @@ impl App {
             .map(|entry| entry.file_name())
             .map(|name| {
                 if parent.is_absolute() {
-                    self.resolve_path(parent).join(name)
+                    parent.join(name)
                 } else {
                     PathBuf::from(parent).join(name)
                 }
@@ -539,17 +543,25 @@ impl App {
     }
 
     fn path_is_directory(&self, path: &Path) -> bool {
-        let abs = self.resolve_path(path);
+        let abs = self.resolve_path_for_view(path, self.view);
         fs::symlink_metadata(abs)
             .map(|meta| meta.file_type().is_dir())
             .unwrap_or(false)
     }
 
-    fn resolve_path(&self, path: &Path) -> PathBuf {
+    fn resolve_path_for_view(&self, path: &Path, view: ListView) -> PathBuf {
+        let base = match view {
+            ListView::Status | ListView::Managed => &self.home_dir,
+            ListView::Unmanaged => &self.working_dir,
+        };
+        self.resolve_with_base(path, base)
+    }
+
+    fn resolve_with_base(&self, path: &Path, base: &Path) -> PathBuf {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.destination_dir.join(path)
+            base.join(path)
         }
     }
 
@@ -586,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_absolute_path_uses_destination_dir() {
+    fn selected_absolute_path_uses_home_dir_for_status() {
         let temp_root = std::env::temp_dir().join(format!(
             "chezmoi_tui_abs_{}_{}",
             std::process::id(),
@@ -596,7 +608,7 @@ mod tests {
                 .as_nanos()
         ));
         let mut app = App::new(AppConfig::default());
-        app.destination_dir = temp_root.clone();
+        app.home_dir = temp_root.clone();
         app.status_entries = vec![StatusEntry {
             path: PathBuf::from(".zshrc"),
             actual_vs_state: ChangeKind::None,
@@ -608,16 +620,23 @@ mod tests {
     }
 
     #[test]
-    fn selected_absolute_path_uses_current_dir_by_default() {
-        let cwd = std::env::current_dir().expect("current dir");
+    fn selected_absolute_path_uses_working_dir_for_unmanaged() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_wd_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
         let mut app = App::new(AppConfig::default());
-        app.status_entries = vec![StatusEntry {
-            path: PathBuf::from(".zshrc"),
-            actual_vs_state: ChangeKind::None,
-            actual_vs_target: ChangeKind::Modified,
-        }];
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".zshrc")];
+        app.switch_view(ListView::Unmanaged);
         app.rebuild_visible_entries();
-        assert_eq!(app.selected_absolute_path(), Some(cwd.join(".zshrc")));
+        assert_eq!(app.selected_absolute_path(), Some(temp_root.join(".zshrc")));
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -645,7 +664,7 @@ mod tests {
         fs::write(dir.join("init.lua"), "set number").expect("write file");
 
         let mut app = App::new(AppConfig::default());
-        app.destination_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".config")];
         app.switch_view(ListView::Unmanaged);
 

@@ -16,19 +16,26 @@ pub trait ChezmoiClient: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct ShellChezmoiClient {
     binary: String,
+    home_dir: PathBuf,
+    working_dir: PathBuf,
 }
 
 impl Default for ShellChezmoiClient {
     fn default() -> Self {
+        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
         Self {
             binary: "chezmoi".to_string(),
+            home_dir,
+            working_dir,
         }
     }
 }
 
 impl ShellChezmoiClient {
-    fn run_raw(&self, args: &[String]) -> Result<CommandResult> {
+    fn run_raw(&self, args: &[String], destination_dir: &Path) -> Result<CommandResult> {
         let mut cmd = Command::new(&self.binary);
+        cmd.arg("--destination").arg(destination_dir);
         cmd.args(args);
 
         let started = Instant::now();
@@ -48,11 +55,27 @@ impl ShellChezmoiClient {
             duration_ms,
         })
     }
+
+    fn destination_for_target(&self, target: Option<&Path>) -> &Path {
+        match target {
+            Some(path) if path.is_absolute() => {
+                if path.starts_with(&self.home_dir) {
+                    &self.home_dir
+                } else if path.starts_with(&self.working_dir) {
+                    &self.working_dir
+                } else {
+                    &self.home_dir
+                }
+            }
+            Some(_) => &self.working_dir,
+            None => &self.home_dir,
+        }
+    }
 }
 
 impl ChezmoiClient for ShellChezmoiClient {
     fn status(&self) -> Result<Vec<StatusEntry>> {
-        let result = self.run_raw(&["status".to_string()])?;
+        let result = self.run_raw(&["status".to_string()], &self.home_dir)?;
         if result.exit_code != 0 {
             bail!("chezmoi status failed: {}", result.stderr.trim());
         }
@@ -60,11 +83,14 @@ impl ChezmoiClient for ShellChezmoiClient {
     }
 
     fn managed(&self) -> Result<Vec<PathBuf>> {
-        let result = self.run_raw(&[
-            "managed".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])?;
+        let result = self.run_raw(
+            &[
+                "managed".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            &self.home_dir,
+        )?;
         if result.exit_code != 0 {
             bail!("chezmoi managed failed: {}", result.stderr.trim());
         }
@@ -72,7 +98,7 @@ impl ChezmoiClient for ShellChezmoiClient {
     }
 
     fn unmanaged(&self) -> Result<Vec<PathBuf>> {
-        let result = self.run_raw(&["unmanaged".to_string()])?;
+        let result = self.run_raw(&["unmanaged".to_string()], &self.working_dir)?;
         if result.exit_code != 0 {
             bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
         }
@@ -81,8 +107,9 @@ impl ChezmoiClient for ShellChezmoiClient {
 
     fn diff(&self, target: Option<&Path>) -> Result<DiffText> {
         let args = diff_args(target);
+        let destination = self.destination_for_target(target);
 
-        let result = self.run_raw(&args)?;
+        let result = self.run_raw(&args, destination)?;
         if result.exit_code != 0 {
             // chezmoi diff returns 0 even when differences exist; non-zero means execution error.
             bail!("chezmoi diff failed: {}", result.stderr.trim());
@@ -95,7 +122,8 @@ impl ChezmoiClient for ShellChezmoiClient {
 
     fn run(&self, request: &ActionRequest) -> Result<CommandResult> {
         let args = action_to_args(request)?;
-        self.run_raw(&args)
+        let destination = self.destination_for_target(request.target.as_deref());
+        self.run_raw(&args, destination)
     }
 }
 
@@ -318,5 +346,26 @@ mod tests {
     fn diff_target_args_are_option_safe() {
         let got = diff_args(Some(Path::new("-n")));
         assert_eq!(got, vec!["diff", "--", "-n"]);
+    }
+
+    #[test]
+    fn default_client_uses_current_dir_for_working_destination() {
+        let client = ShellChezmoiClient::default();
+        assert_eq!(
+            client.working_dir,
+            std::env::current_dir().expect("current dir")
+        );
+    }
+
+    #[test]
+    fn destination_for_target_prefers_home_for_home_paths() {
+        let client = ShellChezmoiClient {
+            home_dir: PathBuf::from("/tmp/home"),
+            working_dir: PathBuf::from("/tmp/work"),
+            ..ShellChezmoiClient::default()
+        };
+
+        let got = client.destination_for_target(Some(Path::new("/tmp/home/.zshrc")));
+        assert_eq!(got, Path::new("/tmp/home"));
     }
 }
