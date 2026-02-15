@@ -318,6 +318,8 @@ fn handle_key_without_modal(
         KeyCode::Char('j') | KeyCode::Down => {
             if app.focus == crate::app::PaneFocus::Detail {
                 app.scroll_detail_down(1);
+            } else if app.focus == crate::app::PaneFocus::Log {
+                app.scroll_log_down(1);
             } else {
                 app.select_next();
                 selection_changed = true;
@@ -326,6 +328,8 @@ fn handle_key_without_modal(
         KeyCode::Char('k') | KeyCode::Up => {
             if app.focus == crate::app::PaneFocus::Detail {
                 app.scroll_detail_up(1);
+            } else if app.focus == crate::app::PaneFocus::Log {
+                app.scroll_log_up(1);
             } else {
                 app.select_prev();
                 selection_changed = true;
@@ -334,11 +338,15 @@ fn handle_key_without_modal(
         KeyCode::PageDown => {
             if app.focus == crate::app::PaneFocus::Detail {
                 app.scroll_detail_down(20);
+            } else if app.focus == crate::app::PaneFocus::Log {
+                app.scroll_log_down(20);
             }
         }
         KeyCode::PageUp => {
             if app.focus == crate::app::PaneFocus::Detail {
                 app.scroll_detail_up(20);
+            } else if app.focus == crate::app::PaneFocus::Log {
+                app.scroll_log_up(20);
             }
         }
         KeyCode::Char('l') | KeyCode::Right => {
@@ -364,11 +372,15 @@ fn handle_key_without_modal(
         KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
             if app.focus == crate::app::PaneFocus::Detail {
                 app.scroll_detail_down(20);
+            } else if app.focus == crate::app::PaneFocus::Log {
+                app.scroll_log_down(20);
             }
         }
         KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
             if app.focus == crate::app::PaneFocus::Detail {
                 app.scroll_detail_up(20);
+            } else if app.focus == crate::app::PaneFocus::Log {
+                app.scroll_log_up(20);
             }
         }
         KeyCode::Char('d') if key.modifiers.is_empty() => {

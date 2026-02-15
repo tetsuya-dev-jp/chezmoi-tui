@@ -110,7 +110,7 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|line| Line::from(line.as_str()))
         .collect();
-    let scroll = log_scroll_offset(lines.len(), area.height);
+    let scroll = log_scroll_offset(lines.len(), area.height, app.log_tail_offset);
 
     let paragraph = Paragraph::new(lines)
         .block(
@@ -125,10 +125,11 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn log_scroll_offset(total_lines: usize, area_height: u16) -> u16 {
+fn log_scroll_offset(total_lines: usize, area_height: u16, tail_offset: usize) -> u16 {
     let visible_rows = area_height.saturating_sub(2) as usize;
-    total_lines
-        .saturating_sub(visible_rows.max(1))
+    let max_offset = total_lines.saturating_sub(visible_rows.max(1));
+    max_offset
+        .saturating_sub(tail_offset.min(max_offset))
         .min(u16::MAX as usize) as u16
 }
 
@@ -167,7 +168,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     bottom.extend(hint("1/2/3", "View", false));
     bottom.extend(hint("Tab", "Focus", false));
 
-    if app.focus == PaneFocus::Detail {
+    if app.focus == PaneFocus::Detail || app.focus == PaneFocus::Log {
         bottom.extend(hint("j/k ↑/↓", "Scroll", true));
         bottom.extend(hint("PgUp/PgDn", "Page", true));
         bottom.extend(hint("Ctrl+u/d", "HalfPage", true));
@@ -1010,8 +1011,9 @@ mod tests {
 
     #[test]
     fn log_scroll_offset_keeps_latest_visible() {
-        assert_eq!(log_scroll_offset(10, 6), 6);
-        assert_eq!(log_scroll_offset(3, 10), 0);
+        assert_eq!(log_scroll_offset(10, 6, 0), 6);
+        assert_eq!(log_scroll_offset(10, 6, 2), 4);
+        assert_eq!(log_scroll_offset(3, 10, 0), 0);
     }
 
     #[test]

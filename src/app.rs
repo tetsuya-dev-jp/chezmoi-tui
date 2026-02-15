@@ -114,6 +114,7 @@ pub struct App {
     pub detail_target: Option<PathBuf>,
     pub detail_scroll: usize,
     pub logs: Vec<String>,
+    pub log_tail_offset: usize,
     pub modal: ModalState,
     pub busy: bool,
     pub pending_foreground: Option<ActionRequest>,
@@ -143,6 +144,7 @@ impl App {
             detail_target: None,
             detail_scroll: 0,
             logs: Vec::new(),
+            log_tail_offset: 0,
             modal: ModalState::None,
             busy: false,
             pending_foreground: None,
@@ -322,10 +324,25 @@ impl App {
 
     pub fn log(&mut self, line: String) {
         self.logs.push(line);
+        if self.log_tail_offset > 0 {
+            self.log_tail_offset = self.log_tail_offset.saturating_add(1);
+        }
         if self.logs.len() > MAX_LOG_LINES {
             let to_trim = self.logs.len() - MAX_LOG_LINES;
             self.logs.drain(0..to_trim);
         }
+    }
+
+    pub fn scroll_log_up(&mut self, lines: usize) -> bool {
+        let before = self.log_tail_offset;
+        self.log_tail_offset = self.log_tail_offset.saturating_add(lines);
+        self.log_tail_offset != before
+    }
+
+    pub fn scroll_log_down(&mut self, lines: usize) -> bool {
+        let before = self.log_tail_offset;
+        self.log_tail_offset = self.log_tail_offset.saturating_sub(lines);
+        self.log_tail_offset != before
     }
 
     pub fn sync_selection_bounds(&mut self) {
@@ -889,6 +906,28 @@ mod tests {
         assert!(app.scroll_detail_up(10));
         assert_eq!(app.detail_scroll, 0);
         assert!(!app.scroll_detail_up(1));
+    }
+
+    #[test]
+    fn log_scroll_moves_with_up_and_down() {
+        let mut app = App::new(AppConfig::default());
+        assert!(!app.scroll_log_down(1));
+        assert!(app.scroll_log_up(5));
+        assert_eq!(app.log_tail_offset, 5);
+        assert!(app.scroll_log_down(2));
+        assert_eq!(app.log_tail_offset, 3);
+        assert!(app.scroll_log_down(10));
+        assert_eq!(app.log_tail_offset, 0);
+        assert!(!app.scroll_log_down(1));
+    }
+
+    #[test]
+    fn log_preserves_manual_scroll_position_when_new_entries_arrive() {
+        let mut app = App::new(AppConfig::default());
+        app.scroll_log_up(4);
+        app.log("line-1".to_string());
+        app.log("line-2".to_string());
+        assert_eq!(app.log_tail_offset, 6);
     }
 
     #[test]
