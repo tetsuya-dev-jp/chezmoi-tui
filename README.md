@@ -37,7 +37,7 @@ cargo run
 1. Press `r` to refresh.
 2. Switch views with `1`/`2`/`3` (`status`, `managed`, `unmanaged`).
 3. In `status`, selecting a file auto-loads its diff.
-4. In `unmanaged`, selecting a file auto-loads preview.
+4. In `managed` / `unmanaged`, selecting a file auto-loads preview.
 5. Open action menu with `a` and run the needed operation.
 
 ## Features
