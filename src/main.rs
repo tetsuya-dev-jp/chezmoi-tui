@@ -299,6 +299,7 @@ fn handle_key_event(
 
     match app.modal.clone() {
         ModalState::None => handle_key_without_modal(app, key, task_tx),
+        ModalState::Help => handle_help_key(app, key),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
@@ -314,6 +315,7 @@ fn handle_key_without_modal(
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('?') => app.open_help(),
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::Char('j') | KeyCode::Down => {
             if app.focus == crate::app::PaneFocus::Detail {
@@ -441,6 +443,16 @@ fn handle_key_without_modal(
         maybe_enqueue_auto_detail(app, task_tx)?;
     }
 
+    Ok(())
+}
+
+fn handle_help_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') | KeyCode::Char('q') => {
+            app.close_modal();
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -925,5 +937,25 @@ mod tests {
         let got = load_file_preview(&file).expect("preview");
         assert!(got.contains("preview truncated"));
         let _ = std::fs::remove_file(file);
+    }
+
+    #[test]
+    fn question_key_opens_help_modal() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+
+        handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
+        assert!(matches!(app.modal, ModalState::Help));
+    }
+
+    #[test]
+    fn help_modal_closes_with_escape() {
+        let mut app = App::new(AppConfig::default());
+        app.open_help();
+        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+
+        handle_help_key(&mut app, key).expect("handle help key");
+        assert!(matches!(app.modal, ModalState::None));
     }
 }

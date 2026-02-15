@@ -273,6 +273,11 @@ fn status_bar_hint_specs(app: &App) -> Vec<HintSpec> {
             emphasized: false,
         },
         HintSpec {
+            key: "?",
+            label: "Help",
+            emphasized: false,
+        },
+        HintSpec {
             key: "q",
             label: "Quit",
             emphasized: false,
@@ -303,6 +308,44 @@ fn hint(key: &str, label: &str, emphasized: bool) -> Vec<Span<'static>> {
 fn draw_modal(frame: &mut Frame, app: &App) {
     match &app.modal {
         ModalState::None => {}
+        ModalState::Help => {
+            let area = centered_rect(72, 72, frame.area());
+            frame.render_widget(Clear, area);
+
+            let lines = vec![
+                Line::from("Global"),
+                Line::from("  ?           Open/close help"),
+                Line::from("  Tab         Cycle focus (List -> Detail -> Log)"),
+                Line::from("  1/2/3       Switch view"),
+                Line::from("  a           Open action menu"),
+                Line::from("  r           Refresh"),
+                Line::from("  q           Quit"),
+                Line::from(""),
+                Line::from("List Focus"),
+                Line::from("  j/k, Up/Down       Move selection"),
+                Line::from("  h/l, Left/Right    Fold/unfold tree (Managed/Unmanaged)"),
+                Line::from("  d or Enter         Show diff (Status/Managed)"),
+                Line::from("  v                  Preview selected file"),
+                Line::from("  note               Unmanaged list uses preview (no diff)"),
+                Line::from(""),
+                Line::from("Detail / Log Focus"),
+                Line::from("  j/k, Up/Down       Scroll"),
+                Line::from("  PgUp/PgDn          Page scroll"),
+                Line::from("  Ctrl+u / Ctrl+d    Half-page scroll"),
+                Line::from(""),
+                Line::from("Close: Esc, Enter, ?, q"),
+            ];
+
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Help ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
         ModalState::ActionMenu { selected, filter } => {
             let area = centered_rect(60, 70, frame.area());
             frame.render_widget(Clear, area);
@@ -1167,5 +1210,13 @@ mod tests {
         assert!(!labels.contains(&"Diff"));
         assert!(!labels.contains(&"Preview"));
         assert!(!labels.contains(&"Fold"));
+    }
+
+    #[test]
+    fn status_bar_hints_include_help_globally() {
+        let app = App::new(AppConfig::default());
+        let specs = status_bar_hint_specs(&app);
+        let labels: Vec<&str> = specs.iter().map(|s| s.label).collect();
+        assert!(labels.contains(&"Help"));
     }
 }

@@ -43,6 +43,7 @@ pub enum InputKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModalState {
     None,
+    Help,
     ActionMenu {
         selected: usize,
         filter: String,
@@ -300,6 +301,10 @@ impl App {
             selected: 0,
             filter: String::new(),
         };
+    }
+
+    pub fn open_help(&mut self) {
+        self.modal = ModalState::Help;
     }
 
     pub fn open_confirm(&mut self, request: ActionRequest) {
