@@ -1,5 +1,5 @@
 use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, PaneFocus};
-use crate::domain::ListView;
+use crate::domain::{Action, ListView};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
@@ -266,9 +266,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 indices
                     .iter()
                     .filter_map(|index| App::action_by_index(*index))
-                    .map(|action| {
-                        ListItem::new(format!("{:<10} {}", action.label(), action.description()))
-                    })
+                    .map(action_menu_item)
                     .collect()
             };
 
@@ -399,6 +397,28 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             frame.render_widget(p, area);
         }
     }
+}
+
+fn action_menu_text(action: Action) -> String {
+    if action.is_dangerous() {
+        format!(
+            "{:<10} !! {} [danger]",
+            action.label(),
+            action.description()
+        )
+    } else {
+        format!("{:<10}    {}", action.label(), action.description())
+    }
+}
+
+fn action_menu_item(action: Action) -> ListItem<'static> {
+    let text = action_menu_text(action);
+    let style = if action.is_dangerous() {
+        Style::default().fg(Color::LightRed)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    ListItem::new(Line::styled(text, style))
 }
 
 fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
@@ -871,7 +891,8 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{log_scroll_offset, parse_hunk_header};
+    use super::{action_menu_text, log_scroll_offset, parse_hunk_header};
+    use crate::domain::Action;
 
     #[test]
     fn parse_hunk_header_extracts_line_numbers() {
@@ -889,5 +910,16 @@ mod tests {
     fn log_scroll_offset_keeps_latest_visible() {
         assert_eq!(log_scroll_offset(10, 6), 6);
         assert_eq!(log_scroll_offset(3, 10), 0);
+    }
+
+    #[test]
+    fn action_menu_text_marks_only_danger_actions() {
+        let safe = action_menu_text(Action::Apply);
+        let danger = action_menu_text(Action::Purge);
+
+        assert!(!safe.contains("!!"));
+        assert!(!safe.contains("[danger]"));
+        assert!(danger.contains("!!"));
+        assert!(danger.contains("[danger]"));
     }
 }
