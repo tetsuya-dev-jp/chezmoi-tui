@@ -368,18 +368,34 @@ impl App {
 
     pub fn action_menu_indices(view: ListView, filter: &str) -> Vec<usize> {
         let query = filter.trim().to_ascii_lowercase();
-        let mut matches: Vec<(usize, String)> = Action::ALL
+        let mut matches: Vec<(usize, u8, String)> = Action::ALL
             .iter()
             .enumerate()
             .filter(|(_, action)| {
                 Self::action_visible_in_view(view, **action)
                     && (query.is_empty() || action.label().to_ascii_lowercase().contains(&query))
             })
-            .map(|(index, action)| (index, action.label().to_ascii_lowercase()))
+            .map(|(index, action)| {
+                (
+                    index,
+                    Self::action_section_order(*action),
+                    action.label().to_ascii_lowercase(),
+                )
+            })
             .collect();
 
-        matches.sort_by(|a, b| a.1.cmp(&b.1));
-        matches.into_iter().map(|(index, _)| index).collect()
+        matches.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
+        matches.into_iter().map(|(index, _, _)| index).collect()
+    }
+
+    fn action_section_order(action: Action) -> u8 {
+        if action.is_dangerous() {
+            2
+        } else if action.needs_target() {
+            1
+        } else {
+            0
+        }
     }
 
     fn action_visible_in_view(view: ListView, action: Action) -> bool {
@@ -1087,6 +1103,27 @@ mod tests {
     fn action_menu_indices_are_sorted_alphabetically_by_label() {
         let got = App::action_menu_indices(ListView::Unmanaged, "ad");
         assert_eq!(App::action_by_index(got[0]), Some(Action::Add));
+    }
+
+    #[test]
+    fn action_menu_indices_follow_section_order_for_display_and_execution() {
+        let got: Vec<Action> = App::action_menu_indices(ListView::Managed, "")
+            .into_iter()
+            .filter_map(App::action_by_index)
+            .collect();
+
+        assert_eq!(
+            got,
+            vec![
+                Action::Apply,
+                Action::Update,
+                Action::Chattr,
+                Action::Edit,
+                Action::Forget,
+                Action::Destroy,
+                Action::Purge,
+            ]
+        );
     }
 
     #[test]
