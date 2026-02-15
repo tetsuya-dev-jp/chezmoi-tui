@@ -66,7 +66,7 @@ cargo run
 | --- | --- |
 | `1` / `2` / `3` | Switch view (`status`, `managed`, `unmanaged`) |
 | `j` / `k` or `↑` / `↓` | Move selection |
-| `h` / `l` or `←` / `→` | Collapse/expand directory (`unmanaged`) |
+| `h` / `l` or `←` / `→` | Collapse/expand directory (`managed` / `unmanaged`) |
 | `Tab` | Cycle focus (`List` → `Detail` → `Log`) |
 | `Enter` or `d` | Load diff for selection |
 | `v` | Load file preview |

@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest, CommandResult, DiffText, ListView, StatusEntry};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -251,7 +251,7 @@ impl App {
     }
 
     pub fn expand_selected_directory(&mut self) -> bool {
-        if self.view != ListView::Unmanaged {
+        if !self.view_supports_tree() {
             return false;
         }
 
@@ -271,7 +271,7 @@ impl App {
     }
 
     pub fn collapse_selected_directory_or_parent(&mut self) -> bool {
-        if self.view != ListView::Unmanaged {
+        if !self.view_supports_tree() {
             return false;
         }
 
@@ -457,6 +457,8 @@ impl App {
             for base in base_paths {
                 self.push_visible_recursive(base, 0, &mut entries, &mut seen);
             }
+        } else if self.view == ListView::Managed {
+            self.push_managed_visible_entries(&mut entries);
         } else {
             for path in base_paths {
                 if !seen.insert(path.clone()) {
@@ -481,6 +483,10 @@ impl App {
         }
 
         self.sync_selection_bounds();
+    }
+
+    fn view_supports_tree(&self) -> bool {
+        matches!(self.view, ListView::Managed | ListView::Unmanaged)
     }
 
     fn base_paths_for_view(&self) -> Vec<PathBuf> {
@@ -519,6 +525,94 @@ impl App {
 
         for child in self.read_children(&path) {
             self.push_visible_recursive(child, depth + 1, out, seen);
+        }
+    }
+
+    fn push_managed_visible_entries(&self, out: &mut Vec<VisibleEntry>) {
+        let mut nodes = BTreeSet::new();
+
+        for managed in &self.managed_entries {
+            if managed.as_os_str().is_empty() {
+                continue;
+            }
+
+            let mut current = managed.clone();
+            loop {
+                if !current.as_os_str().is_empty() {
+                    nodes.insert(current.clone());
+                }
+
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                current = parent.to_path_buf();
+            }
+        }
+
+        if nodes.is_empty() {
+            return;
+        }
+
+        let mut children: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        let mut roots = Vec::new();
+
+        for node in &nodes {
+            let parent = node.parent().map(Path::to_path_buf);
+            if let Some(parent) = parent
+                && !parent.as_os_str().is_empty()
+                && nodes.contains(&parent)
+            {
+                children.entry(parent).or_default().push(node.clone());
+            } else {
+                roots.push(node.clone());
+            }
+        }
+
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        }
+        roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+
+        let mut seen = HashSet::new();
+        for root in roots {
+            self.push_managed_visible_recursive(root, 0, out, &children, &mut seen);
+        }
+    }
+
+    fn push_managed_visible_recursive(
+        &self,
+        path: PathBuf,
+        depth: usize,
+        out: &mut Vec<VisibleEntry>,
+        children: &BTreeMap<PathBuf, Vec<PathBuf>>,
+        seen: &mut HashSet<PathBuf>,
+    ) {
+        if !seen.insert(path.clone()) {
+            return;
+        }
+
+        let has_children = children
+            .get(&path)
+            .map(|entries| !entries.is_empty())
+            .unwrap_or(false);
+        let is_dir = has_children || self.path_is_directory_with_base(&path, &self.home_dir);
+        out.push(VisibleEntry {
+            path: path.clone(),
+            depth,
+            is_dir,
+        });
+
+        if !is_dir || !self.expanded_dirs.contains(&path) {
+            return;
+        }
+
+        if let Some(child_paths) = children.get(&path) {
+            for child in child_paths {
+                self.push_managed_visible_recursive(child.clone(), depth + 1, out, children, seen);
+            }
         }
     }
 
@@ -578,6 +672,13 @@ impl App {
 
     fn path_is_directory(&self, path: &Path) -> bool {
         let abs = self.resolve_path_for_view(path, self.view);
+        fs::symlink_metadata(abs)
+            .map(|meta| meta.file_type().is_dir())
+            .unwrap_or(false)
+    }
+
+    fn path_is_directory_with_base(&self, path: &Path, base: &Path) -> bool {
+        let abs = self.resolve_with_base(path, base);
         fs::symlink_metadata(abs)
             .map(|meta| meta.file_type().is_dir())
             .unwrap_or(false)
@@ -717,6 +818,31 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn managed_view_is_hierarchical_and_expandable() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![
+            PathBuf::from("dev"),
+            PathBuf::from("dev/chezmoi-tui"),
+            PathBuf::from("dev/chezmoi-tui/Cargo.toml"),
+        ];
+        app.switch_view(ListView::Managed);
+
+        let first = app.current_items();
+        assert!(first.iter().any(|line| line.contains("dev/")));
+        assert!(!first.iter().any(|line| line.contains("Cargo.toml")));
+
+        assert!(app.expand_selected_directory());
+        let second = app.current_items();
+        assert!(second.iter().any(|line| line.contains("chezmoi-tui/")));
+        assert!(!second.iter().any(|line| line.contains("Cargo.toml")));
+
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        let third = app.current_items();
+        assert!(third.iter().any(|line| line.contains("Cargo.toml")));
     }
 
     #[test]
