@@ -519,7 +519,15 @@ impl App {
                 .map(|entry| entry.path.clone())
                 .collect(),
             ListView::Managed => self.managed_entries.clone(),
-            ListView::Unmanaged => self.unmanaged_entries.clone(),
+            ListView::Unmanaged => self
+                .unmanaged_entries
+                .iter()
+                .filter(|path| {
+                    let abs = self.resolve_with_base(path.as_path(), &self.working_dir);
+                    !self.is_managed_absolute_path(&abs)
+                })
+                .cloned()
+                .collect(),
         }
     }
 
@@ -654,10 +662,27 @@ impl App {
                     PathBuf::from(parent).join(name)
                 }
             })
+            .filter(|path| {
+                if self.view != ListView::Unmanaged {
+                    return true;
+                }
+                let abs = self.resolve_with_base(path.as_path(), &self.working_dir);
+                !self.is_managed_absolute_path(&abs)
+            })
             .collect();
 
         children.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
         children
+    }
+
+    fn is_managed_absolute_path(&self, path: &Path) -> bool {
+        self.managed_entries.iter().any(|managed| {
+            let managed_abs = self.resolve_with_base(managed.as_path(), &self.home_dir);
+            if !managed_abs.starts_with(&self.working_dir) {
+                return false;
+            }
+            path == managed_abs
+        })
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
@@ -868,6 +893,90 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("nvim/"))
         );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_tree_excludes_managed_children() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_filter_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let dir = temp_root.join(".config");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("managed.lua"), "managed").expect("write managed");
+        fs::write(dir.join("local.lua"), "local").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
+        app.managed_entries = vec![PathBuf::from(".config/managed.lua")];
+        app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("local.lua")));
+        assert!(!items.iter().any(|line| line.contains("managed.lua")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_filter_ignores_managed_paths_outside_working_dir() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_scope_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let work = temp_root.join("dev/chezmoi-tui");
+        fs::create_dir_all(&work).expect("create work dir");
+        fs::write(work.join("local.txt"), "local").expect("write local file");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = work.clone();
+        app.managed_entries = vec![PathBuf::from("dev")];
+        app.unmanaged_entries = vec![PathBuf::from("local.txt")];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("local.txt")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_filter_does_not_hide_all_when_working_dir_itself_is_managed() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_root_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let work = temp_root.join("dev/chezmoi-tui");
+        fs::create_dir_all(&work).expect("create work dir");
+        fs::write(work.join("Cargo.lock"), "lock").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = work.clone();
+        app.managed_entries = vec![PathBuf::from("dev/chezmoi-tui")];
+        app.unmanaged_entries = vec![PathBuf::from("Cargo.lock")];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("Cargo.lock")));
 
         let _ = fs::remove_dir_all(temp_root);
     }
