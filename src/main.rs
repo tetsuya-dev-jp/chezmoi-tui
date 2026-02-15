@@ -317,40 +317,48 @@ fn handle_key_without_modal(
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.open_help(),
         KeyCode::Tab => app.focus = app.focus.next(),
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.focus == crate::app::PaneFocus::Detail {
+        KeyCode::Char('j') | KeyCode::Down => match app.focus {
+            crate::app::PaneFocus::Detail => {
                 app.scroll_detail_down(1);
-            } else if app.focus == crate::app::PaneFocus::Log {
+            }
+            crate::app::PaneFocus::Log => {
                 app.scroll_log_down(1);
-            } else {
+            }
+            crate::app::PaneFocus::List => {
                 app.select_next();
                 selection_changed = true;
             }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if app.focus == crate::app::PaneFocus::Detail {
+        },
+        KeyCode::Char('k') | KeyCode::Up => match app.focus {
+            crate::app::PaneFocus::Detail => {
                 app.scroll_detail_up(1);
-            } else if app.focus == crate::app::PaneFocus::Log {
+            }
+            crate::app::PaneFocus::Log => {
                 app.scroll_log_up(1);
-            } else {
+            }
+            crate::app::PaneFocus::List => {
                 app.select_prev();
                 selection_changed = true;
             }
-        }
-        KeyCode::PageDown => {
-            if app.focus == crate::app::PaneFocus::Detail {
+        },
+        KeyCode::PageDown => match app.focus {
+            crate::app::PaneFocus::Detail => {
                 app.scroll_detail_down(20);
-            } else if app.focus == crate::app::PaneFocus::Log {
+            }
+            crate::app::PaneFocus::Log => {
                 app.scroll_log_down(20);
             }
-        }
-        KeyCode::PageUp => {
-            if app.focus == crate::app::PaneFocus::Detail {
+            crate::app::PaneFocus::List => {}
+        },
+        KeyCode::PageUp => match app.focus {
+            crate::app::PaneFocus::Detail => {
                 app.scroll_detail_up(20);
-            } else if app.focus == crate::app::PaneFocus::Log {
+            }
+            crate::app::PaneFocus::Log => {
                 app.scroll_log_up(20);
             }
-        }
+            crate::app::PaneFocus::List => {}
+        },
         KeyCode::Char('l') | KeyCode::Right => {
             if app.expand_selected_directory() {
                 selection_changed = true;
@@ -371,20 +379,24 @@ fn handle_key_without_modal(
             selection_changed = true;
         }
         KeyCode::Char('r') => send_task(app, task_tx, BackendTask::RefreshAll)?,
-        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
-            if app.focus == crate::app::PaneFocus::Detail {
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => match app.focus {
+            crate::app::PaneFocus::Detail => {
                 app.scroll_detail_down(20);
-            } else if app.focus == crate::app::PaneFocus::Log {
+            }
+            crate::app::PaneFocus::Log => {
                 app.scroll_log_down(20);
             }
-        }
-        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-            if app.focus == crate::app::PaneFocus::Detail {
+            crate::app::PaneFocus::List => {}
+        },
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => match app.focus {
+            crate::app::PaneFocus::Detail => {
                 app.scroll_detail_up(20);
-            } else if app.focus == crate::app::PaneFocus::Log {
+            }
+            crate::app::PaneFocus::Log => {
                 app.scroll_log_up(20);
             }
-        }
+            crate::app::PaneFocus::List => {}
+        },
         KeyCode::Char('d') if key.modifiers.is_empty() => {
             if app.view == ListView::Unmanaged && app.selected_is_directory() {
                 app.clear_detail();

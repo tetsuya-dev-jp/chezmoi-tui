@@ -241,16 +241,13 @@ impl App {
     }
 
     pub fn selected_is_managed(&self) -> bool {
-        let Some(selected) = self.selected_path() else {
+        let Some(selected_abs) = self.selected_absolute_path() else {
             return false;
         };
-        let selected_abs = self.resolve_path_for_view(&selected, self.view);
 
-        self.managed_entries.iter().any(|managed| {
-            managed == &selected
-                || managed == &selected_abs
-                || self.resolve_with_base(managed.as_path(), &self.home_dir) == selected_abs
-        })
+        self.managed_entries
+            .iter()
+            .any(|managed| self.managed_absolute_path(managed.as_path()) == selected_abs)
     }
 
     pub fn expand_selected_directory(&mut self) -> bool {
@@ -522,10 +519,7 @@ impl App {
             ListView::Unmanaged => self
                 .unmanaged_entries
                 .iter()
-                .filter(|path| {
-                    let abs = self.resolve_with_base(path.as_path(), &self.working_dir);
-                    !self.is_managed_absolute_path(&abs)
-                })
+                .filter(|path| self.is_visible_in_unmanaged_view(path.as_path()))
                 .cloned()
                 .collect(),
         }
@@ -655,34 +649,28 @@ impl App {
         let mut children: Vec<PathBuf> = read_dir
             .filter_map(Result::ok)
             .map(|entry| entry.file_name())
-            .map(|name| {
-                if parent.is_absolute() {
-                    parent.join(name)
-                } else {
-                    PathBuf::from(parent).join(name)
-                }
-            })
-            .filter(|path| {
-                if self.view != ListView::Unmanaged {
-                    return true;
-                }
-                let abs = self.resolve_with_base(path.as_path(), &self.working_dir);
-                !self.is_managed_absolute_path(&abs)
-            })
+            .map(|name| PathBuf::from(parent).join(name))
+            .filter(|path| self.is_visible_in_unmanaged_view(path.as_path()))
             .collect();
 
         children.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
         children
     }
 
-    fn is_managed_absolute_path(&self, path: &Path) -> bool {
+    fn managed_absolute_path(&self, managed: &Path) -> PathBuf {
+        self.resolve_with_base(managed, &self.home_dir)
+    }
+
+    fn is_exact_managed_path_in_working_dir(&self, path: &Path) -> bool {
         self.managed_entries.iter().any(|managed| {
-            let managed_abs = self.resolve_with_base(managed.as_path(), &self.home_dir);
-            if !managed_abs.starts_with(&self.working_dir) {
-                return false;
-            }
-            path == managed_abs
+            let managed_abs = self.managed_absolute_path(managed.as_path());
+            managed_abs.starts_with(&self.working_dir) && managed_abs == path
         })
+    }
+
+    fn is_visible_in_unmanaged_view(&self, path: &Path) -> bool {
+        let abs = self.resolve_with_base(path, &self.working_dir);
+        !self.is_exact_managed_path_in_working_dir(&abs)
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
