@@ -105,6 +105,15 @@ struct VisibleEntry {
     path: PathBuf,
     depth: usize,
     is_dir: bool,
+    can_expand: bool,
+    is_symlink: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DirectoryState {
+    is_dir: bool,
+    can_expand: bool,
+    is_symlink: bool,
 }
 
 pub struct App {
@@ -366,7 +375,7 @@ impl App {
         let Some(entry) = self.visible_entries.get(self.selected_index).cloned() else {
             return false;
         };
-        if !entry.is_dir {
+        if !entry.can_expand {
             return false;
         }
 
@@ -655,6 +664,8 @@ impl App {
                     path,
                     depth: 0,
                     is_dir,
+                    can_expand: false,
+                    is_symlink: false,
                 });
             }
         }
@@ -771,14 +782,17 @@ impl App {
             return;
         }
 
-        let is_dir = self.path_is_directory(&path);
+        let directory = self.path_directory_state_for_view(&path, self.view);
+        let is_dir = directory.is_dir;
         out.push(VisibleEntry {
             path: path.clone(),
             depth,
             is_dir,
+            can_expand: directory.can_expand,
+            is_symlink: directory.is_symlink,
         });
 
-        if !is_dir || (!force_expand && !self.expanded_dirs.contains(&path)) {
+        if !directory.can_expand || (!force_expand && !self.expanded_dirs.contains(&path)) {
             return;
         }
 
@@ -858,14 +872,18 @@ impl App {
             .get(&path)
             .map(|entries| !entries.is_empty())
             .unwrap_or(false);
-        let is_dir = has_children || self.path_is_directory_with_base(&path, &self.home_dir);
+        let directory = self.directory_state_with_base(&path, &self.home_dir);
+        let is_dir = has_children || directory.is_dir;
+        let can_expand = has_children || directory.can_expand;
         out.push(VisibleEntry {
             path: path.clone(),
             depth,
             is_dir,
+            can_expand,
+            is_symlink: directory.is_symlink,
         });
 
-        if !is_dir || (!force_expand && !self.expanded_dirs.contains(&path)) {
+        if !can_expand || (!force_expand && !self.expanded_dirs.contains(&path)) {
             return;
         }
 
@@ -936,6 +954,9 @@ impl App {
             }
             label.push(' ');
             label.push_str(&entry.path.display().to_string());
+            if entry.is_symlink {
+                label.push('@');
+            }
             if entry.is_dir {
                 label.push('/');
             }
@@ -947,8 +968,14 @@ impl App {
         label.push_str(if marked { "* " } else { "  " });
 
         let expanded = self.expanded_dirs.contains(&entry.path);
-        let marker = if entry.is_dir {
+        let marker = if entry.is_symlink && entry.is_dir {
+            "[L]"
+        } else if entry.is_symlink {
+            " L "
+        } else if entry.can_expand {
             if expanded { "[-]" } else { "[+]" }
+        } else if entry.is_dir {
+            "[ ]"
         } else {
             "   "
         };
@@ -967,6 +994,9 @@ impl App {
         };
 
         label.push_str(&name);
+        if entry.is_symlink {
+            label.push('@');
+        }
         if entry.is_dir {
             label.push('/');
         }
@@ -975,17 +1005,49 @@ impl App {
     }
 
     fn path_is_directory(&self, path: &Path) -> bool {
-        let abs = self.resolve_path_for_view(path, self.view);
-        fs::symlink_metadata(abs)
-            .map(|meta| meta.file_type().is_dir())
-            .unwrap_or(false)
+        self.path_directory_state_for_view(path, self.view).is_dir
     }
 
-    fn path_is_directory_with_base(&self, path: &Path, base: &Path) -> bool {
+    fn path_directory_state_for_view(&self, path: &Path, view: ListView) -> DirectoryState {
+        let abs = self.resolve_path_for_view(path, view);
+        self.directory_state_for_absolute(&abs)
+    }
+
+    fn directory_state_with_base(&self, path: &Path, base: &Path) -> DirectoryState {
         let abs = self.resolve_with_base(path, base);
-        fs::symlink_metadata(abs)
-            .map(|meta| meta.file_type().is_dir())
-            .unwrap_or(false)
+        self.directory_state_for_absolute(&abs)
+    }
+
+    fn directory_state_for_absolute(&self, abs: &Path) -> DirectoryState {
+        let Ok(meta) = fs::symlink_metadata(abs) else {
+            return DirectoryState::default();
+        };
+        let kind = meta.file_type();
+        if kind.is_dir() {
+            return DirectoryState {
+                is_dir: true,
+                can_expand: true,
+                is_symlink: false,
+            };
+        }
+
+        if kind.is_symlink() && fs::metadata(abs).is_ok_and(|target| target.is_dir()) {
+            return DirectoryState {
+                is_dir: true,
+                can_expand: false,
+                is_symlink: true,
+            };
+        }
+
+        if kind.is_symlink() {
+            return DirectoryState {
+                is_dir: false,
+                can_expand: false,
+                is_symlink: true,
+            };
+        }
+
+        DirectoryState::default()
     }
 
     fn resolve_path_for_view(&self, path: &Path, view: ListView) -> PathBuf {
@@ -1132,6 +1194,75 @@ mod tests {
             app.current_items()
                 .iter()
                 .any(|line| line.contains("nvim/"))
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unmanaged_symlink_directory_is_shown_but_not_expandable() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_symlink_dir_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let real_dir = temp_root.join("real");
+        fs::create_dir_all(&real_dir).expect("create real dir");
+        fs::write(real_dir.join("inside.txt"), "inside").expect("write inner file");
+        symlink(&real_dir, temp_root.join("linkdir")).expect("create symlink dir");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from("linkdir")];
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.selected_is_directory());
+        assert!(!app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(
+            items
+                .iter()
+                .any(|line| line.contains("[L]") && line.contains("linkdir@/"))
+        );
+        assert!(!items.iter().any(|line| line.contains("inside.txt")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unmanaged_symlink_file_shows_link_marker_and_suffix() {
+        use std::os::unix::fs::symlink;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_symlink_file_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create root");
+        fs::write(temp_root.join("real.txt"), "hello").expect("write real file");
+        symlink(temp_root.join("real.txt"), temp_root.join("link.txt"))
+            .expect("create symlink file");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from("link.txt")];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(
+            items
+                .iter()
+                .any(|line| line.contains(" L ") && line.contains("link.txt@"))
         );
 
         let _ = fs::remove_dir_all(temp_root);

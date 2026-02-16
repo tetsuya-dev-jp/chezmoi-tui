@@ -3,7 +3,7 @@ use crate::app::{App, BackendTask, DetailKind};
 use crate::domain::ListView;
 use anyhow::{Context, Result};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::Path;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -13,8 +13,29 @@ const PREVIEW_BINARY_SAMPLE_BYTES: usize = 4096;
 pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("preview target metadata failed: {}", path.display()))?;
-    if metadata.file_type().is_dir() {
+    let kind = metadata.file_type();
+
+    if kind.is_dir() {
         return Ok("This is a directory. Expand it and select a file inside.".to_string());
+    }
+    if kind.is_symlink() {
+        match fs::metadata(path) {
+            Ok(target) if target.is_dir() => {
+                return Ok(
+                    "This is a directory symlink. Directory links are shown but not expanded by default."
+                        .to_string(),
+                );
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok("Cannot preview broken symlink.".to_string());
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to inspect symlink target: {}", path.display())
+                });
+            }
+        }
     }
 
     let file = File::open(path).with_context(|| format!("failed to read: {}", path.display()))?;
@@ -124,6 +145,7 @@ pub(crate) fn maybe_enqueue_auto_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn preview_rejects_binary_files() {
@@ -144,5 +166,51 @@ mod tests {
         let got = load_file_preview(&file).expect("preview");
         assert!(got.contains("preview truncated"));
         let _ = std::fs::remove_file(file);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_reports_directory_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_preview_symlink_dir_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let real_dir = root.join("real");
+        std::fs::create_dir_all(&real_dir).expect("create real dir");
+        std::fs::write(real_dir.join("inside.txt"), "inside").expect("write file");
+        let link = root.join("linkdir");
+        symlink(&real_dir, &link).expect("create symlink");
+
+        let got = load_file_preview(&link).expect("preview");
+        assert!(got.contains("directory symlink"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_reports_broken_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_preview_broken_symlink_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+        let link = root.join("broken");
+        symlink(root.join("missing.txt"), &link).expect("create broken symlink");
+
+        let got = load_file_preview(&link).expect("preview");
+        assert!(got.contains("broken symlink"));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
