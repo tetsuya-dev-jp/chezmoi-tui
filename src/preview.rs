@@ -2,7 +2,8 @@ use crate::actions::send_task;
 use crate::app::{App, BackendTask, DetailKind};
 use crate::domain::ListView;
 use anyhow::{Context, Result};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -16,19 +17,28 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
         return Ok("This is a directory. Expand it and select a file inside.".to_string());
     }
 
-    let bytes = fs::read(path).with_context(|| format!("failed to read: {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("failed to read: {}", path.display()))?;
+    let mut bytes = Vec::with_capacity(PREVIEW_MAX_BYTES + 1);
+    file.take((PREVIEW_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read: {}", path.display()))?;
+
     let sample_len = bytes.len().min(PREVIEW_BINARY_SAMPLE_BYTES);
     if bytes[..sample_len].contains(&0) {
         return Ok("Cannot preview binary file.".to_string());
     }
 
-    let limit = bytes.len().min(PREVIEW_MAX_BYTES);
-    let mut text = String::from_utf8_lossy(&bytes[..limit]).to_string();
-    if bytes.len() > PREVIEW_MAX_BYTES {
+    let is_truncated = bytes.len() > PREVIEW_MAX_BYTES;
+    if is_truncated {
+        bytes.truncate(PREVIEW_MAX_BYTES);
+    }
+
+    let mut text = String::from_utf8_lossy(&bytes).to_string();
+    if is_truncated {
         text.push_str(&format!(
             "\n\n--- preview truncated at {} bytes (file size: {} bytes) ---",
             PREVIEW_MAX_BYTES,
-            bytes.len()
+            metadata.len()
         ));
     }
     Ok(text)

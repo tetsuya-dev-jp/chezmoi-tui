@@ -170,7 +170,10 @@ fn handle_key_without_modal(
             app.switch_view(ListView::Status);
             selection_changed = true;
         }
-        KeyCode::Char('2') => app.switch_view(ListView::Managed),
+        KeyCode::Char('2') => {
+            app.switch_view(ListView::Managed);
+            selection_changed = true;
+        }
         KeyCode::Char('3') => {
             app.switch_view(ListView::Unmanaged);
             selection_changed = true;
@@ -617,6 +620,22 @@ mod tests {
 
         handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
         assert!(!app.footer_help);
+    }
+
+    #[test]
+    fn switching_to_managed_view_enqueues_auto_preview() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![PathBuf::from(".zshrc")];
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
+
+        handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
+
+        let task = task_rx.try_recv().expect("preview task");
+        assert!(matches!(
+            task,
+            BackendTask::LoadPreview { target, .. } if target == std::path::Path::new(".zshrc")
+        ));
     }
 
     #[test]

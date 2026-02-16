@@ -100,11 +100,20 @@ pub(crate) fn execute_action_request(
     request: ActionRequest,
 ) -> Result<()> {
     if request.action == Action::Ignore {
-        run_internal_ignore_action(app, &request)?;
-        if app.batch_in_progress() {
-            maybe_continue_batch(app, task_tx)?;
-        } else {
-            send_task(app, task_tx, BackendTask::RefreshAll)?;
+        match run_internal_ignore_action(app, &request) {
+            Ok(()) => {
+                if app.batch_in_progress() {
+                    maybe_continue_batch(app, task_tx)?;
+                } else {
+                    send_task(app, task_tx, BackendTask::RefreshAll)?;
+                }
+            }
+            Err(err) => {
+                app.log(format!("ignore action error: {err:#}"));
+                if app.batch_in_progress() {
+                    maybe_continue_batch(app, task_tx)?;
+                }
+            }
         }
         return Ok(());
     }
@@ -277,6 +286,8 @@ mod tests {
     use crate::config::AppConfig;
     use crate::domain::ChangeKind;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc;
 
     #[test]
     fn squash_lines_limits_output() {
@@ -327,5 +338,35 @@ mod tests {
         let message = validate_action_requests(&app, Action::Add, &requests);
         assert!(message.is_some());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ignore_action_error_is_logged_without_returning_error() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let missing_target = std::env::temp_dir().join(format!(
+            "chezmoi_tui_missing_ignore_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let request = ActionRequest {
+            action: Action::Ignore,
+            target: Some(missing_target),
+            chattr_attrs: None,
+        };
+
+        let result = execute_action_request(&mut app, &task_tx, request);
+        assert!(result.is_ok());
+        assert!(task_rx.try_recv().is_err());
+        assert!(
+            app.logs
+                .iter()
+                .any(|line| line.contains("ignore action error")),
+            "expected ignore error log, got: {:?}",
+            app.logs
+        );
     }
 }
