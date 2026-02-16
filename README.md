@@ -25,7 +25,7 @@ View behavior:
 | `managed` | Home destination | File preview | Yes |
 | `unmanaged` | Current working directory | File preview | Yes |
 
-## Quick Start
+## Installation
 
 ### Requirements
 
@@ -33,12 +33,33 @@ View behavior:
 - `chezmoi` in `PATH`
 - macOS or Linux
 
-### Run
+### Install from crates.io (recommended)
+
+```bash
+cargo install chezmoi-tui
+```
+
+### Run installed binary
+
+```bash
+chezmoi-tui
+```
+
+### Run from source (development)
 
 ```bash
 git clone https://github.com/tetsuya-dev-jp/chezmoi-tui.git
 cd chezmoi-tui
 cargo run
+```
+
+## Usage
+
+Start the app and refresh once to load current state:
+
+```bash
+chezmoi-tui
+# then press r
 ```
 
 ## Core Workflow
