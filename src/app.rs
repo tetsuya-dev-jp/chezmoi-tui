@@ -43,7 +43,6 @@ pub enum InputKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModalState {
     None,
-    Help,
     ListFilter {
         value: String,
         original: String,
@@ -127,6 +126,7 @@ pub struct App {
     pub modal: ModalState,
     list_filter: String,
     pub busy: bool,
+    pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
     home_dir: PathBuf,
@@ -162,6 +162,7 @@ impl App {
             modal: ModalState::None,
             list_filter: String::new(),
             busy: false,
+            footer_help: false,
             pending_foreground: None,
             should_quit: false,
             home_dir,
@@ -421,8 +422,8 @@ impl App {
         };
     }
 
-    pub fn open_help(&mut self) {
-        self.modal = ModalState::Help;
+    pub fn toggle_footer_help(&mut self) {
+        self.footer_help = !self.footer_help;
     }
 
     pub fn open_confirm(&mut self, request: ActionRequest) {

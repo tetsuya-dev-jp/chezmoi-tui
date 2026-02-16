@@ -4,12 +4,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let footer_height = if app.footer_help { 2 } else { 1 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
         .split(frame.area());
 
     let main = Layout::default()
@@ -140,202 +142,901 @@ fn log_scroll_offset(total_lines: usize, area_height: u16, tail_offset: usize) -
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(area);
-
-    let mut top = Vec::new();
-    top.extend(badge(
-        if app.busy { " BUSY " } else { " IDLE " },
-        if app.busy {
-            Style::default().bg(Color::Yellow).fg(Color::Black)
-        } else {
-            Style::default().bg(Color::DarkGray).fg(Color::White)
-        },
-    ));
-    top.push(Span::raw(" "));
-    top.extend(badge(
-        format!(" VIEW {} ", app.view.title()),
-        Style::default().bg(Color::Blue).fg(Color::Black),
-    ));
-    top.push(Span::raw(" "));
-    top.extend(badge(
-        format!(" FOCUS {} ", focus_name(app.focus)),
-        Style::default().bg(Color::Cyan).fg(Color::Black),
-    ));
-    top.push(Span::raw(" "));
-    top.extend(badge(
-        format!(" ITEMS {} ", app.current_len()),
-        Style::default().bg(Color::DarkGray).fg(Color::White),
-    ));
-    top.push(Span::raw(" "));
-    top.extend(badge(
-        format!(" MARK {} ", app.marked_count()),
-        Style::default().bg(Color::LightBlue).fg(Color::Black),
-    ));
-    if !app.list_filter().trim().is_empty() {
-        top.push(Span::raw(" "));
-        top.extend(badge(
-            format!(" FILTER {} ", compact_label(app.list_filter(), 28)),
-            Style::default().bg(Color::LightYellow).fg(Color::Black),
-        ));
-    }
-
-    let mut bottom = Vec::new();
-    for spec in status_bar_hint_specs(app) {
-        bottom.extend(hint(spec.key, spec.label, spec.emphasized));
-    }
-
-    let top_paragraph = Paragraph::new(Line::from(top))
-        .alignment(Alignment::Left)
-        .style(Style::default().bg(Color::Black));
-    let bottom_paragraph = Paragraph::new(Line::from(bottom))
-        .alignment(Alignment::Left)
-        .style(Style::default().bg(Color::Black));
-
-    frame.render_widget(top_paragraph, rows[0]);
-    frame.render_widget(bottom_paragraph, rows[1]);
-}
-
-fn focus_name(focus: PaneFocus) -> &'static str {
-    match focus {
-        PaneFocus::List => "List",
-        PaneFocus::Detail => "Detail",
-        PaneFocus::Log => "Log",
-    }
-}
-
-fn badge<T: Into<String>>(text: T, style: Style) -> Vec<Span<'static>> {
-    vec![Span::styled(text.into(), style)]
+    FooterBar::draw(frame, app, area);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct HintSpec {
-    key: &'static str,
-    label: &'static str,
-    emphasized: bool,
+enum HintTone {
+    Primary,
+    Secondary,
+    Muted,
 }
 
-fn status_bar_hint_specs(app: &App) -> Vec<HintSpec> {
-    let mut specs = vec![
-        HintSpec {
-            key: "1/2/3",
-            label: "View",
-            emphasized: false,
-        },
-        HintSpec {
-            key: "Tab",
-            label: "Focus",
-            emphasized: false,
-        },
-    ];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Hint {
+    key: &'static str,
+    label: &'static str,
+    group: Option<&'static str>,
+    priority: u8,
+    tone: HintTone,
+    enabled: bool,
+    mandatory: bool,
+}
 
-    match app.focus {
-        PaneFocus::Detail | PaneFocus::Log => {
-            specs.extend([
-                HintSpec {
-                    key: "j/k ↑/↓",
-                    label: "Scroll",
-                    emphasized: true,
-                },
-                HintSpec {
-                    key: "PgUp/PgDn",
-                    label: "Page",
-                    emphasized: true,
-                },
-                HintSpec {
-                    key: "Ctrl+u/d",
-                    label: "HalfPage",
-                    emphasized: true,
-                },
-            ]);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LabelMode {
+    Full,
+    Truncated(usize),
+    KeyOnly,
+}
+
+#[derive(Debug, Clone)]
+struct LeftSegment {
+    text: String,
+    style: Style,
+    essential: bool,
+    badge: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HintRendered {
+    key: &'static str,
+    label: String,
+    tone: HintTone,
+    mandatory: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CheatItem {
+    key: &'static str,
+    label: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct CheatGroup {
+    title: &'static str,
+    items: Vec<CheatItem>,
+    priority: u8,
+}
+
+struct FooterBar;
+
+const MIN_RIGHT_HINT_WIDTH: usize = 34;
+const TARGET_HINT_COUNT: usize = 7;
+const TRUNCATED_HINT_LABEL_WIDTH: usize = 6;
+
+impl FooterBar {
+    fn draw(frame: &mut Frame, app: &App, area: Rect) {
+        if area.height == 0 {
+            return;
         }
-        PaneFocus::List => {
-            specs.push(HintSpec {
-                key: "j/k ↑/↓",
-                label: "Move",
-                emphasized: true,
-            });
-            specs.push(HintSpec {
-                key: "Space",
-                label: "Mark",
-                emphasized: false,
-            });
-            specs.push(HintSpec {
-                key: "/",
-                label: "Filter",
-                emphasized: false,
-            });
-            specs.push(HintSpec {
-                key: "c",
-                label: "Clear",
-                emphasized: false,
-            });
-            if matches!(app.view, ListView::Managed | ListView::Unmanaged) {
-                specs.push(HintSpec {
-                    key: "h/l ←/→",
-                    label: "Fold",
-                    emphasized: false,
-                });
-            }
-            if app.view != ListView::Unmanaged {
-                specs.push(HintSpec {
-                    key: "d",
-                    label: "Diff",
-                    emphasized: false,
-                });
-            }
-            specs.push(HintSpec {
-                key: "v",
-                label: "Preview",
-                emphasized: false,
-            });
+
+        let rows = if app.footer_help && area.height >= 2 {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Length(1)])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1)])
+                .split(area)
+        };
+
+        Self::draw_main_row(frame, app, rows[0]);
+        if rows.len() > 1 {
+            Self::draw_cheat_row(frame, app, rows[1]);
         }
     }
 
-    specs.extend([
-        HintSpec {
-            key: "a",
-            label: "Action",
-            emphasized: false,
+    fn draw_main_row(frame: &mut Frame, app: &App, area: Rect) {
+        let total_width = area.width as usize;
+        if total_width == 0 {
+            return;
+        }
+
+        let min_right = MIN_RIGHT_HINT_WIDTH.min(total_width.saturating_sub(1));
+        let left_max = total_width.saturating_sub(min_right + 1);
+        let (left_spans, left_width) = footer_left(app, left_max);
+
+        let right_budget = total_width
+            .saturating_sub(left_width)
+            .saturating_sub(if left_width > 0 { 1 } else { 0 });
+        // Help ON でも 1行目は通常フッターの最重要ヒントだけを表示する。
+        // 追加説明キーは 2行目の Help シートにのみ集約する。
+        let rendered = layout_hints(right_budget, footer_hints(app));
+        let (right_spans, right_width) = render_hints(&rendered);
+
+        let gap = total_width.saturating_sub(left_width + right_width);
+
+        let mut line = Vec::new();
+        line.extend(left_spans);
+        if gap > 0 {
+            line.push(Span::raw(" ".repeat(gap)));
+        }
+        line.extend(right_spans);
+        let line = clip_spans_to_width(line, total_width);
+
+        let paragraph = Paragraph::new(Line::from(line))
+            .alignment(Alignment::Left)
+            .style(Style::default().bg(Color::Rgb(14, 16, 20)));
+        frame.render_widget(paragraph, area);
+    }
+
+    fn draw_cheat_row(frame: &mut Frame, app: &App, area: Rect) {
+        let max_width = area.width as usize;
+        if max_width == 0 {
+            return;
+        }
+
+        let mut spans = vec![
+            Span::styled(
+                "Help:",
+                Style::default()
+                    .fg(Color::LightBlue)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ];
+        spans.extend(render_help_groups(
+            app,
+            max_width.saturating_sub(text_width("Help: ")),
+        ));
+        let spans = clip_spans_to_width(spans, max_width);
+        let line = Line::from(spans);
+        let paragraph = Paragraph::new(line)
+            .alignment(Alignment::Left)
+            .style(Style::default().bg(Color::Rgb(14, 16, 20)));
+        frame.render_widget(paragraph, area);
+    }
+}
+
+fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
+    if max_width == 0 {
+        return (Vec::new(), 0);
+    }
+
+    let item_count = app.current_len();
+    let marked_count = app.marked_count();
+    let mut segments = vec![LeftSegment {
+        text: app.view.title().to_string(),
+        style: Style::default()
+            .bg(Color::Rgb(35, 118, 210))
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+        essential: true,
+        badge: true,
+    }];
+
+    if app.busy {
+        segments.push(LeftSegment {
+            text: "Busy".to_string(),
+            style: Style::default().fg(Color::LightYellow),
+            essential: false,
+            badge: false,
+        });
+    }
+
+    segments.extend([
+        LeftSegment {
+            text: format!("{} {}", item_count, item_word(item_count)),
+            style: Style::default().fg(Color::Gray),
+            essential: true,
+            badge: false,
         },
-        HintSpec {
-            key: "r",
-            label: "Refresh",
-            emphasized: false,
-        },
-        HintSpec {
-            key: "?",
-            label: "Help",
-            emphasized: false,
-        },
-        HintSpec {
-            key: "q",
-            label: "Quit",
-            emphasized: false,
+        LeftSegment {
+            text: format!("{} marked", marked_count),
+            style: Style::default().fg(Color::Gray),
+            essential: true,
+            badge: false,
         },
     ]);
 
-    specs
+    if !app.list_filter().trim().is_empty() {
+        segments.push(LeftSegment {
+            text: format!("/{}", compact_label(app.list_filter(), 18)),
+            style: Style::default().fg(Color::LightYellow),
+            essential: false,
+            badge: false,
+        });
+    }
+
+    fit_left_segments(&mut segments, max_width);
+
+    let mut spans = Vec::new();
+    let mut width = 0usize;
+    for (idx, seg) in segments.iter().enumerate() {
+        if idx > 0 {
+            let sep = " • ";
+            spans.push(Span::styled(sep, Style::default().fg(Color::DarkGray)));
+            width += text_width(sep);
+        }
+
+        if seg.badge {
+            spans.push(Span::styled(format!(" {} ", seg.text), seg.style));
+            width += text_width(&seg.text) + 2;
+        } else {
+            spans.push(Span::styled(seg.text.clone(), seg.style));
+            width += text_width(&seg.text);
+        }
+    }
+
+    (spans, width)
 }
 
-fn hint(key: &str, label: &str, emphasized: bool) -> Vec<Span<'static>> {
-    let key_style = if emphasized {
-        Style::default()
-            .bg(Color::LightBlue)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().bg(Color::DarkGray).fg(Color::White)
+fn fit_left_segments(segments: &mut Vec<LeftSegment>, max_width: usize) {
+    while left_segments_width(segments) > max_width {
+        if let Some(index) = (0..segments.len())
+            .rev()
+            .find(|&index| !segments[index].essential)
+        {
+            segments.remove(index);
+        } else {
+            break;
+        }
+    }
+
+    while left_segments_width(segments) > max_width && segments.len() > 2 {
+        segments.pop();
+    }
+
+    if left_segments_width(segments) > max_width && segments.len() > 1 {
+        let last = segments.len() - 1;
+        let current = left_segments_width(segments);
+        let over = current.saturating_sub(max_width);
+        let keep = text_width(&segments[last].text).saturating_sub(over + 1);
+        segments[last].text = compact_label(&segments[last].text, keep.max(1));
+    }
+}
+
+fn left_segments_width(segments: &[LeftSegment]) -> usize {
+    if segments.is_empty() {
+        return 0;
+    }
+
+    segments
+        .iter()
+        .enumerate()
+        .map(|(idx, seg)| {
+            let text_len = if seg.badge {
+                text_width(&seg.text) + 2
+            } else {
+                text_width(&seg.text)
+            };
+            let sep_len = if idx == 0 { 0 } else { text_width(" • ") };
+            text_len + sep_len
+        })
+        .sum()
+}
+
+fn footer_hints(app: &App) -> Vec<Hint> {
+    let mut hints = match app.focus {
+        PaneFocus::List => list_focus_hints(app),
+        PaneFocus::Detail | PaneFocus::Log => detail_focus_hints(),
     };
 
+    if app.footer_help {
+        hints.extend(help_only_global_hints());
+    }
+    hints.extend(primary_global_hints());
+
+    hints
+}
+
+fn list_focus_hints(app: &App) -> Vec<Hint> {
     vec![
-        Span::styled(format!(" {} ", key), key_style),
-        Span::raw(" "),
-        Span::styled(label.to_string(), Style::default().fg(Color::Gray)),
-        Span::raw("  "),
+        hint(
+            "/",
+            "Find",
+            Some("list"),
+            100,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
+        hint(
+            "Space",
+            "Mark",
+            Some("list"),
+            95,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
+        hint(
+            "j/k",
+            "Move",
+            Some("list"),
+            90,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
+        hint(
+            "d",
+            "Diff",
+            Some("detail"),
+            88,
+            HintTone::Secondary,
+            app.view == ListView::Status,
+            false,
+        ),
+        hint(
+            "v",
+            "View",
+            Some("detail"),
+            88,
+            HintTone::Secondary,
+            app.view != ListView::Status && !app.selected_is_directory(),
+            false,
+        ),
+        hint(
+            "c",
+            "Clear",
+            Some("list"),
+            70,
+            HintTone::Muted,
+            app.marked_count() > 0,
+            false,
+        ),
+        hint(
+            "h/l",
+            "Fold",
+            Some("tree"),
+            62,
+            HintTone::Muted,
+            app.footer_help && matches!(app.view, ListView::Managed | ListView::Unmanaged),
+            false,
+        ),
     ]
+}
+
+fn detail_focus_hints() -> Vec<Hint> {
+    vec![
+        hint(
+            "j/k",
+            "Scroll",
+            Some("scroll"),
+            100,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
+        hint(
+            "PgUp/PgDn",
+            "Page",
+            Some("scroll"),
+            95,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
+        hint(
+            "C-u/d",
+            "Jump",
+            Some("scroll"),
+            90,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
+    ]
+}
+
+fn help_only_global_hints() -> [Hint; 3] {
+    [
+        hint(
+            "Tab",
+            "Pane",
+            Some("global"),
+            60,
+            HintTone::Muted,
+            true,
+            false,
+        ),
+        hint(
+            "1-3",
+            "Switch",
+            Some("global"),
+            58,
+            HintTone::Muted,
+            true,
+            false,
+        ),
+        hint(
+            "r",
+            "Refresh",
+            Some("global"),
+            55,
+            HintTone::Muted,
+            true,
+            false,
+        ),
+    ]
+}
+
+fn primary_global_hints() -> [Hint; 3] {
+    [
+        hint(
+            "a",
+            "Actions",
+            Some("global"),
+            89,
+            HintTone::Primary,
+            true,
+            true,
+        ),
+        hint(
+            "?",
+            "Help",
+            Some("global"),
+            88,
+            HintTone::Primary,
+            true,
+            true,
+        ),
+        hint(
+            "q",
+            "Quit",
+            Some("global"),
+            87,
+            HintTone::Primary,
+            true,
+            true,
+        ),
+    ]
+}
+
+fn hint(
+    key: &'static str,
+    label: &'static str,
+    group: Option<&'static str>,
+    priority: u8,
+    tone: HintTone,
+    enabled: bool,
+    mandatory: bool,
+) -> Hint {
+    Hint {
+        key,
+        label,
+        group,
+        priority,
+        tone,
+        enabled,
+        mandatory,
+    }
+}
+
+fn layout_hints(max_width: usize, hints: Vec<Hint>) -> Vec<HintRendered> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+
+    let mut active: Vec<Hint> = hints
+        .into_iter()
+        .filter(|hint| hint.enabled && hint.tone != HintTone::Muted)
+        .collect();
+    active.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.group.cmp(&b.group))
+            .then_with(|| a.label.cmp(b.label))
+    });
+
+    let mut rendered = render_hints_for_mode(&active, LabelMode::Full);
+    trim_optional_hints(&mut rendered, max_width, Some(TARGET_HINT_COUNT));
+
+    if hints_width(&rendered) > max_width {
+        rendered = rerender_selected_hints(
+            &active,
+            &rendered,
+            LabelMode::Truncated(TRUNCATED_HINT_LABEL_WIDTH),
+        );
+    }
+
+    trim_optional_hints(&mut rendered, max_width, None);
+
+    if hints_width(&rendered) > max_width {
+        rendered = rerender_selected_hints(&active, &rendered, LabelMode::KeyOnly);
+    }
+
+    trim_optional_hints(&mut rendered, max_width, None);
+
+    rendered
+}
+
+fn trim_optional_hints(
+    rendered: &mut Vec<HintRendered>,
+    max_width: usize,
+    max_count: Option<usize>,
+) {
+    loop {
+        let over_count = max_count.is_some_and(|limit| rendered.len() > limit);
+        let over_width = hints_width(rendered) > max_width;
+        if !over_count && !over_width {
+            break;
+        }
+
+        if let Some(index) = rendered.iter().rposition(|hint| !hint.mandatory) {
+            rendered.remove(index);
+        } else {
+            break;
+        }
+    }
+}
+
+fn rerender_selected_hints(
+    active: &[Hint],
+    rendered: &[HintRendered],
+    mode: LabelMode,
+) -> Vec<HintRendered> {
+    let selected_keys: HashSet<&'static str> = rendered.iter().map(|hint| hint.key).collect();
+    let selected: Vec<Hint> = active
+        .iter()
+        .filter(|candidate| selected_keys.contains(candidate.key))
+        .copied()
+        .collect();
+    render_hints_for_mode(&selected, mode)
+}
+
+fn render_hints_for_mode(hints: &[Hint], mode: LabelMode) -> Vec<HintRendered> {
+    hints
+        .iter()
+        .map(|hint| HintRendered {
+            key: hint.key,
+            label: render_hint_label(hint.label, mode),
+            tone: hint.tone,
+            mandatory: hint.mandatory,
+        })
+        .collect()
+}
+
+fn render_hint_label(label: &str, mode: LabelMode) -> String {
+    match mode {
+        LabelMode::Full => label.to_string(),
+        LabelMode::Truncated(max) => compact_label(label, max),
+        LabelMode::KeyOnly => String::new(),
+    }
+}
+
+fn hints_width(hints: &[HintRendered]) -> usize {
+    if hints.is_empty() {
+        return 0;
+    }
+
+    hints
+        .iter()
+        .enumerate()
+        .map(|(index, hint)| {
+            let mut width = keycap_width(hint.key);
+            if !hint.label.is_empty() {
+                width += 1 + text_width(&hint.label);
+            }
+            if index > 0 {
+                width += 2;
+            }
+            width
+        })
+        .sum()
+}
+
+fn render_hints(hints: &[HintRendered]) -> (Vec<Span<'static>>, usize) {
+    let mut spans = Vec::new();
+    let mut width = 0usize;
+
+    for (index, hint) in hints.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+            width += 2;
+        }
+
+        let keycap_style = keycap_style(hint.tone);
+        let label_style = hint_label_style(hint.tone);
+        spans.push(Span::styled(format!(" {} ", hint.key), keycap_style));
+        width += keycap_width(hint.key);
+
+        if !hint.label.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(hint.label.clone(), label_style));
+            width += 1 + text_width(&hint.label);
+        }
+    }
+
+    (spans, width)
+}
+
+fn keycap_style(tone: HintTone) -> Style {
+    match tone {
+        HintTone::Primary => Style::default()
+            .bg(Color::Rgb(70, 160, 250))
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+        HintTone::Secondary => Style::default().bg(Color::Rgb(34, 38, 46)).fg(Color::White),
+        HintTone::Muted => Style::default().fg(Color::DarkGray),
+    }
+}
+
+fn hint_label_style(tone: HintTone) -> Style {
+    match tone {
+        HintTone::Primary => Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
+        HintTone::Secondary => Style::default().fg(Color::Gray),
+        HintTone::Muted => Style::default().fg(Color::DarkGray),
+    }
+}
+
+fn cheat_groups(app: &App) -> Vec<CheatGroup> {
+    let mut nav_items = Vec::new();
+    let mut view_items = Vec::new();
+    let mut global_items = vec![CheatItem {
+        key: "a",
+        label: "Actions",
+    }];
+    if !app.busy {
+        global_items.push(CheatItem {
+            key: "r",
+            label: "Refresh",
+        });
+    }
+    global_items.extend([
+        CheatItem {
+            key: "?",
+            label: "Help",
+        },
+        CheatItem {
+            key: "q",
+            label: "Quit",
+        },
+    ]);
+
+    match app.focus {
+        PaneFocus::List => {
+            nav_items.extend([
+                CheatItem {
+                    key: "j/k",
+                    label: "Move",
+                },
+                CheatItem {
+                    key: "/",
+                    label: "Find",
+                },
+                CheatItem {
+                    key: "Space",
+                    label: "Mark",
+                },
+            ]);
+            if app.view == ListView::Status {
+                nav_items.push(CheatItem {
+                    key: "d",
+                    label: "Diff",
+                });
+            } else if !app.selected_is_directory() {
+                nav_items.push(CheatItem {
+                    key: "v",
+                    label: "View",
+                });
+            }
+            if app.marked_count() > 0 {
+                nav_items.push(CheatItem {
+                    key: "c",
+                    label: "Clear",
+                });
+            }
+
+            if matches!(app.view, ListView::Managed | ListView::Unmanaged) {
+                view_items.push(CheatItem {
+                    key: "h/l",
+                    label: "Fold",
+                });
+            }
+        }
+        PaneFocus::Detail | PaneFocus::Log => {
+            nav_items.extend([
+                CheatItem {
+                    key: "j/k",
+                    label: "Scroll",
+                },
+                CheatItem {
+                    key: "PgUp/PgDn",
+                    label: "Page",
+                },
+                CheatItem {
+                    key: "C-u/d",
+                    label: "Jump",
+                },
+            ]);
+        }
+    }
+
+    view_items.extend([
+        CheatItem {
+            key: "Tab",
+            label: "Pane",
+        },
+        CheatItem {
+            key: "1-3",
+            label: "Switch",
+        },
+    ]);
+
+    vec![
+        CheatGroup {
+            title: "Nav",
+            items: nav_items,
+            priority: 2,
+        },
+        CheatGroup {
+            title: "View",
+            items: view_items,
+            priority: 1,
+        },
+        CheatGroup {
+            title: "Global",
+            items: global_items,
+            priority: 3,
+        },
+    ]
+}
+
+fn render_help_groups(app: &App, max_width: usize) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+
+    let groups = cheat_groups(app);
+    let (selected, omitted) = fit_cheat_groups(&groups, max_width);
+    let mut spans = Vec::new();
+
+    for (group, keep) in groups.iter().zip(selected.iter()) {
+        if !*keep {
+            continue;
+        }
+
+        if !spans.is_empty() {
+            spans.push(Span::raw("   "));
+        }
+
+        spans.push(Span::styled(
+            format!("{}:", group.title),
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+
+        for (item_idx, item) in group.items.iter().enumerate() {
+            if item_idx > 0 {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(
+                item.key.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                item.label.to_string(),
+                Style::default().fg(Color::Gray),
+            ));
+        }
+    }
+
+    if omitted {
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled("…", Style::default().fg(Color::DarkGray)));
+    }
+    spans
+}
+
+fn fit_cheat_groups(groups: &[CheatGroup], max_width: usize) -> (Vec<bool>, bool) {
+    if groups.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    let mut selected = vec![true; groups.len()];
+    let mut omitted = false;
+
+    while cheat_groups_width(groups, &selected, omitted) > max_width {
+        let next_drop = (0..groups.len())
+            .filter(|&idx| selected[idx] && groups[idx].priority < 3)
+            .min_by_key(|&idx| groups[idx].priority);
+        if let Some(idx) = next_drop {
+            selected[idx] = false;
+            omitted = true;
+        } else {
+            break;
+        }
+    }
+
+    (selected, omitted)
+}
+
+fn cheat_groups_width(groups: &[CheatGroup], selected: &[bool], omitted: bool) -> usize {
+    let mut width = 0usize;
+    let mut kept = 0usize;
+
+    for (group, keep) in groups.iter().zip(selected.iter()) {
+        if !*keep {
+            continue;
+        }
+        if kept > 0 {
+            width += text_width("   ");
+        }
+        width += cheat_group_width(group);
+        kept += 1;
+    }
+
+    if omitted {
+        if kept > 0 {
+            width += text_width("  ");
+        }
+        width += text_width("…");
+    }
+
+    width
+}
+
+fn cheat_group_width(group: &CheatGroup) -> usize {
+    let mut width = text_width(group.title) + text_width(": ");
+    for (idx, item) in group.items.iter().enumerate() {
+        if idx > 0 {
+            width += text_width("  ");
+        }
+        width += text_width(item.key) + text_width(" ") + text_width(item.label);
+    }
+    width
+}
+
+fn clip_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+
+    let mut clipped = Vec::new();
+    let mut used = 0usize;
+
+    for span in spans {
+        if used >= max_width {
+            break;
+        }
+
+        let content = span.content.to_string();
+        let width = text_width(&content);
+        if used + width <= max_width {
+            clipped.push(span);
+            used += width;
+            continue;
+        }
+
+        let remain = max_width.saturating_sub(used);
+        if remain == 0 {
+            break;
+        }
+
+        let truncated: String = content.chars().take(remain).collect();
+        if !truncated.is_empty() {
+            clipped.push(Span::styled(truncated, span.style));
+        }
+        break;
+    }
+
+    clipped
+}
+
+fn text_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn keycap_width(key: &str) -> usize {
+    text_width(key) + 2
+}
+
+fn item_word(count: usize) -> &'static str {
+    if count == 1 { "item" } else { "items" }
 }
 
 fn compact_label(value: &str, max_chars: usize) -> String {
@@ -355,47 +1056,6 @@ fn compact_label(value: &str, max_chars: usize) -> String {
 fn draw_modal(frame: &mut Frame, app: &App) {
     match &app.modal {
         ModalState::None => {}
-        ModalState::Help => {
-            let area = centered_rect(72, 72, frame.area());
-            frame.render_widget(Clear, area);
-
-            let lines = vec![
-                Line::from("Global"),
-                Line::from("  ?           Open/close help"),
-                Line::from("  Tab         Cycle focus (List -> Detail -> Log)"),
-                Line::from("  1/2/3       Switch view"),
-                Line::from("  a           Open action menu"),
-                Line::from("  r           Refresh"),
-                Line::from("  q           Quit"),
-                Line::from(""),
-                Line::from("List Focus"),
-                Line::from("  j/k, Up/Down       Move selection"),
-                Line::from("  /                  Open list filter"),
-                Line::from("  Space              Toggle multi-select mark"),
-                Line::from("  c                  Clear multi-select marks"),
-                Line::from("  h/l, Left/Right    Fold/unfold tree (Managed/Unmanaged)"),
-                Line::from("  d or Enter         Show diff (Status/Managed)"),
-                Line::from("  v                  Preview selected file"),
-                Line::from("  note               Unmanaged list uses preview (no diff)"),
-                Line::from(""),
-                Line::from("Detail / Log Focus"),
-                Line::from("  j/k, Up/Down       Scroll"),
-                Line::from("  PgUp/PgDn          Page scroll"),
-                Line::from("  Ctrl+u / Ctrl+d    Half-page scroll"),
-                Line::from(""),
-                Line::from("Close: Esc, Enter, ?, q"),
-            ];
-
-            let p = Paragraph::new(lines)
-                .block(
-                    Block::default()
-                        .title(" Help ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::LightBlue)),
-                )
-                .wrap(Wrap { trim: false });
-            frame.render_widget(p, area);
-        }
         ModalState::ListFilter { value, .. } => {
             let area = centered_rect(62, 22, frame.area());
             frame.render_widget(Clear, area);
@@ -1263,8 +1923,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionMenuRow, ActionMenuSection, action_menu_text, build_action_menu_rows,
-        log_scroll_offset, parse_hunk_header, status_bar_hint_specs,
+        ActionMenuRow, ActionMenuSection, action_menu_text, build_action_menu_rows, cheat_groups,
+        cheat_groups_width, fit_cheat_groups, footer_hints, hints_width, layout_hints,
+        log_scroll_offset, parse_hunk_header,
     };
     use crate::app::{App, PaneFocus};
     use crate::config::AppConfig;
@@ -1333,41 +1994,113 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_hints_hide_diff_in_unmanaged_list_view() {
+    fn footer_hints_hide_diff_in_unmanaged_list_view() {
         let mut app = App::new(AppConfig::default());
         app.focus = PaneFocus::List;
         app.view = ListView::Unmanaged;
 
-        let specs = status_bar_hint_specs(&app);
-        let labels: Vec<&str> = specs.iter().map(|s| s.label).collect();
+        let hints = footer_hints(&app);
+        let labels: Vec<&str> = hints
+            .iter()
+            .filter(|hint| hint.enabled)
+            .map(|hint| hint.label)
+            .collect();
 
         assert!(!labels.contains(&"Diff"));
-        assert!(labels.contains(&"Fold"));
-        assert!(labels.contains(&"Preview"));
+        assert!(labels.contains(&"View"));
+        assert!(!labels.contains(&"Fold"));
+        assert!(!labels.contains(&"Pane"));
     }
 
     #[test]
-    fn status_bar_hints_show_scroll_only_for_detail_focus() {
+    fn footer_hints_show_scroll_only_for_detail_focus() {
         let mut app = App::new(AppConfig::default());
         app.focus = PaneFocus::Detail;
         app.view = ListView::Managed;
 
-        let specs = status_bar_hint_specs(&app);
-        let labels: Vec<&str> = specs.iter().map(|s| s.label).collect();
+        let hints = footer_hints(&app);
+        let labels: Vec<&str> = hints
+            .iter()
+            .filter(|hint| hint.enabled)
+            .map(|hint| hint.label)
+            .collect();
 
         assert!(labels.contains(&"Scroll"));
         assert!(labels.contains(&"Page"));
-        assert!(labels.contains(&"HalfPage"));
+        assert!(labels.contains(&"Jump"));
         assert!(!labels.contains(&"Diff"));
-        assert!(!labels.contains(&"Preview"));
         assert!(!labels.contains(&"Fold"));
     }
 
     #[test]
-    fn status_bar_hints_include_help_globally() {
+    fn footer_hints_include_help_globally() {
         let app = App::new(AppConfig::default());
-        let specs = status_bar_hint_specs(&app);
-        let labels: Vec<&str> = specs.iter().map(|s| s.label).collect();
+        let hints = footer_hints(&app);
+        let labels: Vec<&str> = hints
+            .iter()
+            .filter(|hint| hint.enabled)
+            .map(|hint| hint.label)
+            .collect();
         assert!(labels.contains(&"Help"));
+        assert!(labels.contains(&"Actions"));
+        assert!(labels.contains(&"Quit"));
+    }
+
+    #[test]
+    fn footer_hints_fit_keeps_mandatory_on_narrow_width() {
+        let app = App::new(AppConfig::default());
+        let rendered = layout_hints(18, footer_hints(&app));
+        let keys: Vec<&str> = rendered.iter().map(|hint| hint.key).collect();
+        assert!(keys.contains(&"a"));
+        assert!(keys.contains(&"?"));
+        assert!(keys.contains(&"q"));
+        assert!(hints_width(&rendered) <= 18);
+    }
+
+    #[test]
+    fn footer_hints_fit_prefers_more_hints_on_wider_terminal() {
+        let app = App::new(AppConfig::default());
+        let narrow = layout_hints(40, footer_hints(&app));
+        let wide = layout_hints(80, footer_hints(&app));
+
+        assert!(hints_width(&wide) <= 80);
+        assert!(hints_width(&narrow) <= 40);
+        assert!(wide.len() >= narrow.len());
+    }
+
+    #[test]
+    fn layout_hints_never_shows_muted_entries() {
+        let mut app = App::new(AppConfig::default());
+        app.focus = PaneFocus::List;
+        let normal = layout_hints(120, footer_hints(&app));
+        let normal_keys: Vec<&str> = normal.iter().map(|hint| hint.key).collect();
+        assert!(!normal_keys.contains(&"Tab"));
+        assert!(!normal_keys.contains(&"1-3"));
+        assert!(!normal_keys.contains(&"h/l"));
+    }
+
+    #[test]
+    fn cheat_groups_are_ordered_nav_view_global() {
+        let app = App::new(AppConfig::default());
+        let groups = cheat_groups(&app);
+        let titles: Vec<&str> = groups.iter().map(|group| group.title).collect();
+        assert_eq!(titles, vec!["Nav", "View", "Global"]);
+    }
+
+    #[test]
+    fn cheat_groups_drop_view_first_when_narrow() {
+        let mut app = App::new(AppConfig::default());
+        app.view = ListView::Managed;
+        let groups = cheat_groups(&app);
+        let (selected, omitted) = fit_cheat_groups(&groups, 56);
+        let mut kept_titles = Vec::new();
+        for (group, keep) in groups.iter().zip(selected.iter()) {
+            if *keep {
+                kept_titles.push(group.title);
+            }
+        }
+        assert!(omitted);
+        assert!(kept_titles.contains(&"Global"));
+        assert!(cheat_groups_width(&groups, &selected, omitted) <= 56);
     }
 }

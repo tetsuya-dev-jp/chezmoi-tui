@@ -348,7 +348,6 @@ fn handle_key_event(
 
     match app.modal.clone() {
         ModalState::None => handle_key_without_modal(app, key, task_tx),
-        ModalState::Help => handle_help_key(app, key),
         ModalState::ListFilter { .. } => handle_list_filter_key(app, key, task_tx),
         ModalState::Ignore { .. } => handle_ignore_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
@@ -366,7 +365,7 @@ fn handle_key_without_modal(
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('?') => app.open_help(),
+        KeyCode::Char('?') => app.toggle_footer_help(),
         KeyCode::Char('/') if app.focus == crate::app::PaneFocus::List => app.open_list_filter(),
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::Char(' ') if app.focus == crate::app::PaneFocus::List => {
@@ -577,16 +576,6 @@ fn handle_list_filter_key(
         maybe_enqueue_auto_detail(app, task_tx)?;
     }
 
-    Ok(())
-}
-
-fn handle_help_key(app: &mut App, key: KeyEvent) -> Result<()> {
-    match key.code {
-        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') | KeyCode::Char('q') => {
-            app.close_modal();
-        }
-        _ => {}
-    }
     Ok(())
 }
 
@@ -1539,23 +1528,16 @@ mod tests {
     }
 
     #[test]
-    fn question_key_opens_help_modal() {
+    fn question_key_toggles_footer_help() {
         let mut app = App::new(AppConfig::default());
         let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
 
         handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
-        assert!(matches!(app.modal, ModalState::Help));
-    }
+        assert!(app.footer_help);
 
-    #[test]
-    fn help_modal_closes_with_escape() {
-        let mut app = App::new(AppConfig::default());
-        app.open_help();
-        let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-
-        handle_help_key(&mut app, key).expect("handle help key");
-        assert!(matches!(app.modal, ModalState::None));
+        handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
+        assert!(!app.footer_help);
     }
 
     #[test]
