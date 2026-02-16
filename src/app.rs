@@ -648,12 +648,22 @@ impl App {
                 .map(|entry| entry.path.clone())
                 .collect(),
             ListView::Managed => self.managed_entries.clone(),
-            ListView::Unmanaged => self
-                .unmanaged_entries
-                .iter()
-                .filter(|path| self.is_visible_in_unmanaged_view(path.as_path()))
-                .cloned()
-                .collect(),
+            ListView::Unmanaged => {
+                let base_paths: Vec<PathBuf> = self
+                    .unmanaged_entries
+                    .iter()
+                    .filter(|path| self.is_visible_in_unmanaged_view(path.as_path()))
+                    .cloned()
+                    .collect();
+
+                // When infra collapses to ".", treat it as "working dir root" and
+                // show direct children instead of rendering "./" as a tree node.
+                if base_paths.iter().any(|path| path == Path::new(".")) {
+                    return self.read_children(Path::new("."));
+                }
+
+                base_paths
+            }
         }
     }
 
@@ -781,7 +791,13 @@ impl App {
         let mut children: Vec<PathBuf> = read_dir
             .filter_map(Result::ok)
             .map(|entry| entry.file_name())
-            .map(|name| PathBuf::from(parent).join(name))
+            .map(|name| {
+                if parent == Path::new(".") {
+                    PathBuf::from(name)
+                } else {
+                    PathBuf::from(parent).join(name)
+                }
+            })
             .filter(|path| self.is_visible_in_unmanaged_view(path.as_path()))
             .collect();
 
@@ -1100,6 +1116,32 @@ mod tests {
 
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("Cargo.lock")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_root_placeholder_is_expanded_without_dot_prefix() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_dot_root_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join(".config")).expect("create child dir");
+        fs::write(temp_root.join("alpha.txt"), "alpha").expect("write child file");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("alpha.txt")));
+        assert!(items.iter().any(|line| line.contains(".config/")));
+        assert!(!items.iter().any(|line| line.contains("./")));
 
         let _ = fs::remove_dir_all(temp_root);
     }

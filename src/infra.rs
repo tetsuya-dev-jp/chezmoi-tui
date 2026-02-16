@@ -1,6 +1,7 @@
 use crate::domain::{Action, ActionRequest, ChangeKind, CommandResult, DiffText, StatusEntry};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -112,11 +113,14 @@ impl ChezmoiClient for ShellChezmoiClient {
 
         let paths = parse_unmanaged_output(&result.stdout)?;
         if use_home_destination {
-            Ok(filter_unmanaged_to_working_dir(
-                paths,
-                &self.home_dir,
-                &self.working_dir,
-            ))
+            let mut scoped =
+                filter_unmanaged_to_working_dir(paths, &self.home_dir, &self.working_dir);
+
+            if scoped.iter().any(|path| path == Path::new(".")) {
+                scoped = self.expand_working_root_entries_from_home(scoped)?;
+            }
+
+            Ok(scoped)
         } else {
             Ok(paths)
         }
@@ -141,6 +145,40 @@ impl ChezmoiClient for ShellChezmoiClient {
         let args = action_to_args(request)?;
         let destination = self.destination_for_target(request.target.as_deref());
         self.run_raw(&args, destination)
+    }
+}
+
+impl ShellChezmoiClient {
+    fn expand_working_root_entries_from_home(&self, scoped: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+        let mut merged: BTreeSet<PathBuf> = scoped
+            .into_iter()
+            .filter(|path| path != Path::new("."))
+            .collect();
+
+        let mut home_results = Vec::new();
+        let read_dir = std::fs::read_dir(&self.working_dir)
+            .with_context(|| format!("failed to read {}", self.working_dir.display()))?;
+        for entry in read_dir {
+            let child = entry
+                .with_context(|| format!("failed to read child in {}", self.working_dir.display()))?
+                .path();
+            let args = vec![
+                "unmanaged".to_string(),
+                "--".to_string(),
+                child.display().to_string(),
+            ];
+            let result = self.run_raw(&args, &self.home_dir)?;
+            if result.exit_code != 0 {
+                bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
+            }
+            home_results.extend(parse_unmanaged_output(&result.stdout)?);
+        }
+
+        let expanded =
+            filter_unmanaged_to_working_dir(home_results, &self.home_dir, &self.working_dir);
+        merged.extend(expanded.into_iter().filter(|path| path != Path::new(".")));
+
+        Ok(merged.into_iter().collect())
     }
 }
 
@@ -220,18 +258,24 @@ fn filter_unmanaged_to_working_dir(
         return paths;
     };
 
-    paths
+    let scoped: BTreeSet<PathBuf> = paths
         .into_iter()
         .filter_map(|path| {
             let relative = path_relative_to_home(path, home_dir)?;
-            let scoped = relative.strip_prefix(working_rel_to_home).ok()?;
-            if scoped.as_os_str().is_empty() {
-                None
-            } else {
-                Some(scoped.to_path_buf())
+            if relative == working_rel_to_home || working_rel_to_home.starts_with(&relative) {
+                return Some(PathBuf::from("."));
             }
+
+            let scoped = relative.strip_prefix(working_rel_to_home).ok()?;
+            Some(if scoped.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                scoped.to_path_buf()
+            })
         })
-        .collect()
+        .collect();
+
+    scoped.into_iter().collect()
 }
 
 fn path_relative_to_home(path: PathBuf, home_dir: &Path) -> Option<PathBuf> {
@@ -393,6 +437,17 @@ mod tests {
             got,
             vec![PathBuf::from(".cache"), PathBuf::from(".local/share")]
         );
+    }
+
+    #[test]
+    fn unmanaged_ancestor_path_maps_to_working_root() {
+        let paths = vec![PathBuf::from("dev"), PathBuf::from("dev/chezmoi-tui/src")];
+        let got = filter_unmanaged_to_working_dir(
+            paths,
+            Path::new("/home/tetsuya"),
+            Path::new("/home/tetsuya/dev/chezmoi-tui"),
+        );
+        assert_eq!(got, vec![PathBuf::from("."), PathBuf::from("src")]);
     }
 
     #[test]
