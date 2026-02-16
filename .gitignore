@@ -4,3 +4,5 @@
 *.pem
 *.key
 .worktrees/
+AGENTS.md
+CLAUDE.md
