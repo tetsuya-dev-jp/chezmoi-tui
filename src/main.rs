@@ -950,7 +950,7 @@ fn run_edit_ignore_foreground() -> Result<(i32, u64)> {
 
     let started = Instant::now();
     let status = Command::new("sh")
-        .arg("-lc")
+        .arg("-c")
         .arg("${VISUAL:-${EDITOR:-vi}} \"$1\"")
         .arg("sh")
         .arg(&ignore_path)
