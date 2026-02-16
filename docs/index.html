@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>chezmoi-tui — A Visual TUI for chezmoi</title>
+  <meta name="description" content="chezmoi-tui wraps core chezmoi operations in a 3-pane TUI with visual diff, tree navigation, and safe batch execution.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #06080d;
+      --bg-primary: #0c1018;
+      --bg-card: #111827;
+      --bg-card-hover: #1a2235;
+      --border: #1e293b;
+      --border-bright: #334155;
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-cyan: #22d3ee;
+      --accent-green: #34d399;
+      --accent-yellow: #fbbf24;
+      --accent-red: #f87171;
+      --accent-blue: #60a5fa;
+      --accent-purple: #a78bfa;
+      --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      line-height: 1.65;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Noise overlay ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 9999;
+      opacity: 0.025;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+
+    /* ── Ambient glow ── */
+    .glow-top {
+      position: fixed;
+      top: -40%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 80vw;
+      height: 60vh;
+      background: radial-gradient(ellipse, rgba(34,211,238,0.06) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Grid pattern ── */
+    .grid-bg {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background-image:
+        linear-gradient(rgba(34,211,238,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(34,211,238,0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      mask-image: radial-gradient(ellipse 70% 50% at 50% 30%, black, transparent);
+    }
+
+    /* ── Layout ── */
+    .container { max-width: 1120px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+    /* ── Nav ── */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 16px 0;
+      background: rgba(6,8,13,0.8);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(30,41,59,0.5);
+    }
+    nav .container { display: flex; align-items: center; justify-content: space-between; }
+    .nav-brand {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 18px;
+      color: var(--accent-cyan);
+      text-decoration: none;
+      letter-spacing: -0.5px;
+    }
+    .nav-brand span { color: var(--text-muted); font-weight: 400; }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-links a {
+      font-size: 14px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.2s;
+      font-weight: 500;
+    }
+    .nav-links a:hover { color: var(--text-primary); }
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 18px;
+      background: rgba(34,211,238,0.1);
+      border: 1px solid rgba(34,211,238,0.25);
+      border-radius: 8px;
+      color: var(--accent-cyan) !important;
+      font-family: var(--font-mono);
+      font-size: 13px !important;
+      font-weight: 500 !important;
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+    .nav-cta:hover {
+      background: rgba(34,211,238,0.15);
+      border-color: rgba(34,211,238,0.4);
+    }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      background: rgba(34,211,238,0.08);
+      border: 1px solid rgba(34,211,238,0.15);
+      border-radius: 100px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--accent-cyan);
+      margin-bottom: 32px;
+    }
+    .hero-badge .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .hero h1 {
+      font-family: var(--font-sans);
+      font-size: clamp(40px, 6vw, 72px);
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -2px;
+      margin-bottom: 24px;
+    }
+    .hero h1 .highlight {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-sub {
+      font-size: clamp(17px, 2vw, 20px);
+      color: var(--text-secondary);
+      max-width: 580px;
+      margin: 0 auto 44px;
+      line-height: 1.6;
+    }
+    .hero-actions { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 28px;
+      background: linear-gradient(135deg, rgba(34,211,238,0.15), rgba(52,211,153,0.1));
+      border: 1px solid rgba(34,211,238,0.3);
+      border-radius: 10px;
+      color: var(--accent-cyan);
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, rgba(34,211,238,0.22), rgba(52,211,153,0.15));
+      border-color: rgba(34,211,238,0.5);
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 28px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+    .btn-secondary:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-bright);
+      color: var(--text-primary);
+      transform: translateY(-1px);
+    }
+
+    /* ── Install snippet ── */
+    .install-box {
+      margin: 48px auto 0;
+      max-width: 420px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .install-box:hover { border-color: var(--border-bright); }
+    .install-box .prompt { color: var(--accent-green); user-select: none; }
+    .install-box .cmd { color: var(--text-primary); flex: 1; }
+    .install-box .copy-hint {
+      color: var(--text-muted);
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.2s;
+      user-select: none;
+    }
+    .install-box:hover .copy-hint { opacity: 1; }
+    .install-box.copied .copy-hint { opacity: 1; color: var(--accent-green); }
+
+    /* ── Screenshot ── */
+    .screenshot-section {
+      padding: 0 0 80px;
+    }
+    .screenshot-wrap {
+      position: relative;
+      max-width: 960px;
+      margin: 0 auto;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow:
+        0 0 0 1px rgba(34,211,238,0.05),
+        0 20px 60px -10px rgba(0,0,0,0.5),
+        0 0 100px -20px rgba(34,211,238,0.08);
+    }
+    .screenshot-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #0d1117;
+      border-bottom: 1px solid var(--border);
+    }
+    .screenshot-bar .dot-r { width: 12px; height: 12px; border-radius: 50%; background: #f87171; }
+    .screenshot-bar .dot-y { width: 12px; height: 12px; border-radius: 50%; background: #fbbf24; }
+    .screenshot-bar .dot-g { width: 12px; height: 12px; border-radius: 50%; background: #34d399; }
+    .screenshot-bar .title {
+      flex: 1;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .screenshot-wrap img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    /* ── Problem / Solution ── */
+    .problem-section { padding: 80px 0; }
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--accent-cyan);
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 42px);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -1px;
+      margin-bottom: 20px;
+    }
+    .section-desc {
+      font-size: 17px;
+      color: var(--text-secondary);
+      max-width: 600px;
+      line-height: 1.65;
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-top: 48px;
+    }
+    .compare-card {
+      padding: 32px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .compare-card.problem {
+      border-color: rgba(248,113,113,0.2);
+      background: rgba(248,113,113,0.03);
+    }
+    .compare-card.solution {
+      border-color: rgba(52,211,153,0.2);
+      background: rgba(52,211,153,0.03);
+    }
+    .compare-card h3 {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .compare-card.problem h3 { color: var(--accent-red); }
+    .compare-card.solution h3 { color: var(--accent-green); }
+    .compare-card ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .compare-card li {
+      position: relative;
+      padding-left: 24px;
+      font-size: 15px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+    .compare-card li::before {
+      position: absolute;
+      left: 0;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .compare-card.problem li::before { content: '×'; color: var(--accent-red); }
+    .compare-card.solution li::before { content: '✓'; color: var(--accent-green); }
+
+    /* ── Features ── */
+    .features-section { padding: 80px 0; }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-top: 48px;
+    }
+    .feature-card {
+      padding: 32px 28px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      transition: all 0.25s;
+    }
+    .feature-card:hover {
+      border-color: var(--border-bright);
+      background: var(--bg-card-hover);
+      transform: translateY(-2px);
+    }
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      margin-bottom: 20px;
+      font-family: var(--font-mono);
+      font-weight: 700;
+    }
+    .feature-card h3 {
+      font-size: 17px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      letter-spacing: -0.3px;
+    }
+    .feature-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .fi-cyan { background: rgba(34,211,238,0.1); color: var(--accent-cyan); }
+    .fi-green { background: rgba(52,211,153,0.1); color: var(--accent-green); }
+    .fi-yellow { background: rgba(251,191,36,0.1); color: var(--accent-yellow); }
+    .fi-blue { background: rgba(96,165,250,0.1); color: var(--accent-blue); }
+    .fi-red { background: rgba(248,113,113,0.1); color: var(--accent-red); }
+    .fi-purple { background: rgba(167,139,250,0.1); color: var(--accent-purple); }
+
+    /* ── Views section ── */
+    .views-section { padding: 80px 0; }
+    .views-table-wrap {
+      margin-top: 48px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      background: var(--bg-card);
+    }
+    .views-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    .views-table thead { background: rgba(34,211,238,0.04); }
+    .views-table th {
+      text-align: left;
+      padding: 14px 20px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border-bottom: 1px solid var(--border);
+    }
+    .views-table td {
+      padding: 16px 20px;
+      border-bottom: 1px solid rgba(30,41,59,0.5);
+      color: var(--text-secondary);
+    }
+    .views-table tr:last-child td { border-bottom: none; }
+    .views-table .view-name {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .views-table .key-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: rgba(34,211,238,0.1);
+      border: 1px solid rgba(34,211,238,0.2);
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--accent-cyan);
+    }
+
+    /* ── Keybindings ── */
+    .keys-section { padding: 80px 0; }
+    .keys-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      margin-top: 48px;
+    }
+    .keys-group {
+      padding: 28px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+    }
+    .keys-group h3 {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      margin-bottom: 18px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .key-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      font-size: 14px;
+    }
+    .key-row + .key-row { border-top: 1px solid rgba(30,41,59,0.4); }
+    .key-row .label { color: var(--text-secondary); }
+    .key-row kbd {
+      display: inline-block;
+      padding: 2px 8px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-primary);
+      min-width: 28px;
+      text-align: center;
+    }
+
+    /* ── Safety section ── */
+    .safety-section { padding: 80px 0; }
+    .safety-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      margin-top: 48px;
+    }
+    .safety-card {
+      padding: 28px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      display: flex;
+      gap: 16px;
+    }
+    .safety-icon {
+      flex-shrink: 0;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 700;
+      background: rgba(251,191,36,0.1);
+      color: var(--accent-yellow);
+    }
+    .safety-card h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .safety-card p {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+    }
+
+    /* ── CTA ── */
+    .cta-section {
+      padding: 100px 0 60px;
+      text-align: center;
+    }
+    .cta-box {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 60px 48px;
+      border-radius: 16px;
+      border: 1px solid rgba(34,211,238,0.15);
+      background: linear-gradient(160deg, rgba(34,211,238,0.04) 0%, rgba(52,211,153,0.02) 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .cta-box::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(ellipse at center, rgba(34,211,238,0.04) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .cta-box h2 {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      margin-bottom: 14px;
+      position: relative;
+    }
+    .cta-box p {
+      color: var(--text-secondary);
+      font-size: 16px;
+      margin-bottom: 32px;
+      position: relative;
+    }
+    .cta-install {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 32px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: var(--font-mono);
+      font-size: 15px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .cta-install:hover {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 20px rgba(34,211,238,0.1);
+    }
+    .cta-install .prompt { color: var(--accent-green); }
+    .cta-install .cmd { color: var(--text-primary); }
+
+    /* ── Footer ── */
+    footer {
+      padding: 40px 0;
+      border-top: 1px solid var(--border);
+      text-align: center;
+    }
+    footer p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    footer a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+    footer a:hover { color: var(--accent-cyan); }
+
+    /* ── Animations ── */
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(24px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-in {
+      opacity: 0;
+      animation: fade-up 0.6s ease-out forwards;
+    }
+    .delay-1 { animation-delay: 0.1s; }
+    .delay-2 { animation-delay: 0.2s; }
+    .delay-3 { animation-delay: 0.3s; }
+    .delay-4 { animation-delay: 0.4s; }
+    .delay-5 { animation-delay: 0.5s; }
+
+    /* ── Scroll reveal ── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(20px);
+      transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .comparison-grid,
+      .features-grid,
+      .keys-grid,
+      .safety-grid { grid-template-columns: 1fr; }
+      .nav-links a:not(.nav-cta) { display: none; }
+      .hero { padding: 130px 0 60px; }
+      .hero h1 { letter-spacing: -1px; }
+      .cta-box { padding: 40px 28px; }
+    }
+
+    @media (max-width: 480px) {
+      .hero-actions { flex-direction: column; }
+      .hero-actions a, .hero-actions button { width: 100%; justify-content: center; }
+      .install-box { flex-wrap: wrap; }
+    }
+
+    /* ── Reduced motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .reveal { opacity: 1; transform: none; }
+      .animate-in { opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="glow-top"></div>
+<div class="grid-bg"></div>
+
+<!-- Nav -->
+<nav>
+  <div class="container">
+    <a href="#" class="nav-brand">chezmoi-tui <span>v0.1</span></a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#views">Views</a>
+      <a href="#keybindings">Keys</a>
+      <a href="https://github.com/tetsuya-dev-jp/chezmoi-tui" class="nav-cta" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-badge animate-in">
+      <span class="dot"></span>
+      Open Source &middot; MIT License
+    </div>
+    <h1 class="animate-in delay-1">
+      See your dotfiles.<br>
+      <span class="highlight">Act on them.</span>
+    </h1>
+    <p class="hero-sub animate-in delay-2">
+      chezmoi-tui wraps core chezmoi operations in a 3-pane terminal interface with visual diff, tree navigation, and safe batch execution.
+    </p>
+    <div class="hero-actions animate-in delay-3">
+      <a href="https://github.com/tetsuya-dev-jp/chezmoi-tui" class="btn-primary" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        View on GitHub
+      </a>
+      <a href="#features" class="btn-secondary">
+        Learn more
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 13l5 5 5-5M7 6l5 5 5-5"/></svg>
+      </a>
+    </div>
+    <div class="install-box animate-in delay-4" onclick="copyInstall(this)">
+      <span class="prompt">$</span>
+      <span class="cmd">cargo install chezmoi-tui</span>
+      <span class="copy-hint">click to copy</span>
+    </div>
+  </div>
+</section>
+
+<!-- Screenshot -->
+<section class="screenshot-section">
+  <div class="container">
+    <div class="screenshot-wrap animate-in delay-5">
+      <div class="screenshot-bar">
+        <span class="dot-r"></span>
+        <span class="dot-y"></span>
+        <span class="dot-g"></span>
+        <span class="title">chezmoi-tui</span>
+        <span style="width: 48px;"></span>
+      </div>
+      <img src="screenshot.png" alt="chezmoi-tui showing the Unmanaged view with tree navigation, file preview panel, and log pane in a 3-pane terminal layout" loading="lazy" width="1456" height="816">
+    </div>
+  </div>
+</section>
+
+<!-- Problem / Solution -->
+<section class="problem-section" id="why">
+  <div class="container">
+    <div class="reveal">
+      <p class="section-label">The problem</p>
+      <h2 class="section-title">chezmoi is powerful.<br>But CLI-only hides context.</h2>
+      <p class="section-desc">You can't see what changed, what's managed, or which action is safe to run next &mdash; without chaining multiple commands.</p>
+    </div>
+    <div class="comparison-grid reveal">
+      <div class="compare-card problem">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+          CLI only
+        </h3>
+        <ul>
+          <li>Run <code>chezmoi status</code>, then <code>chezmoi diff</code>, then decide</li>
+          <li>No way to see managed vs unmanaged at a glance</li>
+          <li>Dangerous actions run without guardrails</li>
+          <li>Batch operations require shell scripting</li>
+        </ul>
+      </div>
+      <div class="compare-card solution">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-5"/></svg>
+          With chezmoi-tui
+        </h3>
+        <ul>
+          <li>3-pane layout: List + Diff/Preview + Log at once</li>
+          <li>Switch views instantly: Status / Managed / Unmanaged</li>
+          <li>Typed confirmation for destroy &amp; purge</li>
+          <li>Multi-select with Space, batch execute from menu</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="features-section" id="features">
+  <div class="container">
+    <div class="reveal">
+      <p class="section-label">Features</p>
+      <h2 class="section-title">Everything you need,<br>nothing you don't.</h2>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-cyan">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </div>
+        <h3>3-Pane Layout</h3>
+        <p>File list, diff/preview, and command log visible simultaneously. No more switching between terminal tabs.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-green">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/><path d="M8 8l-5 4 5 4M16 8l5 4-5 4"/></svg>
+        </div>
+        <h3>Rich Diff Rendering</h3>
+        <p>Hunk headers, line numbers, and color-coded status. Auto-loads diff when you select a file in status view.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-yellow">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        </div>
+        <h3>Tree Navigation</h3>
+        <p>Expand/collapse directories with h/l in managed and unmanaged views. Familiar vim-style navigation.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-blue">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+        </div>
+        <h3>Batch Execution</h3>
+        <p>Mark multiple files with Space, then run actions on all at once from the action menu. Clear marks with c.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-red">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Safety First</h3>
+        <p>Dangerous actions require typed confirmation. Directory-wide add is blocked. Force flags prevent TUI deadlocks.</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon fi-purple">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </div>
+        <h3>Persistent Config</h3>
+        <p>Theme, keymap, and preferences saved to ~/.config/chezmoi-tui/config.toml. Customize once, keep forever.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Views -->
+<section class="views-section" id="views">
+  <div class="container">
+    <div class="reveal">
+      <p class="section-label">Views</p>
+      <h2 class="section-title">Three views. Full picture.</h2>
+      <p class="section-desc">Switch instantly between status, managed, and unmanaged views. Each shows the right context and actions for that scope.</p>
+    </div>
+    <div class="views-table-wrap reveal">
+      <table class="views-table">
+        <thead>
+          <tr>
+            <th>View</th>
+            <th>Key</th>
+            <th>Data Source</th>
+            <th>Auto Detail</th>
+            <th>Tree</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="view-name">Status</td>
+            <td><span class="key-badge">1</span></td>
+            <td>Home destination</td>
+            <td>Diff</td>
+            <td>No</td>
+          </tr>
+          <tr>
+            <td class="view-name">Managed</td>
+            <td><span class="key-badge">2</span></td>
+            <td>Home destination</td>
+            <td>File preview</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td class="view-name">Unmanaged</td>
+            <td><span class="key-badge">3</span></td>
+            <td>Current working directory</td>
+            <td>File preview</td>
+            <td>Yes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Keybindings -->
+<section class="keys-section" id="keybindings">
+  <div class="container">
+    <div class="reveal">
+      <p class="section-label">Keybindings</p>
+      <h2 class="section-title">Vim-native. Zero friction.</h2>
+    </div>
+    <div class="keys-grid">
+      <div class="keys-group reveal">
+        <h3>Global</h3>
+        <div class="key-row"><span class="label">Switch views</span><span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></span></div>
+        <div class="key-row"><span class="label">Cycle pane focus</span><kbd>Tab</kbd></div>
+        <div class="key-row"><span class="label">Action menu</span><kbd>a</kbd></div>
+        <div class="key-row"><span class="label">Refresh</span><kbd>r</kbd></div>
+        <div class="key-row"><span class="label">Help</span><kbd>?</kbd></div>
+        <div class="key-row"><span class="label">Quit</span><kbd>q</kbd></div>
+      </div>
+      <div class="keys-group reveal">
+        <h3>List</h3>
+        <div class="key-row"><span class="label">Navigate</span><span><kbd>j</kbd> <kbd>k</kbd></span></div>
+        <div class="key-row"><span class="label">Expand / Collapse</span><span><kbd>l</kbd> <kbd>h</kbd></span></div>
+        <div class="key-row"><span class="label">Mark for batch</span><kbd>Space</kbd></div>
+        <div class="key-row"><span class="label">Clear marks</span><kbd>c</kbd></div>
+        <div class="key-row"><span class="label">Filter</span><kbd>/</kbd></div>
+        <div class="key-row"><span class="label">Load diff / preview</span><kbd>d</kbd></div>
+      </div>
+      <div class="keys-group reveal">
+        <h3>Detail / Log</h3>
+        <div class="key-row"><span class="label">Scroll</span><span><kbd>j</kbd> <kbd>k</kbd></span></div>
+        <div class="key-row"><span class="label">Page scroll</span><span><kbd>PgUp</kbd> <kbd>PgDn</kbd></span></div>
+        <div class="key-row"><span class="label">Half-page</span><span><kbd>Ctrl+u</kbd> <kbd>Ctrl+d</kbd></span></div>
+      </div>
+      <div class="keys-group reveal">
+        <h3>Action Menu</h3>
+        <div class="key-row"><span class="label">Filter</span><span>type text</span></div>
+        <div class="key-row"><span class="label">Navigate</span><span><kbd>&uarr;</kbd> <kbd>&darr;</kbd></span></div>
+        <div class="key-row"><span class="label">Execute</span><kbd>Enter</kbd></div>
+        <div class="key-row"><span class="label">Close</span><kbd>Esc</kbd></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Safety -->
+<section class="safety-section">
+  <div class="container">
+    <div class="reveal">
+      <p class="section-label">Safety</p>
+      <h2 class="section-title">Built with guardrails.</h2>
+      <p class="section-desc">Dotfiles are critical infrastructure. chezmoi-tui makes sure you never accidentally destroy them.</p>
+    </div>
+    <div class="safety-grid">
+      <div class="safety-card reveal">
+        <div class="safety-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div>
+          <h3>Typed Confirmation</h3>
+          <p>destroy and purge require you to type the exact confirmation phrase. No accidental Enter key disasters.</p>
+        </div>
+      </div>
+      <div class="safety-card reveal">
+        <div class="safety-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/></svg>
+        </div>
+        <div>
+          <h3>Directory Add Blocked</h3>
+          <p>Directory-wide add is blocked to prevent accidental bulk imports into chezmoi source state.</p>
+        </div>
+      </div>
+      <div class="safety-card reveal">
+        <div class="safety-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        </div>
+        <div>
+          <h3>Edit Restricted</h3>
+          <p>edit only works on managed files. No risk of opening untracked files through the wrong view.</p>
+        </div>
+      </div>
+      <div class="safety-card reveal">
+        <div class="safety-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+        </div>
+        <div>
+          <h3>Force + No-TTY</h3>
+          <p>forget and purge run with --force --no-tty to prevent chezmoi from stealing the TUI's terminal.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="container">
+    <div class="cta-box reveal">
+      <h2>Get started in seconds.</h2>
+      <p>Requires Rust 1.93+ and chezmoi in PATH. macOS &amp; Linux.</p>
+      <div class="cta-install" onclick="copyInstall(this)">
+        <span class="prompt">$</span>
+        <span class="cmd">cargo install chezmoi-tui</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <p>
+      MIT License &middot;
+      Built by <a href="https://github.com/tetsuya-dev-jp" target="_blank" rel="noopener">tetsuya-dev-jp</a> &middot;
+      <a href="https://github.com/tetsuya-dev-jp/chezmoi-tui" target="_blank" rel="noopener">Source on GitHub</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+  // Copy install command
+  function copyInstall(el) {
+    navigator.clipboard.writeText('cargo install chezmoi-tui').then(() => {
+      const hint = el.querySelector('.copy-hint');
+      if (hint) {
+        hint.textContent = 'copied!';
+        el.classList.add('copied');
+        setTimeout(() => {
+          hint.textContent = 'click to copy';
+          el.classList.remove('copied');
+        }, 2000);
+      }
+    });
+  }
+
+  // Scroll reveal
+  const reveals = document.querySelectorAll('.reveal');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+  reveals.forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>
