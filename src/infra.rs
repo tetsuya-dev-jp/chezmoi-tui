@@ -98,11 +98,28 @@ impl ChezmoiClient for ShellChezmoiClient {
     }
 
     fn unmanaged(&self) -> Result<Vec<PathBuf>> {
-        let result = self.run_raw(&["unmanaged".to_string()], &self.working_dir)?;
+        let use_home_destination = self.working_dir.starts_with(&self.home_dir);
+        let destination = if use_home_destination {
+            &self.home_dir
+        } else {
+            &self.working_dir
+        };
+
+        let result = self.run_raw(&["unmanaged".to_string()], destination)?;
         if result.exit_code != 0 {
             bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
         }
-        parse_unmanaged_output(&result.stdout)
+
+        let paths = parse_unmanaged_output(&result.stdout)?;
+        if use_home_destination {
+            Ok(filter_unmanaged_to_working_dir(
+                paths,
+                &self.home_dir,
+                &self.working_dir,
+            ))
+        } else {
+            Ok(paths)
+        }
     }
 
     fn diff(&self, target: Option<&Path>) -> Result<DiffText> {
@@ -185,6 +202,44 @@ pub fn parse_unmanaged_output(output: &str) -> Result<Vec<PathBuf>> {
         .map(|line| PathBuf::from(line.trim()))
         .filter(|path| !path.as_os_str().is_empty())
         .collect())
+}
+
+fn filter_unmanaged_to_working_dir(
+    paths: Vec<PathBuf>,
+    home_dir: &Path,
+    working_dir: &Path,
+) -> Vec<PathBuf> {
+    if working_dir == home_dir {
+        return paths
+            .into_iter()
+            .filter_map(|path| path_relative_to_home(path, home_dir))
+            .collect();
+    }
+
+    let Ok(working_rel_to_home) = working_dir.strip_prefix(home_dir) else {
+        return paths;
+    };
+
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let relative = path_relative_to_home(path, home_dir)?;
+            let scoped = relative.strip_prefix(working_rel_to_home).ok()?;
+            if scoped.as_os_str().is_empty() {
+                None
+            } else {
+                Some(scoped.to_path_buf())
+            }
+        })
+        .collect()
+}
+
+fn path_relative_to_home(path: PathBuf, home_dir: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        path.strip_prefix(home_dir).ok().map(Path::to_path_buf)
+    } else {
+        Some(path)
+    }
 }
 
 pub fn action_to_args(request: &ActionRequest) -> Result<Vec<String>> {
@@ -296,6 +351,39 @@ mod tests {
         assert_eq!(
             parse_unmanaged_output(output).expect("line parse"),
             vec![PathBuf::from(".cache/file"), PathBuf::from(".local/tmp")]
+        );
+    }
+
+    #[test]
+    fn unmanaged_paths_are_scoped_to_working_dir_when_destination_is_home() {
+        let paths = vec![
+            PathBuf::from(".agents"),
+            PathBuf::from("dev/chezmoi-tui/.git"),
+            PathBuf::from("dev/chezmoi-tui/src"),
+            PathBuf::from("dev/other-project/file"),
+        ];
+        let got = filter_unmanaged_to_working_dir(
+            paths,
+            Path::new("/home/tetsuya"),
+            Path::new("/home/tetsuya/dev/chezmoi-tui"),
+        );
+        assert_eq!(got, vec![PathBuf::from(".git"), PathBuf::from("src")]);
+    }
+
+    #[test]
+    fn unmanaged_paths_keep_home_relative_when_working_dir_is_home() {
+        let paths = vec![
+            PathBuf::from("/home/tetsuya/.cache"),
+            PathBuf::from(".local/share"),
+        ];
+        let got = filter_unmanaged_to_working_dir(
+            paths,
+            Path::new("/home/tetsuya"),
+            Path::new("/home/tetsuya"),
+        );
+        assert_eq!(
+            got,
+            vec![PathBuf::from(".cache"), PathBuf::from(".local/share")]
         );
     }
 
