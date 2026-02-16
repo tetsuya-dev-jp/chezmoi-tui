@@ -40,10 +40,16 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
         Style::default()
     };
 
+    let title = if app.list_filter().trim().is_empty() {
+        format!(" {} ", app.view.title())
+    } else {
+        format!(" {} /{} ", app.view.title(), app.list_filter())
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
-                .title(format!(" {} ", app.view.title()))
+                .title(title)
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
@@ -168,6 +174,13 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         format!(" MARK {} ", app.marked_count()),
         Style::default().bg(Color::LightBlue).fg(Color::Black),
     ));
+    if !app.list_filter().trim().is_empty() {
+        top.push(Span::raw(" "));
+        top.extend(badge(
+            format!(" FILTER {} ", compact_label(app.list_filter(), 28)),
+            Style::default().bg(Color::LightYellow).fg(Color::Black),
+        ));
+    }
 
     let mut bottom = Vec::new();
     for spec in status_bar_hint_specs(app) {
@@ -250,6 +263,11 @@ fn status_bar_hint_specs(app: &App) -> Vec<HintSpec> {
                 emphasized: false,
             });
             specs.push(HintSpec {
+                key: "/",
+                label: "Filter",
+                emphasized: false,
+            });
+            specs.push(HintSpec {
                 key: "c",
                 label: "Clear",
                 emphasized: false,
@@ -320,6 +338,20 @@ fn hint(key: &str, label: &str, emphasized: bool) -> Vec<Span<'static>> {
     ]
 }
 
+fn compact_label(value: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let mut out: String = chars.into_iter().take(keep).collect();
+    out.push('~');
+    out
+}
+
 fn draw_modal(frame: &mut Frame, app: &App) {
     match &app.modal {
         ModalState::None => {}
@@ -338,6 +370,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from("List Focus"),
                 Line::from("  j/k, Up/Down       Move selection"),
+                Line::from("  /                  Open list filter"),
                 Line::from("  Space              Toggle multi-select mark"),
                 Line::from("  c                  Clear multi-select marks"),
                 Line::from("  h/l, Left/Right    Fold/unfold tree (Managed/Unmanaged)"),
@@ -357,6 +390,37 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .block(
                     Block::default()
                         .title(" Help ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
+        ModalState::ListFilter { value, .. } => {
+            let area = centered_rect(62, 22, frame.area());
+            frame.render_widget(Clear, area);
+
+            let shown = if value.is_empty() {
+                "<empty: no filter>".to_string()
+            } else {
+                value.to_string()
+            };
+
+            let lines = vec![
+                Line::from("Type to filter visible list items by path."),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("query: ", Style::default().fg(Color::Gray)),
+                    Span::styled(shown, Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+                Line::from("Enter: apply and close  Esc: cancel  Backspace: delete"),
+            ];
+
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" List Filter ")
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )

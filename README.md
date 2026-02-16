@@ -68,6 +68,7 @@ cargo run
 | --- | --- |
 | `1` / `2` / `3` | Switch view (`status`, `managed`, `unmanaged`) |
 | `j` / `k` or `↑` / `↓` | Move selection |
+| `/` | Open list filter (path contains match) |
 | `Space` | Toggle multi-select mark on selected entry |
 | `c` | Clear all multi-select marks |
 | `h` / `l` or `←` / `→` | Collapse/expand directory (`managed` / `unmanaged`) |

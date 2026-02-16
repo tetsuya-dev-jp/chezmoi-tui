@@ -305,6 +305,7 @@ fn handle_key_event(
     match app.modal.clone() {
         ModalState::None => handle_key_without_modal(app, key, task_tx),
         ModalState::Help => handle_help_key(app, key),
+        ModalState::ListFilter { .. } => handle_list_filter_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
@@ -321,6 +322,7 @@ fn handle_key_without_modal(
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.open_help(),
+        KeyCode::Char('/') if app.focus == crate::app::PaneFocus::List => app.open_list_filter(),
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::Char(' ') if app.focus == crate::app::PaneFocus::List => {
             if app.toggle_selected_mark() {
@@ -469,6 +471,64 @@ fn handle_key_without_modal(
     }
 
     if selection_changed {
+        maybe_enqueue_auto_detail(app, task_tx)?;
+    }
+
+    Ok(())
+}
+
+fn handle_list_filter_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    let mut next_filter: Option<String> = None;
+    let mut finalize = false;
+    let mut restore_filter: Option<String> = None;
+
+    {
+        let ModalState::ListFilter { value, original } = &mut app.modal else {
+            return Ok(());
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                restore_filter = Some(original.clone());
+                finalize = true;
+            }
+            KeyCode::Enter => {
+                next_filter = Some(value.clone());
+                finalize = true;
+            }
+            KeyCode::Backspace => {
+                value.pop();
+                next_filter = Some(value.clone());
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !key.modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                value.push(c);
+                next_filter = Some(value.clone());
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(filter) = restore_filter {
+        app.set_list_filter(filter);
+        app.close_modal();
+        maybe_enqueue_auto_detail(app, task_tx)?;
+        return Ok(());
+    }
+
+    if let Some(filter) = next_filter {
+        app.set_list_filter(filter);
+    }
+
+    if finalize {
+        app.close_modal();
         maybe_enqueue_auto_detail(app, task_tx)?;
     }
 

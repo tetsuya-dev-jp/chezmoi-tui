@@ -44,6 +44,10 @@ pub enum InputKind {
 pub enum ModalState {
     None,
     Help,
+    ListFilter {
+        value: String,
+        original: String,
+    },
     ActionMenu {
         selected: usize,
         filter: String,
@@ -117,6 +121,7 @@ pub struct App {
     pub logs: Vec<String>,
     pub log_tail_offset: usize,
     pub modal: ModalState,
+    list_filter: String,
     pub busy: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
@@ -151,6 +156,7 @@ impl App {
             logs: Vec::new(),
             log_tail_offset: 0,
             modal: ModalState::None,
+            list_filter: String::new(),
             busy: false,
             pending_foreground: None,
             should_quit: false,
@@ -396,6 +402,13 @@ impl App {
         };
     }
 
+    pub fn open_list_filter(&mut self) {
+        self.modal = ModalState::ListFilter {
+            value: self.list_filter.clone(),
+            original: self.list_filter.clone(),
+        };
+    }
+
     pub fn open_help(&mut self) {
         self.modal = ModalState::Help;
     }
@@ -418,6 +431,15 @@ impl App {
 
     pub fn close_modal(&mut self) {
         self.modal = ModalState::None;
+    }
+
+    pub fn list_filter(&self) -> &str {
+        &self.list_filter
+    }
+
+    pub fn set_list_filter(&mut self, value: String) {
+        self.list_filter = value;
+        self.rebuild_visible_entries();
     }
 
     pub fn log(&mut self, line: String) {
@@ -596,13 +618,20 @@ impl App {
         let base_paths = self.base_paths_for_view();
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
+        let force_expand_for_search = !self.list_filter.trim().is_empty();
 
         if self.view == ListView::Unmanaged {
             for base in base_paths {
-                self.push_visible_recursive(base, 0, &mut entries, &mut seen);
+                self.push_visible_recursive(
+                    base,
+                    0,
+                    &mut entries,
+                    &mut seen,
+                    force_expand_for_search,
+                );
             }
         } else if self.view == ListView::Managed {
-            self.push_managed_visible_entries(&mut entries);
+            self.push_managed_visible_entries(&mut entries, force_expand_for_search);
         } else {
             for path in base_paths {
                 if !seen.insert(path.clone()) {
@@ -626,6 +655,10 @@ impl App {
         self.marked_entries
             .retain(|path| visible_paths.contains(path));
 
+        if !self.list_filter.trim().is_empty() {
+            self.visible_entries = self.filter_visible_entries(self.visible_entries.clone());
+        }
+
         if let Some(target) = previous
             && let Some(idx) = self.visible_entries.iter().position(|e| e.path == target)
         {
@@ -638,6 +671,52 @@ impl App {
 
     fn view_supports_tree(&self) -> bool {
         matches!(self.view, ListView::Managed | ListView::Unmanaged)
+    }
+
+    fn filter_visible_entries(&self, entries: Vec<VisibleEntry>) -> Vec<VisibleEntry> {
+        let query = self.list_filter.trim().to_ascii_lowercase();
+        if query.is_empty() {
+            return entries;
+        }
+
+        let matched: HashSet<PathBuf> = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains(&query)
+            })
+            .map(|entry| entry.path.clone())
+            .collect();
+        if matched.is_empty() {
+            return Vec::new();
+        }
+
+        let mut keep = matched.clone();
+        if self.view_supports_tree() {
+            let all_paths: HashSet<PathBuf> =
+                entries.iter().map(|entry| entry.path.clone()).collect();
+            for path in matched {
+                let mut current = path.parent();
+                while let Some(parent) = current {
+                    if parent.as_os_str().is_empty() {
+                        break;
+                    }
+                    let ancestor = parent.to_path_buf();
+                    if all_paths.contains(&ancestor) {
+                        keep.insert(ancestor);
+                    }
+                    current = parent.parent();
+                }
+            }
+        }
+
+        entries
+            .into_iter()
+            .filter(|entry| keep.contains(&entry.path))
+            .collect()
     }
 
     fn base_paths_for_view(&self) -> Vec<PathBuf> {
@@ -673,6 +752,7 @@ impl App {
         depth: usize,
         out: &mut Vec<VisibleEntry>,
         seen: &mut HashSet<PathBuf>,
+        force_expand: bool,
     ) {
         if !seen.insert(path.clone()) {
             return;
@@ -685,16 +765,16 @@ impl App {
             is_dir,
         });
 
-        if !is_dir || !self.expanded_dirs.contains(&path) {
+        if !is_dir || (!force_expand && !self.expanded_dirs.contains(&path)) {
             return;
         }
 
         for child in self.read_children(&path) {
-            self.push_visible_recursive(child, depth + 1, out, seen);
+            self.push_visible_recursive(child, depth + 1, out, seen, force_expand);
         }
     }
 
-    fn push_managed_visible_entries(&self, out: &mut Vec<VisibleEntry>) {
+    fn push_managed_visible_entries(&self, out: &mut Vec<VisibleEntry>, force_expand: bool) {
         let mut nodes = BTreeSet::new();
 
         for managed in &self.managed_entries {
@@ -744,7 +824,7 @@ impl App {
 
         let mut seen = HashSet::new();
         for root in roots {
-            self.push_managed_visible_recursive(root, 0, out, &children, &mut seen);
+            self.push_managed_visible_recursive(root, 0, out, &children, &mut seen, force_expand);
         }
     }
 
@@ -755,6 +835,7 @@ impl App {
         out: &mut Vec<VisibleEntry>,
         children: &BTreeMap<PathBuf, Vec<PathBuf>>,
         seen: &mut HashSet<PathBuf>,
+        force_expand: bool,
     ) {
         if !seen.insert(path.clone()) {
             return;
@@ -771,13 +852,20 @@ impl App {
             is_dir,
         });
 
-        if !is_dir || !self.expanded_dirs.contains(&path) {
+        if !is_dir || (!force_expand && !self.expanded_dirs.contains(&path)) {
             return;
         }
 
         if let Some(child_paths) = children.get(&path) {
             for child in child_paths {
-                self.push_managed_visible_recursive(child.clone(), depth + 1, out, children, seen);
+                self.push_managed_visible_recursive(
+                    child.clone(),
+                    depth + 1,
+                    out,
+                    children,
+                    seen,
+                    force_expand,
+                );
             }
         }
     }
@@ -1380,6 +1468,73 @@ mod tests {
         assert_eq!(app.marked_count(), 1);
         app.switch_view(ListView::Managed);
         assert_eq!(app.marked_count(), 0);
+    }
+
+    #[test]
+    fn list_filter_matches_status_entries_case_insensitively() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".zshrc"),
+                actual_vs_state: ChangeKind::Modified,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".gitconfig"),
+                actual_vs_state: ChangeKind::Modified,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(ListView::Status);
+        app.set_list_filter("ZSH".to_string());
+        let items = app.current_items();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].contains(".zshrc"));
+    }
+
+    #[test]
+    fn list_filter_keeps_tree_parents_for_matching_children() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![
+            PathBuf::from("dev"),
+            PathBuf::from("dev/chezmoi-tui"),
+            PathBuf::from("dev/chezmoi-tui/Cargo.toml"),
+        ];
+        app.switch_view(ListView::Managed);
+
+        app.set_list_filter("cargo".to_string());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("dev/")));
+        assert!(items.iter().any(|line| line.contains("chezmoi-tui/")));
+        assert!(items.iter().any(|line| line.contains("Cargo.toml")));
+    }
+
+    #[test]
+    fn list_filter_finds_unmanaged_child_without_manual_expand() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_filter_unmanaged_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let dir = temp_root.join(".config/nvim");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("init.lua"), "set number").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.switch_view(ListView::Unmanaged);
+
+        app.set_list_filter("init.lua".to_string());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains(".config/")));
+        assert!(items.iter().any(|line| line.contains("nvim/")));
+        assert!(items.iter().any(|line| line.contains("init.lua")));
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
