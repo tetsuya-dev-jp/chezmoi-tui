@@ -826,7 +826,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
         </div>
         <h3>Tree Navigation</h3>
-        <p>Expand/collapse directories with h/l in managed and unmanaged views. Familiar vim-style navigation.</p>
+        <p>Expand/collapse directories with h/l in managed and unmanaged views. Symlink directories are shown with clear markers and remain non-expandable by default.</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon fi-blue">
@@ -859,7 +859,7 @@
     <div class="reveal">
       <p class="section-label">Views</p>
       <h2 class="section-title">Three views. Full picture.</h2>
-      <p class="section-desc">Switch instantly between status, managed, and unmanaged views. Each shows the right context and actions for that scope.</p>
+      <p class="section-desc">Switch instantly between status, managed, and unmanaged views. Each shows the right context and actions for that scope. Symlink markers: <code>[L]</code> for directory links, <code>L</code> for file links, and an <code>@</code> suffix.</p>
     </div>
     <div class="views-table-wrap reveal">
       <table class="views-table">
@@ -914,8 +914,8 @@
         <div class="key-row"><span class="label">Cycle pane focus</span><kbd>Tab</kbd></div>
         <div class="key-row"><span class="label">Action menu</span><kbd>a</kbd></div>
         <div class="key-row"><span class="label">Refresh</span><kbd>r</kbd></div>
-        <div class="key-row"><span class="label">Help</span><kbd>?</kbd></div>
-        <div class="key-row"><span class="label">Quit</span><kbd>q</kbd></div>
+        <div class="key-row"><span class="label">Toggle footer hints</span><kbd>?</kbd></div>
+        <div class="key-row"><span class="label">Quit</span><span><kbd>q</kbd> <kbd>Ctrl+c</kbd></span></div>
       </div>
       <div class="keys-group reveal">
         <h3>List</h3>
@@ -924,7 +924,8 @@
         <div class="key-row"><span class="label">Mark for batch</span><kbd>Space</kbd></div>
         <div class="key-row"><span class="label">Clear marks</span><kbd>c</kbd></div>
         <div class="key-row"><span class="label">Filter</span><kbd>/</kbd></div>
-        <div class="key-row"><span class="label">Load diff / preview</span><kbd>d</kbd></div>
+        <div class="key-row"><span class="label">Load diff</span><span><kbd>d</kbd> <kbd>Enter</kbd></span></div>
+        <div class="key-row"><span class="label">Load preview</span><kbd>v</kbd></div>
       </div>
       <div class="keys-group reveal">
         <h3>Detail / Log</h3>

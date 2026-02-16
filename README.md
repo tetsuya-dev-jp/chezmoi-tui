@@ -25,6 +25,14 @@ View behavior:
 | `managed` | Home destination | File preview | Yes |
 | `unmanaged` | Current working directory | File preview | Yes |
 
+Notes:
+
+- Symlink directories are shown as directories, but they are not expanded by default.
+- In `managed`/`unmanaged` trees, symlink markers are:
+  - `[L]` for symlink directories
+  - ` L ` for symlink files
+  - `@` suffix on symlink names
+
 ## Installation
 
 ### Requirements
@@ -81,7 +89,7 @@ Global:
 | `Tab` | Cycle focus (`List` -> `Detail` -> `Log`) |
 | `a` | Open action menu |
 | `r` | Refresh all lists |
-| `?` | Open help modal |
+| `?` | Toggle footer help hints |
 | `q` / `Ctrl+C` | Quit |
 
 List focus:
@@ -93,7 +101,7 @@ List focus:
 | `Space` | Toggle multi-select mark |
 | `c` | Clear all marks |
 | `h` / `l` or `←` / `→` | Collapse/expand tree (`managed`, `unmanaged`) |
-| `d` or `Enter` | Load diff (`status`, `managed`) |
+| `d` or `Enter` | Load diff for selected file |
 | `v` | Load file preview |
 | `e` | Run `edit` on selected target (managed files only) |
 
@@ -147,6 +155,7 @@ Action visibility is view-aware.
 - Rich diff rendering (hunk headers, line numbers, status-aware styling)
 - File preview with extension-based syntax highlighting
 - Tree navigation in `managed` and `unmanaged`
+- Symlink-aware rendering and preview messages (directory link / broken link handling)
 - Multi-select batch execution for selected-item actions
 - Log auto-follow with manual scrolling
 - Persistent config at `~/.config/chezmoi-tui/config.toml`
