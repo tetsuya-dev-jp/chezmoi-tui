@@ -425,7 +425,7 @@ impl App {
             ListView::Unmanaged => {
                 matches!(
                     action,
-                    Action::Add | Action::Apply | Action::Update | Action::Purge
+                    Action::Add | Action::Ignore | Action::Apply | Action::Update | Action::Purge
                 )
             }
         }
@@ -1133,6 +1133,11 @@ mod tests {
             unmanaged
                 .iter()
                 .any(|i| App::action_by_index(*i) == Some(Action::Add))
+        );
+        assert!(
+            unmanaged
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::Ignore))
         );
         assert!(
             !unmanaged

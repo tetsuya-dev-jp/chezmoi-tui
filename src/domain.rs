@@ -67,6 +67,7 @@ pub enum Action {
     Merge,
     MergeAll,
     Add,
+    Ignore,
     Edit,
     Forget,
     Chattr,
@@ -75,13 +76,14 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 11] = [
+    pub const ALL: [Action; 12] = [
         Action::Apply,
         Action::Update,
         Action::ReAdd,
         Action::Merge,
         Action::MergeAll,
         Action::Add,
+        Action::Ignore,
         Action::Edit,
         Action::Forget,
         Action::Chattr,
@@ -97,6 +99,7 @@ impl Action {
             Action::Merge => "merge",
             Action::MergeAll => "merge-all",
             Action::Add => "add",
+            Action::Ignore => "ignore",
             Action::Edit => "edit",
             Action::Forget => "forget",
             Action::Chattr => "chattr",
@@ -113,6 +116,7 @@ impl Action {
             Action::Merge => "run 3-way merge",
             Action::MergeAll => "run 3-way merge for all changes",
             Action::Add => "add existing file to managed set",
+            Action::Ignore => "append target to .chezmoiignore",
             Action::Edit => "edit source state in external editor",
             Action::Forget => "remove from managed set",
             Action::Chattr => "change source attributes",
@@ -138,6 +142,7 @@ impl Action {
             self,
             Action::Merge
                 | Action::Add
+                | Action::Ignore
                 | Action::Edit
                 | Action::Forget
                 | Action::Chattr

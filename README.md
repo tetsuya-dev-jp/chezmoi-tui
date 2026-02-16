@@ -86,6 +86,7 @@ cargo run
 - `merge`
 - `merge-all`
 - `add`
+- `ignore` (append selected path to `.chezmoiignore`)
 - `edit`
 - `forget`
 - `chattr`

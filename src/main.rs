@@ -16,8 +16,8 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -697,6 +697,11 @@ fn execute_action_request(
     task_tx: &UnboundedSender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
+    if request.action == Action::Ignore {
+        run_internal_ignore_action(app, task_tx, &request)?;
+        return Ok(());
+    }
+
     if matches!(
         request.action,
         Action::Edit | Action::Update | Action::Merge | Action::MergeAll
@@ -707,6 +712,36 @@ fn execute_action_request(
         send_task(app, task_tx, BackendTask::RunAction { request })?;
     }
     Ok(())
+}
+
+fn run_internal_ignore_action(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+    request: &ActionRequest,
+) -> Result<()> {
+    let target = request
+        .target
+        .as_deref()
+        .context("ignore requires a target file or directory")?;
+
+    let is_dir = fs::symlink_metadata(target)
+        .with_context(|| format!("failed to stat ignore target: {}", target.display()))?
+        .file_type()
+        .is_dir();
+
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
+    let pattern = build_ignore_pattern(target, is_dir, &home_dir, &working_dir)?;
+    let ignore_path = chezmoi_ignore_path()?;
+
+    let already_exists = append_unique_line(&ignore_path, &pattern)?;
+    if already_exists {
+        app.log(format!("ignore pattern already exists: {pattern}"));
+    } else {
+        app.log(format!("ignore pattern added: {pattern}"));
+    }
+
+    send_task(app, task_tx, BackendTask::RefreshAll)
 }
 
 fn send_task(
@@ -781,13 +816,119 @@ fn infer_destination_for_target(target: Option<&Path>) -> std::path::PathBuf {
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
 
+    destination_for_target_with_bases(target, &home_dir, &working_dir)
+}
+
+fn destination_for_target_with_bases(
+    target: Option<&Path>,
+    home_dir: &Path,
+    working_dir: &Path,
+) -> std::path::PathBuf {
     match target {
-        Some(path) if path.is_absolute() && path.starts_with(&home_dir) => home_dir,
-        Some(path) if path.is_absolute() && path.starts_with(&working_dir) => working_dir,
-        Some(path) if path.is_absolute() => home_dir,
-        Some(_) => working_dir,
-        None => home_dir,
+        Some(path) if path.is_absolute() && path.starts_with(home_dir) => home_dir.to_path_buf(),
+        Some(path) if path.is_absolute() && path.starts_with(working_dir) => {
+            working_dir.to_path_buf()
+        }
+        Some(path) if path.is_absolute() => home_dir.to_path_buf(),
+        Some(_) => working_dir.to_path_buf(),
+        None => home_dir.to_path_buf(),
     }
+}
+
+fn build_ignore_pattern(
+    target: &Path,
+    is_dir: bool,
+    home_dir: &Path,
+    working_dir: &Path,
+) -> Result<String> {
+    let destination = destination_for_target_with_bases(Some(target), home_dir, working_dir);
+    let relative = if target.is_absolute() {
+        target
+            .strip_prefix(&destination)
+            .with_context(|| {
+                format!(
+                    "ignore target is outside destination: target={} destination={}",
+                    target.display(),
+                    destination.display()
+                )
+            })?
+            .to_path_buf()
+    } else {
+        target.to_path_buf()
+    };
+
+    let mut pattern = normalize_ignore_path(&relative);
+    if pattern.is_empty() || pattern == "." {
+        anyhow::bail!("ignore target resolved to an empty pattern");
+    }
+
+    if is_dir {
+        pattern = pattern.trim_end_matches('/').to_string();
+        pattern.push_str("/**");
+    }
+
+    Ok(pattern)
+}
+
+fn normalize_ignore_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn chezmoi_ignore_path() -> Result<std::path::PathBuf> {
+    let output = Command::new("chezmoi")
+        .arg("source-path")
+        .output()
+        .context("failed to execute chezmoi source-path")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "chezmoi source-path failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let source_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if source_dir.is_empty() {
+        anyhow::bail!("chezmoi source-path returned empty output");
+    }
+
+    Ok(std::path::PathBuf::from(source_dir).join(".chezmoiignore"))
+}
+
+fn append_unique_line(path: &Path, line: &str) -> Result<bool> {
+    let existing = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+
+    if existing.lines().any(|entry| entry.trim() == line) {
+        return Ok(true);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {} for append", path.display()))?;
+
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        file.write_all(b"\n")
+            .with_context(|| format!("failed to append newline to {}", path.display()))?;
+    }
+    writeln!(file, "{line}").with_context(|| format!("failed to append to {}", path.display()))?;
+
+    Ok(false)
 }
 
 fn squash_lines(input: &str) -> String {
@@ -917,6 +1058,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn flatten_error_formats_all_cases() {
@@ -932,6 +1074,47 @@ mod tests {
         let text = "a\n\n b\n c \n d\n e\n f\n";
         let got = squash_lines(text);
         assert_eq!(got, "a | b | c | d | e");
+    }
+
+    #[test]
+    fn build_ignore_pattern_uses_home_relative_path_when_target_is_under_home() {
+        let home = Path::new("/home/tetsuya");
+        let working = Path::new("/home/tetsuya/dev/chezmoi-tui");
+        let target = Path::new("/home/tetsuya/dev/chezmoi-tui/.git");
+        let got = build_ignore_pattern(target, true, home, working).expect("build ignore pattern");
+        assert_eq!(got, "dev/chezmoi-tui/.git/**");
+    }
+
+    #[test]
+    fn build_ignore_pattern_uses_working_relative_path_outside_home() {
+        let home = Path::new("/home/tetsuya");
+        let working = Path::new("/tmp/chezmoi-tui");
+        let target = Path::new("/tmp/chezmoi-tui/.cache");
+        let got = build_ignore_pattern(target, true, home, working).expect("build ignore pattern");
+        assert_eq!(got, ".cache/**");
+    }
+
+    #[test]
+    fn append_unique_line_appends_once_and_avoids_duplicates() {
+        let file = std::env::temp_dir().join(format!(
+            "chezmoi_tui_ignore_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::write(&file, "a").expect("write seed");
+
+        let first = append_unique_line(&file, "b").expect("append first");
+        assert!(!first);
+        assert_eq!(std::fs::read_to_string(&file).expect("read file"), "a\nb\n");
+
+        let second = append_unique_line(&file, "b").expect("append duplicate");
+        assert!(second);
+        assert_eq!(std::fs::read_to_string(&file).expect("read file"), "a\nb\n");
+
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]

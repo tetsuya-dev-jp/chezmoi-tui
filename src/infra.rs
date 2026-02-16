@@ -264,6 +264,9 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<String>> {
             "--".to_string(),
             required_target(target, action)?,
         ],
+        Action::Ignore => {
+            bail!("ignore is an internal action and does not map to a chezmoi CLI command")
+        }
         Action::Edit => vec![
             "edit".to_string(),
             "--".to_string(),
@@ -428,6 +431,13 @@ mod tests {
             action_to_args(&chattr).expect("chattr args"),
             vec!["chattr", "--", "private,template", ".zshrc"]
         );
+
+        let ignore = ActionRequest {
+            action: Action::Ignore,
+            target: Some(PathBuf::from(".cache")),
+            chattr_attrs: None,
+        };
+        assert!(action_to_args(&ignore).is_err());
     }
 
     #[test]
