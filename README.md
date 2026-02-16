@@ -86,6 +86,9 @@ cargo run
 
 - `apply`
 - `update`
+- `edit-config`
+- `edit-config-template`
+- `edit-ignore` (open `.chezmoiignore` in your editor)
 - `re-add`
 - `merge`
 - `merge-all`

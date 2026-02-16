@@ -730,7 +730,13 @@ fn execute_action_request(
 
     if matches!(
         request.action,
-        Action::Edit | Action::Update | Action::Merge | Action::MergeAll
+        Action::Edit
+            | Action::Update
+            | Action::Merge
+            | Action::MergeAll
+            | Action::EditConfig
+            | Action::EditConfigTemplate
+            | Action::EditIgnore
     ) {
         app.pending_foreground = Some(request);
         app.busy = true;
@@ -785,7 +791,7 @@ fn run_foreground_action(
 ) -> Result<()> {
     restore_terminal(terminal)?;
 
-    let result = run_chezmoi_foreground(&request);
+    let result = run_action_foreground(&request);
 
     setup_terminal()?;
     terminal.clear()?;
@@ -822,6 +828,13 @@ fn run_foreground_action(
     }
 
     Ok(())
+}
+
+fn run_action_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
+    match request.action {
+        Action::EditIgnore => run_edit_ignore_foreground(),
+        _ => run_chezmoi_foreground(request),
+    }
 }
 
 fn dispatch_action_request(
@@ -918,6 +931,31 @@ fn run_chezmoi_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
         .args(args)
         .status()
         .context("failed to start foreground chezmoi command")?;
+    let elapsed = started.elapsed().as_millis() as u64;
+
+    Ok((status.code().unwrap_or(-1), elapsed))
+}
+
+fn run_edit_ignore_foreground() -> Result<(i32, u64)> {
+    let ignore_path = chezmoi_ignore_path()?;
+    if let Some(parent) = ignore_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&ignore_path)
+        .with_context(|| format!("failed to open {}", ignore_path.display()))?;
+
+    let started = Instant::now();
+    let status = Command::new("sh")
+        .arg("-lc")
+        .arg("${VISUAL:-${EDITOR:-vi}} \"$1\"")
+        .arg("sh")
+        .arg(&ignore_path)
+        .status()
+        .with_context(|| format!("failed to launch editor for {}", ignore_path.display()))?;
     let elapsed = started.elapsed().as_millis() as u64;
 
     Ok((status.code().unwrap_or(-1), elapsed))

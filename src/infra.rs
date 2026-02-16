@@ -249,6 +249,11 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<String>> {
     let args = match action {
         Action::Apply => vec!["apply".to_string()],
         Action::Update => vec!["update".to_string()],
+        Action::EditConfig => vec!["edit-config".to_string()],
+        Action::EditConfigTemplate => vec!["edit-config-template".to_string()],
+        Action::EditIgnore => {
+            bail!("edit-ignore is an internal action and does not map to a chezmoi CLI command")
+        }
         Action::ReAdd => vec!["re-add".to_string()],
         Action::Merge => {
             let mut args = vec!["merge".to_string()];
@@ -412,6 +417,26 @@ mod tests {
             vec!["edit", "--", ".zshrc"]
         );
 
+        let edit_config = ActionRequest {
+            action: Action::EditConfig,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&edit_config).expect("edit-config args"),
+            vec!["edit-config"]
+        );
+
+        let edit_config_template = ActionRequest {
+            action: Action::EditConfigTemplate,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&edit_config_template).expect("edit-config-template args"),
+            vec!["edit-config-template"]
+        );
+
         let forget = ActionRequest {
             action: Action::Forget,
             target: Some(PathBuf::from(".zshrc")),
@@ -438,6 +463,13 @@ mod tests {
             chattr_attrs: None,
         };
         assert!(action_to_args(&ignore).is_err());
+
+        let edit_ignore = ActionRequest {
+            action: Action::EditIgnore,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert!(action_to_args(&edit_ignore).is_err());
     }
 
     #[test]

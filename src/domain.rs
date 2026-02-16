@@ -63,6 +63,9 @@ pub struct DiffText {
 pub enum Action {
     Apply,
     Update,
+    EditConfig,
+    EditConfigTemplate,
+    EditIgnore,
     ReAdd,
     Merge,
     MergeAll,
@@ -76,9 +79,12 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 12] = [
+    pub const ALL: [Action; 15] = [
         Action::Apply,
         Action::Update,
+        Action::EditConfig,
+        Action::EditConfigTemplate,
+        Action::EditIgnore,
         Action::ReAdd,
         Action::Merge,
         Action::MergeAll,
@@ -95,6 +101,9 @@ impl Action {
         match self {
             Action::Apply => "apply",
             Action::Update => "update",
+            Action::EditConfig => "edit-config",
+            Action::EditConfigTemplate => "edit-config-template",
+            Action::EditIgnore => "edit-ignore",
             Action::ReAdd => "re-add",
             Action::Merge => "merge",
             Action::MergeAll => "merge-all",
@@ -112,6 +121,9 @@ impl Action {
         match self {
             Action::Apply => "apply target state to destination",
             Action::Update => "update source and apply changes",
+            Action::EditConfig => "edit chezmoi config file",
+            Action::EditConfigTemplate => "edit chezmoi config template",
+            Action::EditIgnore => "edit .chezmoiignore",
             Action::ReAdd => "re-import modified files",
             Action::Merge => "run 3-way merge",
             Action::MergeAll => "run 3-way merge for all changes",

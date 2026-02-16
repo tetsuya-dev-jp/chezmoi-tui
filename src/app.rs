@@ -500,6 +500,9 @@ impl App {
                 action,
                 Action::Apply
                     | Action::Update
+                    | Action::EditConfig
+                    | Action::EditConfigTemplate
+                    | Action::EditIgnore
                     | Action::ReAdd
                     | Action::Merge
                     | Action::MergeAll
@@ -512,6 +515,9 @@ impl App {
                 action,
                 Action::Apply
                     | Action::Update
+                    | Action::EditConfig
+                    | Action::EditConfigTemplate
+                    | Action::EditIgnore
                     | Action::Edit
                     | Action::Forget
                     | Action::Chattr
@@ -521,7 +527,14 @@ impl App {
             ListView::Unmanaged => {
                 matches!(
                     action,
-                    Action::Add | Action::Ignore | Action::Apply | Action::Update | Action::Purge
+                    Action::Add
+                        | Action::Ignore
+                        | Action::Apply
+                        | Action::Update
+                        | Action::EditConfig
+                        | Action::EditConfigTemplate
+                        | Action::EditIgnore
+                        | Action::Purge
                 )
             }
         }
@@ -1222,6 +1235,9 @@ mod tests {
             got,
             vec![
                 Action::Apply,
+                Action::EditConfig,
+                Action::EditConfigTemplate,
+                Action::EditIgnore,
                 Action::Update,
                 Action::Chattr,
                 Action::Edit,
@@ -1244,6 +1260,21 @@ mod tests {
             unmanaged
                 .iter()
                 .any(|i| App::action_by_index(*i) == Some(Action::Ignore))
+        );
+        assert!(
+            unmanaged
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::EditConfig))
+        );
+        assert!(
+            unmanaged
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::EditConfigTemplate))
+        );
+        assert!(
+            unmanaged
+                .iter()
+                .any(|i| App::action_by_index(*i) == Some(Action::EditIgnore))
         );
         assert!(
             !unmanaged
