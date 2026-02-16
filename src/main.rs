@@ -28,6 +28,50 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 const PREVIEW_MAX_BYTES: usize = 64 * 1024;
 const PREVIEW_BINARY_SAMPLE_BYTES: usize = 4096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IgnorePatternMode {
+    Auto,
+    Exact,
+    Children,
+    Recursive,
+    GlobalName,
+}
+
+impl IgnorePatternMode {
+    const ALL: [IgnorePatternMode; 5] = [
+        IgnorePatternMode::Auto,
+        IgnorePatternMode::Exact,
+        IgnorePatternMode::Children,
+        IgnorePatternMode::Recursive,
+        IgnorePatternMode::GlobalName,
+    ];
+
+    fn tag(self) -> &'static str {
+        match self {
+            IgnorePatternMode::Auto => "auto",
+            IgnorePatternMode::Exact => "exact",
+            IgnorePatternMode::Children => "children",
+            IgnorePatternMode::Recursive => "recursive",
+            IgnorePatternMode::GlobalName => "global-name",
+        }
+    }
+
+    fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "auto" => Some(IgnorePatternMode::Auto),
+            "exact" => Some(IgnorePatternMode::Exact),
+            "children" => Some(IgnorePatternMode::Children),
+            "recursive" => Some(IgnorePatternMode::Recursive),
+            "global-name" => Some(IgnorePatternMode::GlobalName),
+            _ => None,
+        }
+    }
+
+    fn from_index(index: usize) -> Self {
+        *Self::ALL.get(index).unwrap_or(&IgnorePatternMode::Auto)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = match AppConfig::load_or_default() {
@@ -306,6 +350,7 @@ fn handle_key_event(
         ModalState::None => handle_key_without_modal(app, key, task_tx),
         ModalState::Help => handle_help_key(app, key),
         ModalState::ListFilter { .. } => handle_list_filter_key(app, key, task_tx),
+        ModalState::Ignore { .. } => handle_ignore_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
@@ -545,6 +590,59 @@ fn handle_help_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+fn handle_ignore_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    let mut start_requests: Option<Vec<ActionRequest>> = None;
+
+    {
+        let ModalState::Ignore { requests, selected } = &mut app.modal else {
+            return Ok(());
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                app.close_modal();
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                *selected = (*selected + 1) % IgnorePatternMode::ALL.len();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if *selected == 0 {
+                    *selected = IgnorePatternMode::ALL.len() - 1;
+                } else {
+                    *selected -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                let mode = IgnorePatternMode::from_index(*selected).tag().to_string();
+                let mut prepared = requests.clone();
+                for request in &mut prepared {
+                    request.chattr_attrs = Some(mode.clone());
+                }
+                start_requests = Some(prepared);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(requests) = start_requests {
+        let count = requests.len();
+        if count > 1 {
+            app.log(format!("batch queued: action=ignore targets={count}"));
+        }
+        app.close_modal();
+        if let Some(first) = app.start_batch(requests) {
+            dispatch_action_request(app, task_tx, first)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn handle_action_menu_key(
     app: &mut App,
     key: KeyEvent,
@@ -615,6 +713,11 @@ fn handle_action_menu_key(
             app.log(message);
             app.close_modal();
             app.clear_batch();
+            return Ok(());
+        }
+        if action == Action::Ignore {
+            app.close_modal();
+            app.open_ignore_menu(requests);
             return Ok(());
         }
 
@@ -819,7 +922,12 @@ fn run_internal_ignore_action(app: &mut App, request: &ActionRequest) -> Result<
 
     let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
-    let pattern = build_ignore_pattern(target, is_dir, &home_dir, &working_dir)?;
+    let mode = request
+        .chattr_attrs
+        .as_deref()
+        .and_then(IgnorePatternMode::from_tag)
+        .unwrap_or(IgnorePatternMode::Auto);
+    let pattern = build_ignore_pattern(target, is_dir, &home_dir, mode)?;
     let ignore_path = chezmoi_ignore_path()?;
 
     let already_exists = append_unique_line(&ignore_path, &pattern)?;
@@ -1048,32 +1156,68 @@ fn build_ignore_pattern(
     target: &Path,
     is_dir: bool,
     home_dir: &Path,
-    working_dir: &Path,
+    mode: IgnorePatternMode,
 ) -> Result<String> {
-    let destination = destination_for_target_with_bases(Some(target), home_dir, working_dir);
-    let relative = if target.is_absolute() {
-        target
-            .strip_prefix(&destination)
+    if mode == IgnorePatternMode::GlobalName {
+        let name = target
+            .file_name()
+            .and_then(|name| name.to_str())
             .with_context(|| {
-                format!(
-                    "ignore target is outside destination: target={} destination={}",
-                    target.display(),
-                    destination.display()
-                )
-            })?
-            .to_path_buf()
-    } else {
-        target.to_path_buf()
-    };
+                format!("cannot infer ignore name from target: {}", target.display())
+            })?;
+        let escaped = name.replace('/', "\\/");
+        return Ok(if is_dir {
+            format!("**/{escaped}/**")
+        } else {
+            format!("**/{escaped}")
+        });
+    }
+
+    let relative = target
+        .strip_prefix(home_dir)
+        .with_context(|| {
+            format!(
+                "ignore target is outside home directory: target={} home={}",
+                target.display(),
+                home_dir.display()
+            )
+        })?
+        .to_path_buf();
 
     let mut pattern = normalize_ignore_path(&relative);
     if pattern.is_empty() || pattern == "." {
         anyhow::bail!("ignore target resolved to an empty pattern");
     }
 
-    if is_dir {
+    let suffix = match mode {
+        IgnorePatternMode::Auto => {
+            if is_dir {
+                "/**"
+            } else {
+                ""
+            }
+        }
+        IgnorePatternMode::Exact => "",
+        IgnorePatternMode::Children => {
+            if is_dir {
+                "/*"
+            } else {
+                ""
+            }
+        }
+        IgnorePatternMode::Recursive => {
+            if is_dir {
+                "/**"
+            } else {
+                ""
+            }
+        }
+        IgnorePatternMode::GlobalName => "",
+    };
+
+    if !suffix.is_empty() {
         pattern = pattern.trim_end_matches('/').to_string();
-        pattern.push_str("/**");
+        pattern.push_str(suffix);
     }
 
     Ok(pattern)
@@ -1288,19 +1432,66 @@ mod tests {
     #[test]
     fn build_ignore_pattern_uses_home_relative_path_when_target_is_under_home() {
         let home = Path::new("/home/tetsuya");
-        let working = Path::new("/home/tetsuya/dev/chezmoi-tui");
         let target = Path::new("/home/tetsuya/dev/chezmoi-tui/.git");
-        let got = build_ignore_pattern(target, true, home, working).expect("build ignore pattern");
+        let got = build_ignore_pattern(target, true, home, IgnorePatternMode::Auto)
+            .expect("build ignore pattern");
         assert_eq!(got, "dev/chezmoi-tui/.git/**");
     }
 
     #[test]
-    fn build_ignore_pattern_uses_working_relative_path_outside_home() {
+    fn build_ignore_pattern_fails_for_path_outside_home() {
         let home = Path::new("/home/tetsuya");
-        let working = Path::new("/tmp/chezmoi-tui");
         let target = Path::new("/tmp/chezmoi-tui/.cache");
-        let got = build_ignore_pattern(target, true, home, working).expect("build ignore pattern");
-        assert_eq!(got, ".cache/**");
+        assert!(build_ignore_pattern(target, true, home, IgnorePatternMode::Auto).is_err());
+    }
+
+    #[test]
+    fn build_ignore_pattern_mode_children() {
+        let home = Path::new("/home/tetsuya");
+        let target = Path::new("/home/tetsuya/dev/chezmoi-tui/.cache");
+        let got = build_ignore_pattern(target, true, home, IgnorePatternMode::Children)
+            .expect("build ignore pattern");
+        assert_eq!(got, "dev/chezmoi-tui/.cache/*");
+    }
+
+    #[test]
+    fn build_ignore_pattern_mode_exact_for_directory() {
+        let home = Path::new("/home/tetsuya");
+        let target = Path::new("/home/tetsuya/dev/chezmoi-tui/.cache");
+        let got = build_ignore_pattern(target, true, home, IgnorePatternMode::Exact)
+            .expect("build ignore pattern");
+        assert_eq!(got, "dev/chezmoi-tui/.cache");
+    }
+
+    #[test]
+    fn build_ignore_pattern_mode_global_name_for_directory() {
+        let home = Path::new("/home/tetsuya");
+        let target = Path::new("/home/tetsuya/dev/chezmoi-tui/.git");
+        let got = build_ignore_pattern(target, true, home, IgnorePatternMode::GlobalName)
+            .expect("build ignore pattern");
+        assert_eq!(got, "**/.git/**");
+    }
+
+    #[test]
+    fn build_ignore_pattern_mode_global_name_for_file() {
+        let home = Path::new("/home/tetsuya");
+        let target = Path::new("/home/tetsuya/dev/chezmoi-tui/.DS_Store");
+        let got = build_ignore_pattern(target, false, home, IgnorePatternMode::GlobalName)
+            .expect("build ignore pattern");
+        assert_eq!(got, "**/.DS_Store");
+    }
+
+    #[test]
+    fn ignore_mode_from_tag_parses_known_values() {
+        assert_eq!(
+            IgnorePatternMode::from_tag("recursive"),
+            Some(IgnorePatternMode::Recursive)
+        );
+        assert_eq!(
+            IgnorePatternMode::from_tag("global-name"),
+            Some(IgnorePatternMode::GlobalName)
+        );
+        assert_eq!(IgnorePatternMode::from_tag("unknown"), None);
     }
 
     #[test]

@@ -48,6 +48,10 @@ pub enum ModalState {
         value: String,
         original: String,
     },
+    Ignore {
+        requests: Vec<ActionRequest>,
+        selected: usize,
+    },
     ActionMenu {
         selected: usize,
         filter: String,
@@ -400,6 +404,13 @@ impl App {
         self.modal = ModalState::ActionMenu {
             selected: 0,
             filter: String::new(),
+        };
+    }
+
+    pub fn open_ignore_menu(&mut self, requests: Vec<ActionRequest>) {
+        self.modal = ModalState::Ignore {
+            requests,
+            selected: 0,
         };
     }
 

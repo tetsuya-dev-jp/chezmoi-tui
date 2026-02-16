@@ -94,7 +94,7 @@ cargo run
 - `merge`
 - `merge-all`
 - `add`
-- `ignore` (append selected path to `.chezmoiignore`)
+- `ignore` (wizard: auto/exact/*/**/global-by-name, e.g. `**/.git/**`)
 - `edit`
 - `forget`
 - `chattr`

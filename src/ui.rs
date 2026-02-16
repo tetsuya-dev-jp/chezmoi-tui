@@ -427,6 +427,69 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
         }
+        ModalState::Ignore { requests, selected } => {
+            let area = centered_rect(70, 42, frame.area());
+            frame.render_widget(Clear, area);
+
+            let target_text = requests
+                .first()
+                .and_then(|request| request.target.as_ref())
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(none)".to_string());
+            let count = requests.len();
+            let options = [
+                ("Auto (recommended)", "file => exact, directory => /**"),
+                ("Exact path", "Use exact path only"),
+                ("Direct children", "Directory children only: /*"),
+                ("Recursive", "Directory and all descendants: /**"),
+                ("Global by name", "Any depth by name: **/<name>/**"),
+            ];
+
+            let mut lines = vec![
+                Line::from(format!("targets: {}", count)),
+                Line::from(format!("sample target: {}", target_text)),
+                Line::from("scope: home-relative + global-by-name"),
+                Line::from(""),
+                Line::from("Select ignore rule mode:"),
+            ];
+
+            for (index, (label, description)) in options.into_iter().enumerate() {
+                let prefix = if index == *selected { "▶" } else { " " };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{prefix} {label}"),
+                        if index == *selected {
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::LightYellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        description.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "Up/Down or j/k: select  Enter: apply  Esc: cancel",
+            ));
+
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Ignore Rule ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
         ModalState::ActionMenu { selected, filter } => {
             let area = centered_rect(60, 70, frame.area());
             frame.render_widget(Clear, area);
