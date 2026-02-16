@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest, CommandResult, DiffText, ListView, StatusEntry};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -123,6 +123,10 @@ pub struct App {
     home_dir: PathBuf,
     working_dir: PathBuf,
     expanded_dirs: BTreeSet<PathBuf>,
+    marked_entries: BTreeSet<PathBuf>,
+    batch_action: Option<Action>,
+    batch_total: usize,
+    batch_queue: VecDeque<ActionRequest>,
     visible_entries: Vec<VisibleEntry>,
 }
 
@@ -153,6 +157,10 @@ impl App {
             home_dir,
             working_dir,
             expanded_dirs: BTreeSet::new(),
+            marked_entries: BTreeSet::new(),
+            batch_action: None,
+            batch_total: 0,
+            batch_queue: VecDeque::new(),
             visible_entries: Vec::new(),
         };
 
@@ -162,6 +170,7 @@ impl App {
 
     pub fn switch_view(&mut self, view: ListView) {
         self.view = view;
+        self.clear_marked_entries();
         self.rebuild_visible_entries_reset();
     }
 
@@ -245,9 +254,96 @@ impl App {
             return false;
         };
 
+        self.is_absolute_path_managed(&selected_abs)
+    }
+
+    pub fn is_absolute_path_managed(&self, path: &Path) -> bool {
         self.managed_entries
             .iter()
-            .any(|managed| self.managed_absolute_path(managed.as_path()) == selected_abs)
+            .any(|managed| self.managed_absolute_path(managed.as_path()) == path)
+    }
+
+    pub fn toggle_selected_mark(&mut self) -> bool {
+        let Some(path) = self.selected_path() else {
+            return false;
+        };
+        if self.marked_entries.contains(&path) {
+            self.marked_entries.remove(&path)
+        } else {
+            self.marked_entries.insert(path)
+        }
+    }
+
+    pub fn clear_marked_entries(&mut self) -> bool {
+        if self.marked_entries.is_empty() {
+            return false;
+        }
+        self.marked_entries.clear();
+        true
+    }
+
+    pub fn marked_count(&self) -> usize {
+        self.marked_entries.len()
+    }
+
+    pub fn selected_action_targets_absolute(&self) -> Vec<PathBuf> {
+        if self.marked_entries.is_empty() {
+            return self.selected_absolute_path().into_iter().collect();
+        }
+
+        self.visible_entries
+            .iter()
+            .filter(|entry| self.marked_entries.contains(&entry.path))
+            .map(|entry| self.resolve_path_for_view(&entry.path, self.view))
+            .collect()
+    }
+
+    pub fn start_batch(&mut self, requests: Vec<ActionRequest>) -> Option<ActionRequest> {
+        if requests.is_empty() {
+            return None;
+        }
+
+        if requests.len() == 1 {
+            self.clear_batch();
+            return requests.into_iter().next();
+        }
+
+        let mut queue = VecDeque::from(requests);
+        let first = queue.pop_front()?;
+        self.batch_action = Some(first.action);
+        self.batch_total = queue.len() + 1;
+        self.batch_queue = queue;
+        Some(first)
+    }
+
+    pub fn pop_next_batch_request(&mut self) -> Option<ActionRequest> {
+        self.batch_queue.pop_front()
+    }
+
+    pub fn batch_in_progress(&self) -> bool {
+        self.batch_action.is_some()
+    }
+
+    pub fn batch_total(&self) -> usize {
+        self.batch_total
+    }
+
+    pub fn batch_action(&self) -> Option<Action> {
+        self.batch_action
+    }
+
+    pub fn apply_chattr_attrs_to_batch(&mut self, attrs: &str) {
+        for request in &mut self.batch_queue {
+            if request.action == Action::Chattr {
+                request.chattr_attrs = Some(attrs.to_string());
+            }
+        }
+    }
+
+    pub fn clear_batch(&mut self) {
+        self.batch_action = None;
+        self.batch_total = 0;
+        self.batch_queue.clear();
     }
 
     pub fn expand_selected_directory(&mut self) -> bool {
@@ -509,6 +605,13 @@ impl App {
         }
 
         self.visible_entries = entries;
+        let visible_paths: HashSet<PathBuf> = self
+            .visible_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.marked_entries
+            .retain(|path| visible_paths.contains(path));
 
         if let Some(target) = previous
             && let Some(idx) = self.visible_entries.iter().position(|e| e.path == target)
@@ -690,8 +793,10 @@ impl App {
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
+        let marked = self.marked_entries.contains(&entry.path);
         if self.view == ListView::Status {
             let mut label = String::new();
+            label.push_str(if marked { "* " } else { "  " });
             if let Some(status) = self.status_entries.iter().find(|s| s.path == entry.path) {
                 label.push(status.actual_vs_state.as_symbol());
                 label.push(status.actual_vs_target.as_symbol());
@@ -709,6 +814,7 @@ impl App {
 
         let mut label = String::new();
         label.push_str(&"  ".repeat(entry.depth));
+        label.push_str(if marked { "* " } else { "  " });
 
         let expanded = self.expanded_dirs.contains(&entry.path);
         let marker = if entry.is_dir {
@@ -810,7 +916,7 @@ mod tests {
         }];
         app.rebuild_visible_entries();
         let items = app.current_items();
-        assert_eq!(items[0], "MM .zshrc");
+        assert_eq!(items[0], "  MM .zshrc");
     }
 
     #[test]
@@ -1156,6 +1262,51 @@ mod tests {
                 .iter()
                 .any(|i| App::action_by_index(*i) == Some(Action::Add))
         );
+    }
+
+    #[test]
+    fn selected_action_targets_use_marked_entries_in_visible_order() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_marked_targets_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        fs::write(temp_root.join("a"), "a").expect("write a");
+        fs::write(temp_root.join("b"), "b").expect("write b");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.managed_entries = vec![PathBuf::from("b"), PathBuf::from("a")];
+        app.switch_view(ListView::Managed);
+
+        // visible order is alphabetical (a, b)
+        app.toggle_selected_mark();
+        app.select_next();
+        app.toggle_selected_mark();
+
+        let targets = app.selected_action_targets_absolute();
+        assert_eq!(targets, vec![temp_root.join("a"), temp_root.join("b")]);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn switching_view_clears_multi_selection_marks() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::Modified,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.rebuild_visible_entries();
+        assert!(app.toggle_selected_mark());
+        assert_eq!(app.marked_count(), 1);
+        app.switch_view(ListView::Managed);
+        assert_eq!(app.marked_count(), 0);
     }
 
     #[test]

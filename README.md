@@ -38,7 +38,8 @@ cargo run
 2. Switch views with `1`/`2`/`3` (`status`, `managed`, `unmanaged`).
 3. In `status`, selecting a file auto-loads its diff.
 4. In `managed` / `unmanaged`, selecting a file auto-loads preview.
-5. Open action menu with `a` and run the needed operation.
+5. Use `Space` to mark multiple items when needed.
+6. Open action menu with `a` and run the needed operation (applies to marked items as a batch).
 
 ## Features
 
@@ -49,6 +50,7 @@ cargo run
 - Rich diff rendering with line numbers and hunk headers
 - Extension-based syntax highlighting in preview
 - Expand/collapse directories in `unmanaged` view
+- Multi-select and batch execution for selected-item actions
 - Persistent app config at `~/.config/chezmoi-tui/config.toml`
 
 ## Safety Model
@@ -66,6 +68,8 @@ cargo run
 | --- | --- |
 | `1` / `2` / `3` | Switch view (`status`, `managed`, `unmanaged`) |
 | `j` / `k` or `↑` / `↓` | Move selection |
+| `Space` | Toggle multi-select mark on selected entry |
+| `c` | Clear all multi-select marks |
 | `h` / `l` or `←` / `→` | Collapse/expand directory (`managed` / `unmanaged`) |
 | `Tab` | Cycle focus (`List` → `Detail` → `Log`) |
 | `Enter` or `d` | Load diff for selection |

@@ -163,6 +163,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         format!(" ITEMS {} ", app.current_len()),
         Style::default().bg(Color::DarkGray).fg(Color::White),
     ));
+    top.push(Span::raw(" "));
+    top.extend(badge(
+        format!(" MARK {} ", app.marked_count()),
+        Style::default().bg(Color::LightBlue).fg(Color::Black),
+    ));
 
     let mut bottom = Vec::new();
     for spec in status_bar_hint_specs(app) {
@@ -238,6 +243,16 @@ fn status_bar_hint_specs(app: &App) -> Vec<HintSpec> {
                 key: "j/k ↑/↓",
                 label: "Move",
                 emphasized: true,
+            });
+            specs.push(HintSpec {
+                key: "Space",
+                label: "Mark",
+                emphasized: false,
+            });
+            specs.push(HintSpec {
+                key: "c",
+                label: "Clear",
+                emphasized: false,
             });
             if matches!(app.view, ListView::Managed | ListView::Unmanaged) {
                 specs.push(HintSpec {
@@ -323,6 +338,8 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from("List Focus"),
                 Line::from("  j/k, Up/Down       Move selection"),
+                Line::from("  Space              Toggle multi-select mark"),
+                Line::from("  c                  Clear multi-select marks"),
                 Line::from("  h/l, Left/Right    Fold/unfold tree (Managed/Unmanaged)"),
                 Line::from("  d or Enter         Show diff (Status/Managed)"),
                 Line::from("  v                  Preview selected file"),

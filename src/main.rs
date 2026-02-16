@@ -274,13 +274,18 @@ fn handle_backend_event(
                 app.log(format!("stderr: {}", squash_lines(&result.stderr)));
             }
 
-            if result.exit_code == 0 {
+            if app.batch_in_progress() {
+                maybe_continue_batch(app, task_tx)?;
+            } else if result.exit_code == 0 {
                 send_task(app, task_tx, BackendTask::RefreshAll)?;
             }
         }
         BackendEvent::Error { context, message } => {
             app.busy = false;
             app.log(format!("error[{context}]: {message}"));
+            if context == "action" && app.batch_in_progress() {
+                maybe_continue_batch(app, task_tx)?;
+            }
         }
     }
 
@@ -317,6 +322,18 @@ fn handle_key_without_modal(
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.open_help(),
         KeyCode::Tab => app.focus = app.focus.next(),
+        KeyCode::Char(' ') if app.focus == crate::app::PaneFocus::List => {
+            if app.toggle_selected_mark() {
+                app.log(format!("selected: {} item(s)", app.marked_count()));
+            }
+        }
+        KeyCode::Char('c')
+            if key.modifiers.is_empty() && app.focus == crate::app::PaneFocus::List =>
+        {
+            if app.clear_marked_entries() {
+                app.log("cleared multi-selection".to_string());
+            }
+        }
         KeyCode::Char('j') | KeyCode::Down => match app.focus {
             crate::app::PaneFocus::Detail => {
                 app.scroll_detail_down(1);
@@ -528,38 +545,33 @@ fn handle_action_menu_key(
     }
 
     if let Some(action) = selected_action {
-        let request = ActionRequest {
-            action,
-            target: app.selected_absolute_path(),
-            chattr_attrs: None,
-        };
-
-        if action.needs_target() && request.target.is_none() {
+        let requests = build_action_requests(app, action);
+        if requests.is_empty() {
             app.log(format!("{} requires a target file", action.label()));
             app.close_modal();
             return Ok(());
         }
-        if action == Action::Add && app.selected_is_directory() {
-            app.log(
-                "Adding a whole directory is disabled. Expand it and select only required files."
-                    .to_string(),
-            );
+        if let Some(message) = validate_action_requests(app, action, &requests) {
+            app.log(message);
             app.close_modal();
-            return Ok(());
-        }
-        if action == Action::Edit && !app.selected_is_managed() {
-            app.log("edit is available only for managed files".to_string());
-            app.close_modal();
+            app.clear_batch();
             return Ok(());
         }
 
-        if action == Action::Chattr {
-            app.open_input(InputKind::ChattrAttrs, request);
-        } else if action.is_dangerous() {
-            app.open_confirm(request);
+        let count = requests.len();
+        if count > 1 {
+            app.log(format!(
+                "batch queued: action={} targets={}",
+                action.label(),
+                count
+            ));
+        }
+
+        if let Some(first) = app.start_batch(requests) {
+            app.close_modal();
+            dispatch_action_request(app, task_tx, first)?;
         } else {
             app.close_modal();
-            execute_action_request(app, task_tx, request)?;
         }
     }
 
@@ -586,6 +598,10 @@ fn handle_confirm_key(
 
         match key.code {
             KeyCode::Esc => {
+                if app.batch_in_progress() {
+                    app.clear_batch();
+                    app.log("batch canceled".to_string());
+                }
                 app.close_modal();
                 return Ok(());
             }
@@ -658,6 +674,10 @@ fn handle_input_key(
 
         match key.code {
             KeyCode::Esc => {
+                if app.batch_in_progress() {
+                    app.clear_batch();
+                    app.log("batch canceled".to_string());
+                }
                 app.close_modal();
                 return Ok(());
             }
@@ -681,12 +701,13 @@ fn handle_input_key(
     }
 
     if let Some(request) = ready_request {
-        if request.action.is_dangerous() {
-            app.open_confirm(request);
-        } else {
-            app.close_modal();
-            execute_action_request(app, task_tx, request)?;
+        if request.action == Action::Chattr
+            && let Some(attrs) = request.chattr_attrs.clone()
+        {
+            app.apply_chattr_attrs_to_batch(&attrs);
         }
+        app.close_modal();
+        dispatch_action_request(app, task_tx, request)?;
     }
 
     Ok(())
@@ -698,7 +719,12 @@ fn execute_action_request(
     request: ActionRequest,
 ) -> Result<()> {
     if request.action == Action::Ignore {
-        run_internal_ignore_action(app, task_tx, &request)?;
+        run_internal_ignore_action(app, &request)?;
+        if app.batch_in_progress() {
+            maybe_continue_batch(app, task_tx)?;
+        } else {
+            send_task(app, task_tx, BackendTask::RefreshAll)?;
+        }
         return Ok(());
     }
 
@@ -714,11 +740,7 @@ fn execute_action_request(
     Ok(())
 }
 
-fn run_internal_ignore_action(
-    app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
-    request: &ActionRequest,
-) -> Result<()> {
+fn run_internal_ignore_action(app: &mut App, request: &ActionRequest) -> Result<()> {
     let target = request
         .target
         .as_deref()
@@ -741,7 +763,7 @@ fn run_internal_ignore_action(
         app.log(format!("ignore pattern added: {pattern}"));
     }
 
-    send_task(app, task_tx, BackendTask::RefreshAll)
+    Ok(())
 }
 
 fn send_task(
@@ -785,16 +807,105 @@ fn run_foreground_action(
                 elapsed
             ));
 
-            if code == 0 {
+            if app.batch_in_progress() {
+                maybe_continue_batch(app, task_tx)?;
+            } else if code == 0 {
                 send_task(app, task_tx, BackendTask::RefreshAll)?;
             }
         }
         Err(err) => {
             app.log(format!("foreground action error: {err:#}"));
+            if app.batch_in_progress() {
+                maybe_continue_batch(app, task_tx)?;
+            }
         }
     }
 
     Ok(())
+}
+
+fn dispatch_action_request(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+    request: ActionRequest,
+) -> Result<()> {
+    if request.action == Action::Chattr && request.chattr_attrs.is_none() {
+        app.open_input(InputKind::ChattrAttrs, request);
+        return Ok(());
+    }
+    if request.action.is_dangerous() {
+        app.open_confirm(request);
+        return Ok(());
+    }
+    execute_action_request(app, task_tx, request)
+}
+
+fn maybe_continue_batch(app: &mut App, task_tx: &UnboundedSender<BackendTask>) -> Result<()> {
+    if !app.batch_in_progress() {
+        return Ok(());
+    }
+
+    if let Some(next) = app.pop_next_batch_request() {
+        dispatch_action_request(app, task_tx, next)?;
+        return Ok(());
+    }
+
+    let action = app.batch_action().map(|a| a.label()).unwrap_or("unknown");
+    let total = app.batch_total();
+    app.log(format!("batch completed: action={action} total={total}"));
+    app.clear_batch();
+    send_task(app, task_tx, BackendTask::RefreshAll)
+}
+
+fn build_action_requests(app: &App, action: Action) -> Vec<ActionRequest> {
+    if !action.needs_target() {
+        return vec![ActionRequest {
+            action,
+            target: None,
+            chattr_attrs: None,
+        }];
+    }
+
+    app.selected_action_targets_absolute()
+        .into_iter()
+        .map(|target| ActionRequest {
+            action,
+            target: Some(target),
+            chattr_attrs: None,
+        })
+        .collect()
+}
+
+fn validate_action_requests(
+    app: &App,
+    action: Action,
+    requests: &[ActionRequest],
+) -> Option<String> {
+    if requests.is_empty() {
+        return Some(format!("{} requires a target file", action.label()));
+    }
+
+    let targets: Vec<&Path> = requests
+        .iter()
+        .filter_map(|req| req.target.as_deref())
+        .collect();
+
+    if action == Action::Add && targets.iter().any(|path| path.is_dir()) {
+        return Some(
+            "Adding a whole directory is disabled. Expand it and select only required files."
+                .to_string(),
+        );
+    }
+
+    if action == Action::Edit
+        && targets
+            .iter()
+            .any(|path| !app.is_absolute_path_managed(path))
+    {
+        return Some("edit is available only for managed files".to_string());
+    }
+
+    None
 }
 
 fn run_chezmoi_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
@@ -1156,6 +1267,50 @@ mod tests {
 
         handle_help_key(&mut app, key).expect("handle help key");
         assert!(matches!(app.modal, ModalState::None));
+    }
+
+    #[test]
+    fn build_action_requests_expands_marked_targets() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![
+            crate::domain::StatusEntry {
+                path: PathBuf::from(".a"),
+                actual_vs_state: crate::domain::ChangeKind::Modified,
+                actual_vs_target: crate::domain::ChangeKind::Modified,
+            },
+            crate::domain::StatusEntry {
+                path: PathBuf::from(".b"),
+                actual_vs_state: crate::domain::ChangeKind::Modified,
+                actual_vs_target: crate::domain::ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(ListView::Status);
+        app.toggle_selected_mark();
+        app.select_next();
+        app.toggle_selected_mark();
+
+        let requests = build_action_requests(&app, Action::Forget);
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|req| req.target.as_ref().is_some_and(|p| p.is_absolute()))
+        );
+    }
+
+    #[test]
+    fn validate_action_requests_rejects_directory_add() {
+        let app = App::new(AppConfig::default());
+        let dir = std::env::temp_dir().join(format!("chezmoi_tui_add_dir_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let requests = vec![ActionRequest {
+            action: Action::Add,
+            target: Some(dir.clone()),
+            chattr_attrs: None,
+        }];
+        let message = validate_action_requests(&app, Action::Add, &requests);
+        assert!(message.is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
