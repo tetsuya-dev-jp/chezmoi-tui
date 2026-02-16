@@ -176,6 +176,7 @@ impl App {
 
     pub fn switch_view(&mut self, view: ListView) {
         self.view = view;
+        self.list_filter.clear();
         self.clear_marked_entries();
         self.rebuild_visible_entries_reset();
     }
@@ -1468,6 +1469,29 @@ mod tests {
         assert_eq!(app.marked_count(), 1);
         app.switch_view(ListView::Managed);
         assert_eq!(app.marked_count(), 0);
+    }
+
+    #[test]
+    fn switching_view_resets_list_filter() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".zshrc"),
+                actual_vs_state: ChangeKind::Modified,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".gitconfig"),
+                actual_vs_state: ChangeKind::Modified,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(ListView::Status);
+        app.set_list_filter("zsh".to_string());
+        assert_eq!(app.current_items().len(), 1);
+
+        app.switch_view(ListView::Managed);
+        assert!(app.list_filter().is_empty());
     }
 
     #[test]
