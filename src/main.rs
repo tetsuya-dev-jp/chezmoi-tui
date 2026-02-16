@@ -369,9 +369,7 @@ fn handle_key_without_modal(
         KeyCode::Char('/') if app.focus == crate::app::PaneFocus::List => app.open_list_filter(),
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::Char(' ') if app.focus == crate::app::PaneFocus::List => {
-            if app.toggle_selected_mark() {
-                app.log(format!("selected: {} item(s)", app.marked_count()));
-            }
+            let _ = app.toggle_selected_mark();
         }
         KeyCode::Char('c')
             if key.modifiers.is_empty() && app.focus == crate::app::PaneFocus::List =>
