@@ -780,11 +780,7 @@ impl App {
         match view {
             ListView::Status => self.build_filtered_status_entries(&query),
             ListView::Managed => self.build_filtered_tree_entries(
-                self.managed_entries
-                    .iter()
-                    .filter(|path| !path.as_os_str().is_empty())
-                    .cloned()
-                    .collect(),
+                self.managed_tree_nodes().into_iter().collect(),
                 &query,
             ),
             ListView::Unmanaged => {
@@ -979,6 +975,18 @@ impl App {
             self.scan_unmanaged_filter_index_to(current_limit);
         }
 
+        if self.unmanaged_filter_cache.scan_complete
+            || self.unmanaged_index_has_match(&normalized_query)
+        {
+            return self.unmanaged_filter_cache.entries.clone();
+        }
+
+        if current_limit >= max_limit {
+            let mut source_paths = self.unmanaged_filter_cache.entries.clone();
+            source_paths.extend(self.fallback_unmanaged_matches_outside_index(&normalized_query));
+            return source_paths;
+        }
+
         self.unmanaged_filter_cache.entries.clone()
     }
 
@@ -987,6 +995,33 @@ impl App {
             .entries
             .iter()
             .any(|path| path.to_string_lossy().to_ascii_lowercase().contains(query))
+    }
+
+    fn fallback_unmanaged_matches_outside_index(&self, query: &str) -> Vec<PathBuf> {
+        if query.is_empty() || self.unmanaged_filter_cache.scan_complete {
+            return Vec::new();
+        }
+
+        let mut frontier = self.unmanaged_filter_cache.frontier.clone();
+        let mut seen = self.unmanaged_filter_cache.seen.clone();
+        let mut matches = Vec::new();
+
+        while let Some(path) = frontier.pop_front() {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+
+            if Self::tree_entry_name_matches_query(path.as_path(), query) {
+                matches.push(path.clone());
+            }
+
+            let directory = self.path_directory_state_for_view(&path, ListView::Unmanaged);
+            if directory.can_expand {
+                frontier.extend(self.read_children(&path));
+            }
+        }
+
+        matches
     }
 
     fn scan_unmanaged_filter_index_to(&mut self, limit: usize) {
@@ -1075,28 +1110,7 @@ impl App {
     }
 
     fn push_managed_visible_entries(&self, out: &mut Vec<VisibleEntry>, force_expand: bool) {
-        let mut nodes = BTreeSet::new();
-
-        for managed in &self.managed_entries {
-            if managed.as_os_str().is_empty() {
-                continue;
-            }
-
-            let mut current = managed.clone();
-            loop {
-                if !current.as_os_str().is_empty() {
-                    nodes.insert(current.clone());
-                }
-
-                let Some(parent) = current.parent() else {
-                    break;
-                };
-                if parent.as_os_str().is_empty() {
-                    break;
-                }
-                current = parent.to_path_buf();
-            }
-        }
+        let nodes = self.managed_tree_nodes();
 
         if nodes.is_empty() {
             return;
@@ -1126,6 +1140,34 @@ impl App {
         for root in roots {
             self.push_managed_visible_recursive(root, 0, out, &children, &mut seen, force_expand);
         }
+    }
+
+    fn managed_tree_nodes(&self) -> BTreeSet<PathBuf> {
+        let mut nodes = BTreeSet::new();
+
+        for managed in &self.managed_entries {
+            if managed.as_os_str().is_empty() {
+                continue;
+            }
+
+            let mut current = managed.clone();
+            loop {
+                if current.as_os_str().is_empty() {
+                    break;
+                }
+                nodes.insert(current.clone());
+
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                current = parent.to_path_buf();
+            }
+        }
+
+        nodes
     }
 
     fn push_managed_visible_recursive(
@@ -1862,6 +1904,38 @@ mod tests {
     }
 
     #[test]
+    fn unmanaged_filter_index_falls_back_when_max_limit_is_reached() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_fallback_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("a")).expect("create a");
+        fs::create_dir_all(temp_root.join("b")).expect("create b");
+        fs::create_dir_all(temp_root.join("c")).expect("create c");
+        fs::write(temp_root.join("a/one.txt"), "one").expect("write one");
+        fs::write(temp_root.join("b/two.txt"), "two").expect("write two");
+        fs::write(temp_root.join("c/target-skill.md"), "target").expect("write target");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.switch_view(ListView::Unmanaged);
+
+        let indexed = app.unmanaged_filter_source_paths_with_limits("target-skill", 1, 1, 2);
+        assert!(
+            indexed
+                .iter()
+                .any(|path| path.ends_with(Path::new("c/target-skill.md")))
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
     fn list_filter_directory_name_match_does_not_expand_children_without_descendant_match() {
         let temp_root = std::env::temp_dir().join(format!(
             "chezmoi_tui_filter_dir_name_only_{}_{}",
@@ -2209,6 +2283,19 @@ mod tests {
         assert!(items.iter().any(|line| line.contains("dev/")));
         assert!(items.iter().any(|line| line.contains("chezmoi-tui/")));
         assert!(items.iter().any(|line| line.contains("Cargo.toml")));
+    }
+
+    #[test]
+    fn list_filter_matches_managed_parent_directory_from_file_only_entries() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![PathBuf::from("dev/chezmoi-tui/Cargo.toml")];
+        app.switch_view(ListView::Managed);
+
+        app.apply_list_filter_immediately("chezmoi-tui".to_string());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("dev/")));
+        assert!(items.iter().any(|line| line.contains("chezmoi-tui/")));
+        assert!(!items.iter().any(|line| line.contains("Cargo.toml")));
     }
 
     #[test]
