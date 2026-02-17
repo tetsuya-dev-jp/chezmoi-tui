@@ -94,7 +94,7 @@ fn build_ignore_pattern(
             .with_context(|| {
                 format!("cannot infer ignore name from target: {}", target.display())
             })?;
-        let escaped = name.replace('/', "\\/");
+        let escaped = escape_ignore_glob_component(name);
         return Ok(if is_dir {
             format!("**/{escaped}/**")
         } else {
@@ -158,6 +158,17 @@ fn normalize_ignore_path(path: &Path) -> String {
         .trim_start_matches("./")
         .trim_start_matches('/')
         .to_string()
+}
+
+fn escape_ignore_glob_component(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if matches!(ch, '\\' | '/' | '*' | '?' | '[' | ']' | '{' | '}' | '!') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 pub(crate) fn chezmoi_ignore_path() -> Result<std::path::PathBuf> {
@@ -268,6 +279,15 @@ mod tests {
         let got = build_ignore_pattern(target, false, home, IgnorePatternMode::GlobalName)
             .expect("build ignore pattern");
         assert_eq!(got, "**/.DS_Store");
+    }
+
+    #[test]
+    fn build_ignore_pattern_mode_global_name_escapes_glob_tokens() {
+        let home = Path::new("/home/tetsuya");
+        let target = Path::new("/home/tetsuya/dev/chezmoi-tui/[ab]*?.txt");
+        let got = build_ignore_pattern(target, false, home, IgnorePatternMode::GlobalName)
+            .expect("build ignore pattern");
+        assert_eq!(got, "**/\\[ab\\]\\*\\?.txt");
     }
 
     #[test]

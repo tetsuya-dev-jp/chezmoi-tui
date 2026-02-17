@@ -12,11 +12,13 @@ pub(crate) async fn worker_loop(
         match task {
             BackendTask::RefreshAll => {
                 let c1 = client.clone();
-                let status = tokio::task::spawn_blocking(move || c1.status()).await;
+                let status_task = tokio::task::spawn_blocking(move || c1.status());
                 let c2 = client.clone();
-                let managed = tokio::task::spawn_blocking(move || c2.managed()).await;
+                let managed_task = tokio::task::spawn_blocking(move || c2.managed());
                 let c3 = client.clone();
-                let unmanaged = tokio::task::spawn_blocking(move || c3.unmanaged()).await;
+                let unmanaged_task = tokio::task::spawn_blocking(move || c3.unmanaged());
+                let (status, managed, unmanaged) =
+                    tokio::join!(status_task, managed_task, unmanaged_task);
 
                 match (status, managed, unmanaged) {
                     (Ok(Ok(status)), Ok(Ok(managed)), Ok(Ok(unmanaged))) => {

@@ -2,6 +2,7 @@ use crate::domain::{Action, ActionRequest, ChangeKind, CommandResult, DiffText, 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -34,10 +35,18 @@ impl Default for ShellChezmoiClient {
 }
 
 impl ShellChezmoiClient {
-    fn run_raw(&self, args: &[String], destination_dir: &Path) -> Result<CommandResult> {
+    fn run_raw<I, S>(&self, args: I, destination_dir: &Path) -> Result<CommandResult>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let args: Vec<OsString> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
         let mut cmd = Command::new(&self.binary);
         cmd.arg("--destination").arg(destination_dir);
-        cmd.args(args);
+        cmd.args(&args);
 
         let started = Instant::now();
         let output = cmd
@@ -76,7 +85,7 @@ impl ShellChezmoiClient {
 
 impl ChezmoiClient for ShellChezmoiClient {
     fn status(&self) -> Result<Vec<StatusEntry>> {
-        let result = self.run_raw(&["status".to_string()], &self.home_dir)?;
+        let result = self.run_raw(["status"], &self.home_dir)?;
         if result.exit_code != 0 {
             bail!("chezmoi status failed: {}", result.stderr.trim());
         }
@@ -84,14 +93,7 @@ impl ChezmoiClient for ShellChezmoiClient {
     }
 
     fn managed(&self) -> Result<Vec<PathBuf>> {
-        let result = self.run_raw(
-            &[
-                "managed".to_string(),
-                "--format".to_string(),
-                "json".to_string(),
-            ],
-            &self.home_dir,
-        )?;
+        let result = self.run_raw(["managed", "--format", "json"], &self.home_dir)?;
         if result.exit_code != 0 {
             bail!("chezmoi managed failed: {}", result.stderr.trim());
         }
@@ -106,7 +108,7 @@ impl ChezmoiClient for ShellChezmoiClient {
             &self.working_dir
         };
 
-        let result = self.run_raw(&["unmanaged".to_string()], destination)?;
+        let result = self.run_raw(["unmanaged"], destination)?;
         if result.exit_code != 0 {
             bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
         }
@@ -162,11 +164,7 @@ impl ShellChezmoiClient {
             let child = entry
                 .with_context(|| format!("failed to read child in {}", self.working_dir.display()))?
                 .path();
-            let args = vec![
-                "unmanaged".to_string(),
-                "--".to_string(),
-                child.display().to_string(),
-            ];
+            let args = vec![os("unmanaged"), os("--"), child.into_os_string()];
             let result = self.run_raw(&args, &self.home_dir)?;
             if result.exit_code != 0 {
                 bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
@@ -286,83 +284,75 @@ fn path_relative_to_home(path: PathBuf, home_dir: &Path) -> Option<PathBuf> {
     }
 }
 
-pub fn action_to_args(request: &ActionRequest) -> Result<Vec<String>> {
+pub fn action_to_args(request: &ActionRequest) -> Result<Vec<OsString>> {
     let action = request.action;
-    let target = request.target.as_ref().map(|p| p.display().to_string());
+    let target = request
+        .target
+        .as_ref()
+        .map(|path| path.as_os_str().to_os_string());
 
     let args = match action {
-        Action::Apply => vec!["apply".to_string()],
-        Action::Update => vec!["update".to_string()],
-        Action::EditConfig => vec!["edit-config".to_string()],
-        Action::EditConfigTemplate => vec!["edit-config-template".to_string()],
+        Action::Apply => vec![os("apply")],
+        Action::Update => vec![os("update")],
+        Action::EditConfig => vec![os("edit-config")],
+        Action::EditConfigTemplate => vec![os("edit-config-template")],
         Action::EditIgnore => {
             bail!("edit-ignore is an internal action and does not map to a chezmoi CLI command")
         }
-        Action::ReAdd => vec!["re-add".to_string()],
+        Action::ReAdd => vec![os("re-add")],
         Action::Merge => {
-            let mut args = vec!["merge".to_string()];
+            let mut args = vec![os("merge")];
             if let Some(path) = target {
-                args.push("--".to_string());
+                args.push(os("--"));
                 args.push(path);
             }
             args
         }
-        Action::MergeAll => vec!["merge-all".to_string()],
-        Action::Add => vec![
-            "add".to_string(),
-            "--".to_string(),
-            required_target(target, action)?,
-        ],
+        Action::MergeAll => vec![os("merge-all")],
+        Action::Add => vec![os("add"), os("--"), required_target(target, action)?],
         Action::Ignore => {
             bail!("ignore is an internal action and does not map to a chezmoi CLI command")
         }
-        Action::Edit => vec![
-            "edit".to_string(),
-            "--".to_string(),
-            required_target(target, action)?,
-        ],
+        Action::Edit => vec![os("edit"), os("--"), required_target(target, action)?],
         Action::Forget => vec![
-            "forget".to_string(),
-            "--force".to_string(),
-            "--no-tty".to_string(),
-            "--".to_string(),
+            os("forget"),
+            os("--force"),
+            os("--no-tty"),
+            os("--"),
             required_target(target, action)?,
         ],
         Action::Chattr => vec![
-            "chattr".to_string(),
-            "--".to_string(),
+            os("chattr"),
+            os("--"),
             request
                 .chattr_attrs
-                .clone()
+                .as_deref()
+                .map(OsString::from)
                 .context("chattr requires attributes")?,
             required_target(target, action)?,
         ],
-        Action::Destroy => vec![
-            "destroy".to_string(),
-            "--".to_string(),
-            required_target(target, action)?,
-        ],
-        Action::Purge => vec![
-            "purge".to_string(),
-            "--force".to_string(),
-            "--no-tty".to_string(),
-        ],
+        Action::Destroy => vec![os("destroy"), os("--"), required_target(target, action)?],
+        Action::Purge => vec![os("purge"), os("--force"), os("--no-tty")],
     };
 
     Ok(args)
 }
 
-fn required_target(target: Option<String>, action: Action) -> Result<String> {
+fn required_target(target: Option<OsString>, action: Action) -> Result<OsString> {
     target.with_context(|| format!("{} requires target", action.label()))
 }
 
-fn diff_args(target: Option<&Path>) -> Vec<String> {
-    let mut args = vec!["diff".to_string()];
+fn diff_args(target: Option<&Path>) -> Vec<OsString> {
+    let mut args = vec![os("diff")];
     if let Some(path) = target {
-        args.push("--".to_string());
-        args.push(path.display().to_string());
+        args.push(os("--"));
+        args.push(path.as_os_str().to_os_string());
     }
     args
+}
+
+fn os(value: &str) -> OsString {
+    OsString::from(value)
 }
 
 #[cfg(test)]
@@ -459,7 +449,7 @@ mod tests {
         };
         assert_eq!(
             action_to_args(&purge).expect("purge args"),
-            vec!["purge", "--force", "--no-tty"]
+            vec![os("purge"), os("--force"), os("--no-tty")]
         );
 
         let edit = ActionRequest {
@@ -469,7 +459,7 @@ mod tests {
         };
         assert_eq!(
             action_to_args(&edit).expect("edit args"),
-            vec!["edit", "--", ".zshrc"]
+            vec![os("edit"), os("--"), os(".zshrc")]
         );
 
         let edit_config = ActionRequest {
@@ -479,7 +469,7 @@ mod tests {
         };
         assert_eq!(
             action_to_args(&edit_config).expect("edit-config args"),
-            vec!["edit-config"]
+            vec![os("edit-config")]
         );
 
         let edit_config_template = ActionRequest {
@@ -489,7 +479,7 @@ mod tests {
         };
         assert_eq!(
             action_to_args(&edit_config_template).expect("edit-config-template args"),
-            vec!["edit-config-template"]
+            vec![os("edit-config-template")]
         );
 
         let forget = ActionRequest {
@@ -499,7 +489,13 @@ mod tests {
         };
         assert_eq!(
             action_to_args(&forget).expect("forget args"),
-            vec!["forget", "--force", "--no-tty", "--", ".zshrc"]
+            vec![
+                os("forget"),
+                os("--force"),
+                os("--no-tty"),
+                os("--"),
+                os(".zshrc"),
+            ]
         );
 
         let chattr = ActionRequest {
@@ -509,7 +505,7 @@ mod tests {
         };
         assert_eq!(
             action_to_args(&chattr).expect("chattr args"),
-            vec!["chattr", "--", "private,template", ".zshrc"]
+            vec![os("chattr"), os("--"), os("private,template"), os(".zshrc")]
         );
 
         let ignore = ActionRequest {
@@ -530,7 +526,7 @@ mod tests {
     #[test]
     fn diff_target_args_are_option_safe() {
         let got = diff_args(Some(Path::new("-n")));
-        assert_eq!(got, vec!["diff", "--", "-n"]);
+        assert_eq!(got, vec![os("diff"), os("--"), os("-n")]);
     }
 
     #[test]
