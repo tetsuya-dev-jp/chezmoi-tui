@@ -297,6 +297,11 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
     }
 
     let item_count = app.current_len();
+    let selected_ordinal = if item_count == 0 {
+        0
+    } else {
+        app.selected_index.min(item_count - 1) + 1
+    };
     let marked_count = app.marked_count();
     let mut segments = vec![LeftSegment {
         text: app.view.title().to_string(),
@@ -319,7 +324,12 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
 
     segments.extend([
         LeftSegment {
-            text: format!("{} {}", item_count, item_word(item_count)),
+            text: format!(
+                "{}/{} {}",
+                selected_ordinal,
+                item_count,
+                item_word(item_count)
+            ),
             style: Style::default().fg(Color::Gray),
             essential: true,
             badge: false,
@@ -1924,7 +1934,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::{
         ActionMenuRow, ActionMenuSection, action_menu_text, build_action_menu_rows, cheat_groups,
-        cheat_groups_width, fit_cheat_groups, footer_hints, hints_width, layout_hints,
+        cheat_groups_width, fit_cheat_groups, footer_hints, footer_left, hints_width, layout_hints,
         log_scroll_offset, parse_hunk_header,
     };
     use crate::app::{App, PaneFocus};
@@ -1949,6 +1959,26 @@ mod tests {
         assert_eq!(log_scroll_offset(10, 6, 0), 6);
         assert_eq!(log_scroll_offset(10, 6, 2), 4);
         assert_eq!(log_scroll_offset(3, 10, 0), 0);
+    }
+
+    #[test]
+    fn footer_left_shows_selected_ordinal_with_total_items() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![
+            std::path::PathBuf::from("a"),
+            std::path::PathBuf::from("b"),
+            std::path::PathBuf::from("c"),
+        ];
+        app.switch_view(ListView::Managed);
+        app.selected_index = 1;
+
+        let (spans, _) = footer_left(&app, 120);
+        let rendered = spans
+            .into_iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>();
+
+        assert!(rendered.contains("2/3 items"));
     }
 
     #[test]
