@@ -13,14 +13,6 @@ const MAX_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 200_000;
 const LIVE_FILTER_INITIAL_UNMANAGED_INDEX_ENTRIES: usize = 2_000;
 const LIVE_FILTER_UNMANAGED_INDEX_STEP: usize = 2_000;
 const LIVE_FILTER_MAX_UNMANAGED_INDEX_ENTRIES: usize = 20_000;
-const DEFAULT_UNMANAGED_EXCLUDES: &[&str] = &[
-    ".cache",
-    ".vscode-server",
-    ".npm",
-    ".cargo/registry",
-    ".cargo/git",
-    "tmp",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneFocus {
@@ -1335,11 +1327,7 @@ impl App {
     fn build_unmanaged_exclude_prefixes(config: &AppConfig) -> Vec<PathBuf> {
         let mut excludes = Vec::new();
 
-        for entry in DEFAULT_UNMANAGED_EXCLUDES
-            .iter()
-            .copied()
-            .chain(config.unmanaged_exclude_paths.iter().map(String::as_str))
-        {
+        for entry in config.unmanaged_exclude_paths.iter().map(String::as_str) {
             if let Some(normalized) = Self::normalize_exclude_entry(entry) {
                 excludes.push(normalized);
             }
@@ -1828,9 +1816,9 @@ mod tests {
     }
 
     #[test]
-    fn unmanaged_view_excludes_default_temporary_directories() {
+    fn unmanaged_view_does_not_exclude_without_configured_paths() {
         let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_default_exclude_{}_{}",
+            "chezmoi_tui_unmanaged_no_default_exclude_{}_{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1847,7 +1835,7 @@ mod tests {
         app.switch_view(ListView::Unmanaged);
 
         let items = app.current_items();
-        assert!(!items.iter().any(|line| line.contains(".cache")));
+        assert!(items.iter().any(|line| line.contains(".cache/")));
         assert!(items.iter().any(|line| line.contains(".codex/")));
 
         app.apply_list_filter_immediately("skill".to_string());
@@ -1855,28 +1843,6 @@ mod tests {
         assert!(filtered.iter().any(|line| line.contains("SKILL.md")));
 
         let _ = fs::remove_dir_all(temp_root);
-    }
-
-    #[test]
-    fn unmanaged_default_excludes_match_prefix_not_partial_name() {
-        let mut app = App::new(AppConfig::default());
-        app.unmanaged_entries = vec![
-            PathBuf::from("tmp/file.txt"),
-            PathBuf::from("template/file.txt"),
-            PathBuf::from(".cargo/config.toml"),
-            PathBuf::from(".cargo/registry/index.txt"),
-        ];
-        app.switch_view(ListView::Unmanaged);
-
-        let items = app.current_items();
-        assert!(!items.iter().any(|line| line.contains("tmp/file.txt")));
-        assert!(items.iter().any(|line| line.contains("template/file.txt")));
-        assert!(items.iter().any(|line| line.contains(".cargo/config.toml")));
-        assert!(
-            !items
-                .iter()
-                .any(|line| line.contains(".cargo/registry/index.txt"))
-        );
     }
 
     #[test]
