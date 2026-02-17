@@ -913,11 +913,13 @@ impl App {
         let has_children = children
             .get(path)
             .is_some_and(|entries| !entries.is_empty());
+        let managed_has_descendants =
+            self.view == ListView::Managed && self.path_has_managed_descendants(path);
         let directory = self.path_directory_state_for_view(path, self.view);
         out.push(VisibleEntry {
             path: path.to_path_buf(),
             depth,
-            is_dir: has_children || directory.is_dir,
+            is_dir: has_children || managed_has_descendants || directory.is_dir,
             can_expand: has_children || directory.can_expand,
             is_symlink: directory.is_symlink,
         });
@@ -927,6 +929,12 @@ impl App {
                 self.push_filtered_tree_entry_recursive(child, depth + 1, children, out);
             }
         }
+    }
+
+    fn path_has_managed_descendants(&self, path: &Path) -> bool {
+        self.managed_entries
+            .iter()
+            .any(|managed| managed != path && managed.starts_with(path))
     }
 
     fn view_supports_tree(&self) -> bool {
