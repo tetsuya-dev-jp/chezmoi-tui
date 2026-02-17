@@ -2,6 +2,7 @@ use crate::actions::send_task;
 use crate::app::{App, BackendTask, DetailKind};
 use crate::domain::ListView;
 use anyhow::{Context, Result};
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::path::Path;
@@ -56,11 +57,12 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
 
     let mut text = String::from_utf8_lossy(&bytes).to_string();
     if is_truncated {
-        text.push_str(&format!(
+        let _ = write!(
+            text,
             "\n\n--- preview truncated at {} bytes (file size: {} bytes) ---",
             PREVIEW_MAX_BYTES,
             metadata.len()
-        ));
+        );
     }
     Ok(text)
 }

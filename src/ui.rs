@@ -100,7 +100,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
-        .scroll((app.detail_scroll.min(u16::MAX as usize) as u16, 0))
+        .scroll((clamp_to_u16(app.detail_scroll), 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
@@ -136,9 +136,11 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
 fn log_scroll_offset(total_lines: usize, area_height: u16, tail_offset: usize) -> u16 {
     let visible_rows = area_height.saturating_sub(2) as usize;
     let max_offset = total_lines.saturating_sub(visible_rows.max(1));
-    max_offset
-        .saturating_sub(tail_offset.min(max_offset))
-        .min(u16::MAX as usize) as u16
+    clamp_to_u16(max_offset.saturating_sub(tail_offset.min(max_offset)))
+}
+
+fn clamp_to_u16(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -241,7 +243,7 @@ impl FooterBar {
 
         let right_budget = total_width
             .saturating_sub(left_width)
-            .saturating_sub(if left_width > 0 { 1 } else { 0 });
+            .saturating_sub(usize::from(left_width > 0));
         // Help ON でも 1行目は通常フッターの最重要ヒントだけを表示する。
         // 追加説明キーは 2行目の Help シートにのみ集約する。
         let rendered = layout_hints(right_budget, footer_hints(app));
@@ -335,7 +337,7 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
             badge: false,
         },
         LeftSegment {
-            text: format!("{} marked", marked_count),
+            text: format!("{marked_count} marked"),
             style: Style::default().fg(Color::Gray),
             essential: true,
             badge: false,
@@ -1073,7 +1075,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             let shown = if value.is_empty() {
                 "<empty: no filter>".to_string()
             } else {
-                value.to_string()
+                value.clone()
             };
 
             let lines = vec![
@@ -1104,8 +1106,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             let target_text = requests
                 .first()
                 .and_then(|request| request.target.as_ref())
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "(none)".to_string());
+                .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
             let count = requests.len();
             let options = [
                 ("Auto (recommended)", "file => exact, directory => /**"),
@@ -1116,8 +1117,8 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             ];
 
             let mut lines = vec![
-                Line::from(format!("targets: {}", count)),
-                Line::from(format!("sample target: {}", target_text)),
+                Line::from(format!("targets: {count}")),
+                Line::from(format!("sample target: {target_text}")),
                 Line::from("scope: home-relative + global-by-name"),
                 Line::from(""),
                 Line::from("Select ignore rule mode:"),
@@ -1171,7 +1172,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             let query = if filter.is_empty() {
                 "<type to filter>".to_string()
             } else {
-                filter.to_string()
+                filter.clone()
             };
             let query_style = if filter.is_empty() {
                 Style::default().fg(Color::DarkGray)
@@ -1264,13 +1265,12 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     request
                         .target
                         .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "(none)".to_string())
+                        .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
                 )),
             ];
 
             if let Some(attrs) = &request.chattr_attrs {
-                lines.push(Line::from(format!("attributes: {}", attrs)));
+                lines.push(Line::from(format!("attributes: {attrs}")));
             }
 
             lines.push(Line::from(""));
@@ -1296,13 +1296,13 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     ));
                     if let Some(phrase) = request.confirmation_phrase() {
                         lines.push(
-                            Line::from(format!("required: {}", phrase)).style(
+                            Line::from(format!("required: {phrase}")).style(
                                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                             ),
                         );
                     }
                     lines.push(
-                        Line::from(format!("input: {}", typed))
+                        Line::from(format!("input: {typed}"))
                             .style(Style::default().fg(Color::Yellow)),
                     );
                 }
@@ -1338,12 +1338,11 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     request
                         .target
                         .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "(none)".to_string())
+                        .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
                 )),
                 Line::from(""),
                 Line::from(prompt),
-                Line::from(format!("> {}", value)).style(Style::default().fg(Color::Yellow)),
+                Line::from(format!("> {value}")).style(Style::default().fg(Color::Yellow)),
                 Line::from("Enter: Confirm  Esc: Cancel"),
             ];
 
@@ -1654,8 +1653,8 @@ fn render_diff_code_line(
     body: &str,
     body_style: Style,
 ) -> Line<'static> {
-    let old_num = old.map_or_else(|| String::from(""), |n| n.to_string());
-    let new_num = new.map_or_else(|| String::from(""), |n| n.to_string());
+    let old_num = old.map_or_else(String::new, |n| n.to_string());
+    let new_num = new.map_or_else(String::new, |n| n.to_string());
 
     let marker_style = match marker {
         '+' => Style::default()
@@ -1667,12 +1666,12 @@ fn render_diff_code_line(
 
     Line::from(vec![
         Span::styled(
-            format!("{:>5}", old_num),
+            format!("{old_num:>5}"),
             Style::default().fg(Color::DarkGray),
         ),
         Span::raw(" "),
         Span::styled(
-            format!("{:>5}", new_num),
+            format!("{new_num:>5}"),
             Style::default().fg(Color::DarkGray),
         ),
         Span::raw(" | "),
@@ -1705,18 +1704,16 @@ enum PreviewLanguage {
 fn detect_preview_language(path: Option<&Path>) -> PreviewLanguage {
     let ext = path
         .and_then(|p| p.extension().and_then(|e| e.to_str()))
-        .map(|e| e.to_ascii_lowercase());
+        .map(str::to_ascii_lowercase);
     match ext.as_deref() {
         Some("rs") => PreviewLanguage::Rust,
-        Some("sh") | Some("bash") | Some("zsh") | Some("fish") => PreviewLanguage::Shell,
+        Some("sh" | "bash" | "zsh" | "fish") => PreviewLanguage::Shell,
         Some("lua") => PreviewLanguage::Lua,
         Some("py") => PreviewLanguage::Python,
-        Some("js") | Some("mjs") | Some("cjs") | Some("ts") | Some("tsx") | Some("jsx") => {
-            PreviewLanguage::JsTs
-        }
+        Some("js" | "mjs" | "cjs" | "ts" | "tsx" | "jsx") => PreviewLanguage::JsTs,
         Some("json") => PreviewLanguage::Json,
         Some("toml") => PreviewLanguage::Toml,
-        Some("yaml") | Some("yml") => PreviewLanguage::Yaml,
+        Some("yaml" | "yml") => PreviewLanguage::Yaml,
         _ => {
             let name = path
                 .and_then(|p| p.file_name().and_then(|n| n.to_str()))
@@ -1724,7 +1721,6 @@ fn detect_preview_language(path: Option<&Path>) -> PreviewLanguage {
                 .to_ascii_lowercase();
             match name.as_str() {
                 ".zshrc" | ".bashrc" | ".bash_profile" => PreviewLanguage::Shell,
-                "justfile" | "makefile" => PreviewLanguage::Plain,
                 _ => PreviewLanguage::Plain,
             }
         }
@@ -1912,9 +1908,8 @@ fn preview_keywords(language: PreviewLanguage) -> &'static [&'static str] {
             "type",
             "interface",
         ],
-        PreviewLanguage::Json => &["true", "false", "null"],
+        PreviewLanguage::Json | PreviewLanguage::Yaml => &["true", "false", "null"],
         PreviewLanguage::Toml => &["true", "false"],
-        PreviewLanguage::Yaml => &["true", "false", "null"],
         PreviewLanguage::Plain => &[],
     }
 }

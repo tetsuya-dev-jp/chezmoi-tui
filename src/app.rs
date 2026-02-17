@@ -303,8 +303,7 @@ impl App {
     pub fn selected_is_directory(&self) -> bool {
         self.visible_entries
             .get(self.selected_index)
-            .map(|entry| entry.is_dir)
-            .unwrap_or(false)
+            .is_some_and(|entry| entry.is_dir)
     }
 
     pub fn selected_is_managed(&self) -> bool {
@@ -607,10 +606,8 @@ impl App {
     fn action_section_order(action: Action) -> u8 {
         if action.is_dangerous() {
             2
-        } else if action.needs_target() {
-            1
         } else {
-            0
+            u8::from(action.needs_target())
         }
     }
 
@@ -766,7 +763,7 @@ impl App {
 
         if self.view == ListView::Unmanaged {
             for base in base_paths {
-                self.push_visible_recursive(base, 0, &mut entries, &mut seen, false);
+                self.push_visible_recursive(&base, 0, &mut entries, &mut seen, false);
             }
             return entries;
         }
@@ -864,17 +861,17 @@ impl App {
         }
         keep.extend(ancestors);
 
-        self.build_tree_entries_from_paths(keep)
+        self.build_tree_entries_from_paths(&keep)
     }
 
     fn tree_entry_name_matches_query(path: &Path, query: &str) -> bool {
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.to_ascii_lowercase().contains(query))
-            .unwrap_or_else(|| path.to_string_lossy().to_ascii_lowercase().contains(query))
+        path.file_name().and_then(|name| name.to_str()).map_or_else(
+            || path.to_string_lossy().to_ascii_lowercase().contains(query),
+            |name| name.to_ascii_lowercase().contains(query),
+        )
     }
 
-    fn build_tree_entries_from_paths(&self, nodes: BTreeSet<PathBuf>) -> Vec<VisibleEntry> {
+    fn build_tree_entries_from_paths(&self, nodes: &BTreeSet<PathBuf>) -> Vec<VisibleEntry> {
         if nodes.is_empty() {
             return Vec::new();
         }
@@ -882,7 +879,7 @@ impl App {
         let mut children: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
         let mut roots = Vec::new();
 
-        for node in &nodes {
+        for node in nodes {
             let parent = node.parent().map(Path::to_path_buf);
             if let Some(parent) = parent
                 && !parent.as_os_str().is_empty()
@@ -900,7 +897,7 @@ impl App {
         roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
 
         let mut entries = Vec::new();
-        for root in roots {
+        for root in &roots {
             self.push_filtered_tree_entry_recursive(root, 0, &children, &mut entries);
         }
         entries
@@ -908,27 +905,26 @@ impl App {
 
     fn push_filtered_tree_entry_recursive(
         &self,
-        path: PathBuf,
+        path: &Path,
         depth: usize,
         children: &BTreeMap<PathBuf, Vec<PathBuf>>,
         out: &mut Vec<VisibleEntry>,
     ) {
         let has_children = children
-            .get(&path)
-            .map(|entries| !entries.is_empty())
-            .unwrap_or(false);
-        let directory = self.path_directory_state_for_view(&path, self.view);
+            .get(path)
+            .is_some_and(|entries| !entries.is_empty());
+        let directory = self.path_directory_state_for_view(path, self.view);
         out.push(VisibleEntry {
-            path: path.clone(),
+            path: path.to_path_buf(),
             depth,
             is_dir: has_children || directory.is_dir,
             can_expand: has_children || directory.can_expand,
             is_symlink: directory.is_symlink,
         });
 
-        if let Some(child_paths) = children.get(&path) {
+        if let Some(child_paths) = children.get(path) {
             for child in child_paths {
-                self.push_filtered_tree_entry_recursive(child.clone(), depth + 1, children, out);
+                self.push_filtered_tree_entry_recursive(child, depth + 1, children, out);
             }
         }
     }
@@ -1135,32 +1131,32 @@ impl App {
 
     fn push_visible_recursive(
         &self,
-        path: PathBuf,
+        path: &Path,
         depth: usize,
         out: &mut Vec<VisibleEntry>,
         seen: &mut HashSet<PathBuf>,
         force_expand: bool,
     ) {
-        if !seen.insert(path.clone()) {
+        if !seen.insert(path.to_path_buf()) {
             return;
         }
 
-        let directory = self.path_directory_state_for_view(&path, self.view);
+        let directory = self.path_directory_state_for_view(path, self.view);
         let is_dir = directory.is_dir;
         out.push(VisibleEntry {
-            path: path.clone(),
+            path: path.to_path_buf(),
             depth,
             is_dir,
             can_expand: directory.can_expand,
             is_symlink: directory.is_symlink,
         });
 
-        if !directory.can_expand || (!force_expand && !self.expanded_dirs.contains(&path)) {
+        if !directory.can_expand || (!force_expand && !self.expanded_dirs.contains(path)) {
             return;
         }
 
-        for child in self.read_children(&path) {
-            self.push_visible_recursive(child, depth + 1, out, seen, force_expand);
+        for child in self.read_children(path) {
+            self.push_visible_recursive(&child, depth + 1, out, seen, force_expand);
         }
     }
 
@@ -1192,7 +1188,7 @@ impl App {
         roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
 
         let mut seen = HashSet::new();
-        for root in roots {
+        for root in &roots {
             self.push_managed_visible_recursive(root, 0, out, &children, &mut seen, force_expand);
         }
     }
@@ -1227,40 +1223,39 @@ impl App {
 
     fn push_managed_visible_recursive(
         &self,
-        path: PathBuf,
+        path: &Path,
         depth: usize,
         out: &mut Vec<VisibleEntry>,
         children: &BTreeMap<PathBuf, Vec<PathBuf>>,
         seen: &mut HashSet<PathBuf>,
         force_expand: bool,
     ) {
-        if !seen.insert(path.clone()) {
+        if !seen.insert(path.to_path_buf()) {
             return;
         }
 
         let has_children = children
-            .get(&path)
-            .map(|entries| !entries.is_empty())
-            .unwrap_or(false);
-        let directory = self.directory_state_with_base(&path, &self.home_dir);
+            .get(path)
+            .is_some_and(|entries| !entries.is_empty());
+        let directory = Self::directory_state_with_base(path, &self.home_dir);
         let is_dir = has_children || directory.is_dir;
         let can_expand = has_children || directory.can_expand;
         out.push(VisibleEntry {
-            path: path.clone(),
+            path: path.to_path_buf(),
             depth,
             is_dir,
             can_expand,
             is_symlink: directory.is_symlink,
         });
 
-        if !can_expand || (!force_expand && !self.expanded_dirs.contains(&path)) {
+        if !can_expand || (!force_expand && !self.expanded_dirs.contains(path)) {
             return;
         }
 
-        if let Some(child_paths) = children.get(&path) {
+        if let Some(child_paths) = children.get(path) {
             for child in child_paths {
                 self.push_managed_visible_recursive(
-                    child.clone(),
+                    child,
                     depth + 1,
                     out,
                     children,
@@ -1272,7 +1267,7 @@ impl App {
     }
 
     fn read_children(&self, parent: &Path) -> Vec<PathBuf> {
-        let abs_parent = self.resolve_with_base(parent, &self.working_dir);
+        let abs_parent = Self::resolve_with_base(parent, &self.working_dir);
         let Ok(read_dir) = fs::read_dir(abs_parent) else {
             return Vec::new();
         };
@@ -1295,7 +1290,7 @@ impl App {
     }
 
     fn managed_absolute_path(&self, managed: &Path) -> PathBuf {
-        self.resolve_with_base(managed, &self.home_dir)
+        Self::resolve_with_base(managed, &self.home_dir)
     }
 
     fn is_exact_managed_path_in_working_dir(&self, path: &Path) -> bool {
@@ -1310,7 +1305,7 @@ impl App {
     }
 
     fn is_excluded_unmanaged_path(&self, path: &Path) -> bool {
-        let abs = self.resolve_with_base(path, &self.working_dir);
+        let abs = Self::resolve_with_base(path, &self.working_dir);
         self.is_exact_managed_path_in_working_dir(&abs)
     }
 
@@ -1342,7 +1337,7 @@ impl App {
         label.push_str(if marked { "* " } else { "  " });
 
         let expanded = self.expanded_dirs.contains(&entry.path);
-        let marker = if entry.is_symlink && entry.is_dir {
+        let node_marker = if entry.is_symlink && entry.is_dir {
             "[L]"
         } else if entry.is_symlink {
             " L "
@@ -1353,18 +1348,16 @@ impl App {
         } else {
             "   "
         };
-        label.push_str(marker);
+        label.push_str(node_marker);
         label.push(' ');
 
         let name = if entry.depth == 0 {
             entry.path.display().to_string()
         } else {
-            entry
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| entry.path.display().to_string())
+            entry.path.file_name().and_then(|n| n.to_str()).map_or_else(
+                || entry.path.display().to_string(),
+                std::string::ToString::to_string,
+            )
         };
 
         label.push_str(&name);
@@ -1384,15 +1377,15 @@ impl App {
 
     fn path_directory_state_for_view(&self, path: &Path, view: ListView) -> DirectoryState {
         let abs = self.resolve_path_for_view(path, view);
-        self.directory_state_for_absolute(&abs)
+        Self::directory_state_for_absolute(&abs)
     }
 
-    fn directory_state_with_base(&self, path: &Path, base: &Path) -> DirectoryState {
-        let abs = self.resolve_with_base(path, base);
-        self.directory_state_for_absolute(&abs)
+    fn directory_state_with_base(path: &Path, base: &Path) -> DirectoryState {
+        let abs = Self::resolve_with_base(path, base);
+        Self::directory_state_for_absolute(&abs)
     }
 
-    fn directory_state_for_absolute(&self, abs: &Path) -> DirectoryState {
+    fn directory_state_for_absolute(abs: &Path) -> DirectoryState {
         let Ok(meta) = fs::symlink_metadata(abs) else {
             return DirectoryState::default();
         };
@@ -1429,10 +1422,10 @@ impl App {
             ListView::Status | ListView::Managed => &self.home_dir,
             ListView::Unmanaged => &self.working_dir,
         };
-        self.resolve_with_base(path, base)
+        Self::resolve_with_base(path, base)
     }
 
-    fn resolve_with_base(&self, path: &Path, base: &Path) -> PathBuf {
+    fn resolve_with_base(path: &Path, base: &Path) -> PathBuf {
         if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -2335,7 +2328,11 @@ mod tests {
         assert!(!app.flush_staged_filter(just_now + Duration::from_millis(10)));
         assert!(app.list_filter().is_empty());
 
-        app.staged_filter_updated_at = Some(Instant::now() - Duration::from_millis(200));
+        app.staged_filter_updated_at = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(200))
+                .unwrap(),
+        );
         assert!(app.flush_staged_filter(Instant::now()));
         assert_eq!(app.list_filter(), "zsh");
         assert_eq!(app.current_items().len(), 1);

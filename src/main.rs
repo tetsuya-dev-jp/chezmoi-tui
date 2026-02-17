@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to create terminal")?;
 
-    let run_result = run_app(&mut terminal, AppConfig::default()).await;
+    let run_result = run_app(&mut terminal, AppConfig::default());
 
     restore_terminal(&mut terminal)?;
     if let Err(err) = run_result {
@@ -43,10 +43,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_app(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    config: AppConfig,
-) -> Result<()> {
+fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, config: AppConfig) -> Result<()> {
     let mut app = App::new(config);
     let client: Arc<dyn ChezmoiClient> = Arc::new(ShellChezmoiClient::default());
 
@@ -63,7 +60,7 @@ async fn run_app(
         }
 
         if let Some(request) = app.pending_foreground.take() {
-            run_foreground_action(terminal, &mut app, &task_tx, request)?;
+            run_foreground_action(terminal, &mut app, &task_tx, &request)?;
         }
 
         app.flush_staged_filter(Instant::now());

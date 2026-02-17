@@ -119,14 +119,7 @@ fn build_ignore_pattern(
     }
 
     let suffix = match mode {
-        IgnorePatternMode::Auto => {
-            if is_dir {
-                "/**"
-            } else {
-                ""
-            }
-        }
-        IgnorePatternMode::Exact => "",
+        IgnorePatternMode::Exact | IgnorePatternMode::GlobalName => "",
         IgnorePatternMode::Children => {
             if is_dir {
                 "/*"
@@ -134,14 +127,13 @@ fn build_ignore_pattern(
                 ""
             }
         }
-        IgnorePatternMode::Recursive => {
+        IgnorePatternMode::Auto | IgnorePatternMode::Recursive => {
             if is_dir {
                 "/**"
             } else {
                 ""
             }
         }
-        IgnorePatternMode::GlobalName => "",
     };
 
     if !suffix.is_empty() {

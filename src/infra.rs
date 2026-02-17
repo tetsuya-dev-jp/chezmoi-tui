@@ -52,7 +52,7 @@ impl ShellChezmoiClient {
         let output = cmd
             .output()
             .with_context(|| format!("failed to execute {} {:?}", self.binary, args))?;
-        let duration_ms = started.elapsed().as_millis() as u64;
+        let duration_ms = elapsed_millis_u64(started);
 
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -97,7 +97,7 @@ impl ChezmoiClient for ShellChezmoiClient {
         if result.exit_code != 0 {
             bail!("chezmoi managed failed: {}", result.stderr.trim());
         }
-        parse_managed_output(&result.stdout)
+        Ok(parse_managed_output(&result.stdout))
     }
 
     fn unmanaged(&self) -> Result<Vec<PathBuf>> {
@@ -113,7 +113,7 @@ impl ChezmoiClient for ShellChezmoiClient {
             bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
         }
 
-        let paths = parse_unmanaged_output(&result.stdout)?;
+        let paths = parse_unmanaged_output(&result.stdout);
         if use_home_destination {
             let mut scoped =
                 filter_unmanaged_to_working_dir(paths, &self.home_dir, &self.working_dir);
@@ -169,7 +169,7 @@ impl ShellChezmoiClient {
             if result.exit_code != 0 {
                 bail!("chezmoi unmanaged failed: {}", result.stderr.trim());
             }
-            home_results.extend(parse_unmanaged_output(&result.stdout)?);
+            home_results.extend(parse_unmanaged_output(&result.stdout));
         }
 
         let expanded =
@@ -207,10 +207,10 @@ pub fn parse_status_output(output: &str) -> Result<Vec<StatusEntry>> {
     Ok(entries)
 }
 
-pub fn parse_managed_output(output: &str) -> Result<Vec<PathBuf>> {
+pub fn parse_managed_output(output: &str) -> Vec<PathBuf> {
     let trimmed = output.trim();
     if trimmed.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     if let Ok(json) = serde_json::from_str::<Value>(trimmed)
@@ -222,22 +222,26 @@ pub fn parse_managed_output(output: &str) -> Result<Vec<PathBuf>> {
                 paths.push(PathBuf::from(path));
             }
         }
-        return Ok(paths);
+        return paths;
     }
 
-    Ok(trimmed
+    trimmed
         .lines()
         .map(|line| PathBuf::from(line.trim()))
         .filter(|path| !path.as_os_str().is_empty())
-        .collect())
+        .collect()
 }
 
-pub fn parse_unmanaged_output(output: &str) -> Result<Vec<PathBuf>> {
-    Ok(output
+pub fn parse_unmanaged_output(output: &str) -> Vec<PathBuf> {
+    output
         .lines()
         .map(|line| PathBuf::from(line.trim()))
         .filter(|path| !path.as_os_str().is_empty())
-        .collect())
+        .collect()
+}
+
+fn elapsed_millis_u64(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn filter_unmanaged_to_working_dir(
@@ -376,13 +380,13 @@ mod tests {
     fn parse_managed_json_and_lines() {
         let json = r#"[".zshrc", ".gitconfig"]"#;
         assert_eq!(
-            parse_managed_output(json).expect("json parse"),
+            parse_managed_output(json),
             vec![PathBuf::from(".zshrc"), PathBuf::from(".gitconfig")]
         );
 
         let lines = ".zshrc\n.gitconfig\n";
         assert_eq!(
-            parse_managed_output(lines).expect("line parse"),
+            parse_managed_output(lines),
             vec![PathBuf::from(".zshrc"), PathBuf::from(".gitconfig")]
         );
     }
@@ -391,7 +395,7 @@ mod tests {
     fn parse_unmanaged_lines() {
         let output = ".cache/file\n.local/tmp\n";
         assert_eq!(
-            parse_unmanaged_output(output).expect("line parse"),
+            parse_unmanaged_output(output),
             vec![PathBuf::from(".cache/file"), PathBuf::from(".local/tmp")]
         );
     }

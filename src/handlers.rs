@@ -39,8 +39,7 @@ pub(crate) fn handle_backend_event(
             let target = request
                 .target
                 .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "(none)".to_string());
+                .map_or_else(|| "(none)".to_string(), |p| p.display().to_string());
             app.log(format!(
                 "action {} {} exit={} duration={}ms",
                 request.action.label(),
@@ -520,8 +519,7 @@ fn handle_confirm_key(
                             execute_request = Some(request.clone());
                         } else {
                             pending_log = Some(format!(
-                                "Confirmation phrase mismatch. required={} input={}",
-                                phrase, typed
+                                "Confirmation phrase mismatch. required={phrase} input={typed}"
                             ));
                         }
                     }

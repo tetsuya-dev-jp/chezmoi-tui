@@ -28,11 +28,11 @@ pub(crate) fn run_foreground_action(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     task_tx: &UnboundedSender<BackendTask>,
-    request: ActionRequest,
+    request: &ActionRequest,
 ) -> Result<()> {
     restore_terminal(terminal)?;
 
-    let result = run_action_foreground(&request);
+    let result = run_action_foreground(request);
 
     setup_terminal()?;
     terminal.clear()?;
@@ -44,8 +44,7 @@ pub(crate) fn run_foreground_action(
             let target = request
                 .target
                 .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "(none)".to_string());
+                .map_or_else(|| "(none)".to_string(), |p| p.display().to_string());
             app.log(format!(
                 "foreground action done: {} {} exit={} duration={}ms",
                 request.action.label(),
@@ -149,7 +148,9 @@ pub(crate) fn maybe_continue_batch(
         return Ok(());
     }
 
-    let action = app.batch_action().map(|a| a.label()).unwrap_or("unknown");
+    let action = app
+        .batch_action()
+        .map_or("unknown", super::domain::Action::label);
     let total = app.batch_total();
     app.log(format!("batch completed: action={action} total={total}"));
     app.clear_batch();
@@ -217,7 +218,7 @@ fn run_chezmoi_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
         .args(args)
         .status()
         .context("failed to start foreground chezmoi command")?;
-    let elapsed = started.elapsed().as_millis() as u64;
+    let elapsed = elapsed_millis_u64(started);
 
     Ok((status.code().unwrap_or(-1), elapsed))
 }
@@ -242,7 +243,7 @@ fn run_edit_ignore_foreground() -> Result<(i32, u64)> {
         .arg(&ignore_path)
         .status()
         .with_context(|| format!("failed to launch editor for {}", ignore_path.display()))?;
-    let elapsed = started.elapsed().as_millis() as u64;
+    let elapsed = elapsed_millis_u64(started);
 
     Ok((status.code().unwrap_or(-1), elapsed))
 }
@@ -268,6 +269,10 @@ pub(crate) fn destination_for_target_with_bases(
         Some(_) => working_dir.to_path_buf(),
         None => home_dir.to_path_buf(),
     }
+}
+
+fn elapsed_millis_u64(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 pub(crate) fn squash_lines(input: &str) -> String {
