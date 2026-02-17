@@ -1199,6 +1199,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .iter()
                 .filter_map(|index| App::action_by_index(*index))
                 .collect();
+            let filtering = !filter.trim().is_empty();
 
             let (items, selectable_rows): (Vec<ListItem>, Vec<usize>) = if actions.is_empty() {
                 (
@@ -1206,7 +1207,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Vec::new(),
                 )
             } else {
-                let rows = build_action_menu_rows(&actions);
+                let rows = action_menu_rows(&actions, filtering);
                 let mut selectable = Vec::new();
                 let items = rows
                     .into_iter()
@@ -1425,6 +1426,14 @@ fn build_action_menu_rows(actions: &[Action]) -> Vec<ActionMenuRow> {
     }
 
     rows
+}
+
+fn action_menu_rows(actions: &[Action], filtering: bool) -> Vec<ActionMenuRow> {
+    if filtering {
+        return actions.iter().copied().map(ActionMenuRow::Action).collect();
+    }
+
+    build_action_menu_rows(actions)
 }
 
 fn action_menu_text(action: Action) -> String {
@@ -1933,9 +1942,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionMenuRow, ActionMenuSection, action_menu_text, build_action_menu_rows, cheat_groups,
-        cheat_groups_width, fit_cheat_groups, footer_hints, footer_left, hints_width, layout_hints,
-        log_scroll_offset, parse_hunk_header,
+        ActionMenuRow, ActionMenuSection, action_menu_rows, action_menu_text,
+        build_action_menu_rows, cheat_groups, cheat_groups_width, fit_cheat_groups, footer_hints,
+        footer_left, hints_width, layout_hints, log_scroll_offset, parse_hunk_header,
     };
     use crate::app::{App, PaneFocus};
     use crate::config::AppConfig;
@@ -2021,6 +2030,24 @@ mod tests {
         assert!(rows.contains(&ActionMenuRow::Action(Action::Apply)));
         assert!(rows.contains(&ActionMenuRow::Action(Action::Edit)));
         assert!(rows.contains(&ActionMenuRow::Action(Action::Purge)));
+    }
+
+    #[test]
+    fn action_menu_rows_are_flat_when_filtering() {
+        let rows = action_menu_rows(&[Action::EditIgnore, Action::Ignore], true);
+        assert_eq!(
+            rows,
+            vec![
+                ActionMenuRow::Action(Action::EditIgnore),
+                ActionMenuRow::Action(Action::Ignore),
+            ]
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| matches!(row, ActionMenuRow::Header(_)))
+        );
+        assert!(!rows.iter().any(|row| matches!(row, ActionMenuRow::Spacer)));
     }
 
     #[test]

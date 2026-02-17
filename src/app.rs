@@ -585,24 +585,36 @@ impl App {
 
     pub fn action_menu_indices(view: ListView, filter: &str) -> Vec<usize> {
         let query = filter.trim().to_ascii_lowercase();
-        let mut matches: Vec<(usize, u8, String)> = Action::ALL
+        let mut matches: Vec<(usize, u8, u8, String)> = Action::ALL
             .iter()
             .enumerate()
-            .filter(|(_, action)| {
-                Self::action_visible_in_view(view, **action)
-                    && (query.is_empty() || action.label().to_ascii_lowercase().contains(&query))
-            })
-            .map(|(index, action)| {
-                (
+            .filter_map(|(index, action)| {
+                if !Self::action_visible_in_view(view, *action) {
+                    return None;
+                }
+
+                let label = action.label().to_ascii_lowercase();
+                let match_rank = if query.is_empty() {
+                    0
+                } else {
+                    Self::action_filter_match_rank(&label, &query)?
+                };
+
+                Some((
                     index,
+                    match_rank,
                     Self::action_section_order(*action),
-                    action.label().to_ascii_lowercase(),
-                )
+                    label,
+                ))
             })
             .collect();
 
-        matches.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
-        matches.into_iter().map(|(index, _, _)| index).collect()
+        if query.is_empty() {
+            matches.sort_by(|a, b| a.2.cmp(&b.2).then(a.3.cmp(&b.3)));
+        } else {
+            matches.sort_by(|a, b| a.1.cmp(&b.1).then(a.3.cmp(&b.3)).then(a.2.cmp(&b.2)));
+        }
+        matches.into_iter().map(|(index, _, _, _)| index).collect()
     }
 
     fn action_section_order(action: Action) -> u8 {
@@ -659,6 +671,25 @@ impl App {
                 )
             }
         }
+    }
+
+    fn action_filter_match_rank(label: &str, query: &str) -> Option<u8> {
+        if label == query {
+            return Some(0);
+        }
+        if label
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|token| token == query)
+        {
+            return Some(1);
+        }
+        if label.starts_with(query) {
+            return Some(2);
+        }
+        if label.contains(query) {
+            return Some(3);
+        }
+        None
     }
 
     pub fn scroll_detail_up(&mut self, lines: usize) -> bool {
@@ -2105,6 +2136,25 @@ mod tests {
     fn action_menu_indices_are_sorted_alphabetically_by_label() {
         let got = App::action_menu_indices(ListView::Unmanaged, "ad");
         assert_eq!(App::action_by_index(got[0]), Some(Action::Add));
+    }
+
+    #[test]
+    fn action_menu_indices_prioritize_exact_match_over_partial_match() {
+        let got: Vec<Action> = App::action_menu_indices(ListView::Unmanaged, "ignore")
+            .into_iter()
+            .filter_map(App::action_by_index)
+            .collect();
+
+        let ignore_index = got
+            .iter()
+            .position(|action| *action == Action::Ignore)
+            .expect("ignore should be matched");
+        let edit_ignore_index = got
+            .iter()
+            .position(|action| *action == Action::EditIgnore)
+            .expect("edit-ignore should be matched");
+
+        assert!(ignore_index < edit_ignore_index);
     }
 
     #[test]
