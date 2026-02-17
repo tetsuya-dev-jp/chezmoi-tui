@@ -4,12 +4,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub config_version: u32,
     pub theme: String,
     pub keymap: String,
     pub show_only_changed: bool,
     pub require_two_step_confirmation: bool,
+    pub unmanaged_exclude_paths: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -20,6 +22,7 @@ impl Default for AppConfig {
             keymap: "vim".to_string(),
             show_only_changed: false,
             require_two_step_confirmation: true,
+            unmanaged_exclude_paths: Vec::new(),
         }
     }
 }
@@ -74,5 +77,20 @@ mod tests {
         let cfg = AppConfig::default();
         assert_eq!(cfg.config_version, 1);
         assert!(cfg.require_two_step_confirmation);
+        assert!(cfg.unmanaged_exclude_paths.is_empty());
+    }
+
+    #[test]
+    fn legacy_config_without_excludes_is_deserialized_with_defaults() {
+        let raw = r#"
+config_version = 1
+theme = "default"
+keymap = "vim"
+show_only_changed = false
+require_two_step_confirmation = true
+"#;
+
+        let cfg = toml::from_str::<AppConfig>(raw).expect("parse legacy config");
+        assert!(cfg.unmanaged_exclude_paths.is_empty());
     }
 }

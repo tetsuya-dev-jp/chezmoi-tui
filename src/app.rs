@@ -3,8 +3,21 @@ use crate::domain::{Action, ActionRequest, CommandResult, DiffText, ListView, St
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 const MAX_LOG_LINES: usize = 500;
+const LIST_FILTER_DEBOUNCE_MS: u64 = 120;
+const INITIAL_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 50_000;
+const UNMANAGED_FILTER_INDEX_STEP: usize = 50_000;
+const MAX_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 200_000;
+const DEFAULT_UNMANAGED_EXCLUDES: &[&str] = &[
+    ".cache",
+    ".vscode-server",
+    ".npm",
+    ".cargo/registry",
+    ".cargo/git",
+    "tmp",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneFocus {
@@ -116,6 +129,15 @@ struct DirectoryState {
     is_symlink: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct UnmanagedFilterCache {
+    entries: Vec<PathBuf>,
+    seen: BTreeSet<PathBuf>,
+    frontier: VecDeque<PathBuf>,
+    initialized: bool,
+    scan_complete: bool,
+}
+
 pub struct App {
     pub config: AppConfig,
     pub focus: PaneFocus,
@@ -134,6 +156,8 @@ pub struct App {
     pub log_tail_offset: usize,
     pub modal: ModalState,
     list_filter: String,
+    staged_list_filter: Option<String>,
+    staged_filter_updated_at: Option<Instant>,
     pub busy: bool,
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
@@ -146,12 +170,15 @@ pub struct App {
     batch_total: usize,
     batch_queue: VecDeque<ActionRequest>,
     visible_entries: Vec<VisibleEntry>,
+    unmanaged_filter_cache: UnmanagedFilterCache,
+    unmanaged_exclude_prefixes: Vec<PathBuf>,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
         let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
+        let unmanaged_exclude_prefixes = Self::build_unmanaged_exclude_prefixes(&config);
         let mut app = Self {
             config,
             focus: PaneFocus::List,
@@ -170,6 +197,8 @@ impl App {
             log_tail_offset: 0,
             modal: ModalState::None,
             list_filter: String::new(),
+            staged_list_filter: None,
+            staged_filter_updated_at: None,
             busy: false,
             footer_help: false,
             pending_foreground: None,
@@ -182,6 +211,8 @@ impl App {
             batch_total: 0,
             batch_queue: VecDeque::new(),
             visible_entries: Vec::new(),
+            unmanaged_filter_cache: UnmanagedFilterCache::default(),
+            unmanaged_exclude_prefixes,
         };
 
         app.rebuild_visible_entries_reset();
@@ -191,8 +222,22 @@ impl App {
     pub fn switch_view(&mut self, view: ListView) {
         self.view = view;
         self.list_filter.clear();
+        self.clear_staged_list_filter();
+        self.invalidate_unmanaged_filter_index();
         self.clear_marked_entries();
         self.rebuild_visible_entries_reset();
+    }
+
+    pub fn apply_refresh_entries(
+        &mut self,
+        status: Vec<StatusEntry>,
+        managed: Vec<PathBuf>,
+        unmanaged: Vec<PathBuf>,
+    ) {
+        self.status_entries = status;
+        self.managed_entries = managed;
+        self.unmanaged_entries = unmanaged;
+        self.invalidate_unmanaged_filter_index();
     }
 
     pub fn select_next(&mut self) {
@@ -425,6 +470,7 @@ impl App {
     }
 
     pub fn open_list_filter(&mut self) {
+        self.clear_staged_list_filter();
         self.modal = ModalState::ListFilter {
             value: self.list_filter.clone(),
             original: self.list_filter.clone(),
@@ -459,7 +505,38 @@ impl App {
         &self.list_filter
     }
 
-    pub fn set_list_filter(&mut self, value: String) {
+    pub fn stage_list_filter(&mut self, value: String) {
+        self.staged_list_filter = Some(value);
+        self.staged_filter_updated_at = Some(Instant::now());
+    }
+
+    pub fn flush_staged_filter(&mut self, now: Instant) -> bool {
+        let Some(updated_at) = self.staged_filter_updated_at else {
+            return false;
+        };
+        if now.duration_since(updated_at) < Duration::from_millis(LIST_FILTER_DEBOUNCE_MS) {
+            return false;
+        }
+
+        let Some(value) = self.staged_list_filter.take() else {
+            self.staged_filter_updated_at = None;
+            return false;
+        };
+        self.staged_filter_updated_at = None;
+        if self.list_filter == value {
+            return false;
+        }
+
+        self.list_filter = value;
+        self.rebuild_visible_entries();
+        true
+    }
+
+    pub fn apply_list_filter_immediately(&mut self, value: String) {
+        self.clear_staged_list_filter();
+        if self.list_filter == value {
+            return;
+        }
         self.list_filter = value;
         self.rebuild_visible_entries();
     }
@@ -637,38 +714,13 @@ impl App {
 
     fn rebuild_visible_entries_with_selection(&mut self, preferred: Option<PathBuf>) {
         let previous = preferred.or_else(|| self.selected_path());
-        let base_paths = self.base_paths_for_view();
-        let mut seen = HashSet::new();
-        let mut entries = Vec::new();
-        let force_expand_for_search = !self.list_filter.trim().is_empty();
+        let filtering = !self.list_filter.trim().is_empty();
 
-        if self.view == ListView::Unmanaged {
-            for base in base_paths {
-                self.push_visible_recursive(
-                    base,
-                    0,
-                    &mut entries,
-                    &mut seen,
-                    force_expand_for_search,
-                );
-            }
-        } else if self.view == ListView::Managed {
-            self.push_managed_visible_entries(&mut entries, force_expand_for_search);
+        let entries = if filtering {
+            self.build_filtered_visible_entries()
         } else {
-            for path in base_paths {
-                if !seen.insert(path.clone()) {
-                    continue;
-                }
-                let is_dir = self.path_is_directory(&path);
-                entries.push(VisibleEntry {
-                    path,
-                    depth: 0,
-                    is_dir,
-                    can_expand: false,
-                    is_symlink: false,
-                });
-            }
-        }
+            self.build_unfiltered_visible_entries()
+        };
 
         self.visible_entries = entries;
         let visible_paths: HashSet<PathBuf> = self
@@ -678,10 +730,6 @@ impl App {
             .collect();
         self.marked_entries
             .retain(|path| visible_paths.contains(path));
-
-        if !self.list_filter.trim().is_empty() {
-            self.visible_entries = self.filter_visible_entries(self.visible_entries.clone());
-        }
 
         if let Some(target) = previous
             && let Some(idx) = self.visible_entries.iter().position(|e| e.path == target)
@@ -693,54 +741,182 @@ impl App {
         self.sync_selection_bounds();
     }
 
-    fn view_supports_tree(&self) -> bool {
-        matches!(self.view, ListView::Managed | ListView::Unmanaged)
-    }
+    fn build_unfiltered_visible_entries(&self) -> Vec<VisibleEntry> {
+        let base_paths = self.base_paths_for_view();
+        let mut seen = HashSet::new();
+        let mut entries = Vec::new();
 
-    fn filter_visible_entries(&self, entries: Vec<VisibleEntry>) -> Vec<VisibleEntry> {
-        let query = self.list_filter.trim().to_ascii_lowercase();
-        if query.is_empty() {
+        if self.view == ListView::Unmanaged {
+            for base in base_paths {
+                self.push_visible_recursive(base, 0, &mut entries, &mut seen, false);
+            }
             return entries;
         }
 
-        let matched: HashSet<PathBuf> = entries
+        if self.view == ListView::Managed {
+            self.push_managed_visible_entries(&mut entries, false);
+            return entries;
+        }
+
+        for path in base_paths {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let is_dir = self.path_is_directory(&path);
+            entries.push(VisibleEntry {
+                path,
+                depth: 0,
+                is_dir,
+                can_expand: false,
+                is_symlink: false,
+            });
+        }
+        entries
+    }
+
+    fn build_filtered_visible_entries(&mut self) -> Vec<VisibleEntry> {
+        let query = self.list_filter.trim().to_ascii_lowercase();
+        let view = self.view;
+        match view {
+            ListView::Status => self.build_filtered_status_entries(&query),
+            ListView::Managed => self.build_filtered_tree_entries(
+                self.managed_entries
+                    .iter()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .cloned()
+                    .collect(),
+                &query,
+            ),
+            ListView::Unmanaged => {
+                let source_paths = self.unmanaged_filter_source_paths(&query);
+                self.build_filtered_tree_entries(source_paths, &query)
+            }
+        }
+    }
+
+    fn build_filtered_status_entries(&self, query: &str) -> Vec<VisibleEntry> {
+        self.status_entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains(&query)
+            .filter_map(|entry| {
+                let path = entry.path.clone();
+                let matched =
+                    query.is_empty() || path.to_string_lossy().to_ascii_lowercase().contains(query);
+                if !matched {
+                    return None;
+                }
+                Some(VisibleEntry {
+                    is_dir: self.path_is_directory(&path),
+                    path,
+                    depth: 0,
+                    can_expand: false,
+                    is_symlink: false,
+                })
             })
-            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
+    fn build_filtered_tree_entries(
+        &self,
+        source_paths: Vec<PathBuf>,
+        query: &str,
+    ) -> Vec<VisibleEntry> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+
+        let matched: BTreeSet<PathBuf> = source_paths
+            .into_iter()
+            .filter(|path| Self::tree_entry_name_matches_query(path, query))
             .collect();
         if matched.is_empty() {
             return Vec::new();
         }
 
-        let mut keep = matched.clone();
-        if self.view_supports_tree() {
-            let all_paths: HashSet<PathBuf> =
-                entries.iter().map(|entry| entry.path.clone()).collect();
-            for path in matched {
-                let mut current = path.parent();
-                while let Some(parent) = current {
-                    if parent.as_os_str().is_empty() {
-                        break;
-                    }
-                    let ancestor = parent.to_path_buf();
-                    if all_paths.contains(&ancestor) {
-                        keep.insert(ancestor);
-                    }
-                    current = parent.parent();
+        let mut keep = matched;
+        let mut ancestors = Vec::new();
+        for path in &keep {
+            let mut current = path.parent();
+            while let Some(parent) = current {
+                if parent.as_os_str().is_empty() {
+                    break;
                 }
+                ancestors.push(parent.to_path_buf());
+                current = parent.parent();
+            }
+        }
+        keep.extend(ancestors);
+
+        self.build_tree_entries_from_paths(keep)
+    }
+
+    fn tree_entry_name_matches_query(path: &Path, query: &str) -> bool {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_ascii_lowercase().contains(query))
+            .unwrap_or_else(|| path.to_string_lossy().to_ascii_lowercase().contains(query))
+    }
+
+    fn build_tree_entries_from_paths(&self, nodes: BTreeSet<PathBuf>) -> Vec<VisibleEntry> {
+        if nodes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut children: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        let mut roots = Vec::new();
+
+        for node in &nodes {
+            let parent = node.parent().map(Path::to_path_buf);
+            if let Some(parent) = parent
+                && !parent.as_os_str().is_empty()
+                && nodes.contains(&parent)
+            {
+                children.entry(parent).or_default().push(node.clone());
+            } else {
+                roots.push(node.clone());
             }
         }
 
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        }
+        roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+
+        let mut entries = Vec::new();
+        for root in roots {
+            self.push_filtered_tree_entry_recursive(root, 0, &children, &mut entries);
+        }
         entries
-            .into_iter()
-            .filter(|entry| keep.contains(&entry.path))
-            .collect()
+    }
+
+    fn push_filtered_tree_entry_recursive(
+        &self,
+        path: PathBuf,
+        depth: usize,
+        children: &BTreeMap<PathBuf, Vec<PathBuf>>,
+        out: &mut Vec<VisibleEntry>,
+    ) {
+        let has_children = children
+            .get(&path)
+            .map(|entries| !entries.is_empty())
+            .unwrap_or(false);
+        let directory = self.path_directory_state_for_view(&path, self.view);
+        out.push(VisibleEntry {
+            path: path.clone(),
+            depth,
+            is_dir: has_children || directory.is_dir,
+            can_expand: has_children || directory.can_expand,
+            is_symlink: directory.is_symlink,
+        });
+
+        if let Some(child_paths) = children.get(&path) {
+            for child in child_paths {
+                self.push_filtered_tree_entry_recursive(child.clone(), depth + 1, children, out);
+            }
+        }
+    }
+
+    fn view_supports_tree(&self) -> bool {
+        matches!(self.view, ListView::Managed | ListView::Unmanaged)
     }
 
     fn base_paths_for_view(&self) -> Vec<PathBuf> {
@@ -767,6 +943,103 @@ impl App {
 
                 base_paths
             }
+        }
+    }
+
+    fn unmanaged_filter_source_paths(&mut self, query: &str) -> Vec<PathBuf> {
+        self.unmanaged_filter_source_paths_with_limits(
+            query,
+            INITIAL_UNMANAGED_FILTER_INDEX_ENTRIES,
+            UNMANAGED_FILTER_INDEX_STEP,
+            MAX_UNMANAGED_FILTER_INDEX_ENTRIES,
+        )
+    }
+
+    fn unmanaged_filter_source_paths_with_limits(
+        &mut self,
+        query: &str,
+        initial_limit: usize,
+        step: usize,
+        max_limit: usize,
+    ) -> Vec<PathBuf> {
+        let initial = initial_limit.min(max_limit).max(1);
+        self.scan_unmanaged_filter_index_to(initial);
+
+        let normalized_query = query.trim().to_ascii_lowercase();
+        if normalized_query.is_empty() {
+            return self.unmanaged_filter_cache.entries.clone();
+        }
+
+        let mut current_limit = initial;
+        while !self.unmanaged_filter_cache.scan_complete
+            && !self.unmanaged_index_has_match(&normalized_query)
+            && current_limit < max_limit
+        {
+            current_limit = (current_limit + step).min(max_limit);
+            self.scan_unmanaged_filter_index_to(current_limit);
+        }
+
+        self.unmanaged_filter_cache.entries.clone()
+    }
+
+    fn unmanaged_index_has_match(&self, query: &str) -> bool {
+        self.unmanaged_filter_cache
+            .entries
+            .iter()
+            .any(|path| path.to_string_lossy().to_ascii_lowercase().contains(query))
+    }
+
+    fn scan_unmanaged_filter_index_to(&mut self, limit: usize) {
+        self.ensure_unmanaged_filter_index_seeded();
+        if self.unmanaged_filter_cache.scan_complete {
+            return;
+        }
+
+        while self.unmanaged_filter_cache.entries.len() < limit {
+            let Some(path) = self.unmanaged_filter_cache.frontier.pop_front() else {
+                self.unmanaged_filter_cache.scan_complete = true;
+                break;
+            };
+            if !self.unmanaged_filter_cache.seen.insert(path.clone()) {
+                continue;
+            }
+
+            self.unmanaged_filter_cache.entries.push(path.clone());
+            let directory = self.path_directory_state_for_view(&path, ListView::Unmanaged);
+            if directory.can_expand {
+                self.unmanaged_filter_cache
+                    .frontier
+                    .extend(self.read_children(&path));
+            }
+        }
+
+        if self.unmanaged_filter_cache.frontier.is_empty() {
+            self.unmanaged_filter_cache.scan_complete = true;
+        }
+    }
+
+    fn ensure_unmanaged_filter_index_seeded(&mut self) {
+        if self.unmanaged_filter_cache.initialized {
+            return;
+        }
+
+        let mut roots: Vec<PathBuf> = self
+            .unmanaged_entries
+            .iter()
+            .filter(|path| self.is_visible_in_unmanaged_view(path.as_path()))
+            .cloned()
+            .collect();
+
+        if roots.iter().any(|path| path == Path::new(".")) {
+            roots.retain(|path| path != Path::new("."));
+            roots.extend(self.read_children(Path::new(".")));
+        }
+        roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+
+        self.unmanaged_filter_cache.frontier = roots.into_iter().collect();
+        self.unmanaged_filter_cache.initialized = true;
+        if self.unmanaged_filter_cache.frontier.is_empty() {
+            self.unmanaged_filter_cache.scan_complete = true;
         }
     }
 
@@ -936,8 +1209,67 @@ impl App {
     }
 
     fn is_visible_in_unmanaged_view(&self, path: &Path) -> bool {
+        !self.is_excluded_unmanaged_path(path)
+    }
+
+    fn is_excluded_unmanaged_path(&self, path: &Path) -> bool {
         let abs = self.resolve_with_base(path, &self.working_dir);
-        !self.is_exact_managed_path_in_working_dir(&abs)
+        if self.is_exact_managed_path_in_working_dir(&abs) {
+            return true;
+        }
+
+        let normalized = self.normalize_unmanaged_relative_path(path);
+        self.unmanaged_exclude_prefixes
+            .iter()
+            .any(|exclude| normalized.starts_with(exclude))
+    }
+
+    fn build_unmanaged_exclude_prefixes(config: &AppConfig) -> Vec<PathBuf> {
+        let mut excludes = Vec::new();
+
+        for entry in DEFAULT_UNMANAGED_EXCLUDES
+            .iter()
+            .copied()
+            .chain(config.unmanaged_exclude_paths.iter().map(String::as_str))
+        {
+            if let Some(normalized) = Self::normalize_exclude_entry(entry) {
+                excludes.push(normalized);
+            }
+        }
+
+        excludes
+    }
+
+    fn normalize_unmanaged_relative_path(&self, path: &Path) -> PathBuf {
+        let relative = if path.is_absolute() {
+            path.strip_prefix(&self.working_dir).unwrap_or(path)
+        } else {
+            path
+        };
+        Self::normalize_match_path(relative)
+    }
+
+    fn normalize_exclude_entry(entry: &str) -> Option<PathBuf> {
+        let normalized = Self::normalize_match_path(Path::new(entry));
+        if normalized == Path::new(".") {
+            return None;
+        }
+        Some(normalized)
+    }
+
+    fn normalize_match_path(path: &Path) -> PathBuf {
+        let normalized = path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_string();
+        if normalized.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(normalized)
+        }
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
@@ -1077,6 +1409,15 @@ impl App {
             self.expanded_dirs.remove(&target);
         }
     }
+
+    fn clear_staged_list_filter(&mut self) {
+        self.staged_list_filter = None;
+        self.staged_filter_updated_at = None;
+    }
+
+    fn invalidate_unmanaged_filter_index(&mut self) {
+        self.unmanaged_filter_cache = UnmanagedFilterCache::default();
+    }
 }
 
 #[cfg(test)]
@@ -1084,7 +1425,7 @@ mod tests {
     use super::*;
     use crate::domain::ChangeKind;
     use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn status_selection_returns_path() {
@@ -1379,6 +1720,200 @@ mod tests {
     }
 
     #[test]
+    fn unmanaged_view_excludes_default_temporary_directories() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_default_exclude_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join(".cache")).expect("create cache dir");
+        fs::create_dir_all(temp_root.join(".codex/skills")).expect("create codex dir");
+        fs::write(temp_root.join(".codex/skills/SKILL.md"), "skill").expect("write skill");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".cache"), PathBuf::from(".codex")];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(!items.iter().any(|line| line.contains(".cache")));
+        assert!(items.iter().any(|line| line.contains(".codex/")));
+
+        app.apply_list_filter_immediately("skill".to_string());
+        let filtered = app.current_items();
+        assert!(filtered.iter().any(|line| line.contains("SKILL.md")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_default_excludes_match_prefix_not_partial_name() {
+        let mut app = App::new(AppConfig::default());
+        app.unmanaged_entries = vec![
+            PathBuf::from("tmp/file.txt"),
+            PathBuf::from("template/file.txt"),
+            PathBuf::from(".cargo/config.toml"),
+            PathBuf::from(".cargo/registry/index.txt"),
+        ];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(!items.iter().any(|line| line.contains("tmp/file.txt")));
+        assert!(items.iter().any(|line| line.contains("template/file.txt")));
+        assert!(items.iter().any(|line| line.contains(".cargo/config.toml")));
+        assert!(
+            !items
+                .iter()
+                .any(|line| line.contains(".cargo/registry/index.txt"))
+        );
+    }
+
+    #[test]
+    fn unmanaged_view_supports_custom_excludes_from_config() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_custom_exclude_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join(".codex/skills")).expect("create codex dir");
+        fs::write(temp_root.join(".codex/skills/SKILL.md"), "skill").expect("write skill");
+        fs::create_dir_all(temp_root.join("notes")).expect("create notes dir");
+        fs::write(temp_root.join("notes/todo.md"), "todo").expect("write note");
+
+        let mut app = App::new(AppConfig {
+            unmanaged_exclude_paths: vec![".codex".to_string()],
+            ..AppConfig::default()
+        });
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".codex"), PathBuf::from("notes")];
+        app.switch_view(ListView::Unmanaged);
+
+        let items = app.current_items();
+        assert!(!items.iter().any(|line| line.contains(".codex")));
+        assert!(items.iter().any(|line| line.contains("notes/")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_filter_index_uses_breadth_first_scan_order() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_bfs_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("a/sub")).expect("create a/sub");
+        fs::create_dir_all(temp_root.join("b")).expect("create b");
+        fs::write(temp_root.join("a/sub/deep.txt"), "deep").expect("write deep");
+        fs::write(temp_root.join("b/root.txt"), "root").expect("write root");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.switch_view(ListView::Unmanaged);
+
+        let indexed = app.unmanaged_filter_source_paths_with_limits("", 3, 3, 9);
+        assert_eq!(indexed[0], PathBuf::from("a"));
+        assert_eq!(indexed[1], PathBuf::from("b"));
+        assert_eq!(indexed[2], PathBuf::from("a/sub"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn unmanaged_filter_index_expands_limit_until_query_match() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_expand_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("a")).expect("create a");
+        fs::create_dir_all(temp_root.join("b")).expect("create b");
+        fs::create_dir_all(temp_root.join("c")).expect("create c");
+        fs::write(temp_root.join("a/one.txt"), "one").expect("write one");
+        fs::write(temp_root.join("b/two.txt"), "two").expect("write two");
+        fs::write(temp_root.join("c/target-skill.md"), "target").expect("write target");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.switch_view(ListView::Unmanaged);
+
+        let indexed = app.unmanaged_filter_source_paths_with_limits("target-skill", 2, 2, 8);
+        assert!(
+            indexed
+                .iter()
+                .any(|path| path.ends_with(Path::new("c/target-skill.md")))
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn list_filter_directory_name_match_does_not_expand_children_without_descendant_match() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_filter_dir_name_only_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("skills")).expect("create skills dir");
+        fs::write(temp_root.join("skills/guide.md"), "guide").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from("skills")];
+        app.switch_view(ListView::Unmanaged);
+
+        app.apply_list_filter_immediately("skills".to_string());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("skills/")));
+        assert!(!items.iter().any(|line| line.contains("guide.md")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn list_filter_file_name_match_expands_ancestor_directories() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_filter_file_name_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("skills")).expect("create skills dir");
+        fs::write(temp_root.join("skills/SKILL.md"), "skill").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from("skills")];
+        app.switch_view(ListView::Unmanaged);
+
+        app.apply_list_filter_immediately("skill.md".to_string());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("skills/")));
+        assert!(items.iter().any(|line| line.contains("SKILL.md")));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
     fn managed_view_is_hierarchical_and_expandable() {
         let mut app = App::new(AppConfig::default());
         app.managed_entries = vec![
@@ -1630,7 +2165,7 @@ mod tests {
             },
         ];
         app.switch_view(ListView::Status);
-        app.set_list_filter("zsh".to_string());
+        app.apply_list_filter_immediately("zsh".to_string());
         assert_eq!(app.current_items().len(), 1);
 
         app.switch_view(ListView::Managed);
@@ -1653,7 +2188,7 @@ mod tests {
             },
         ];
         app.switch_view(ListView::Status);
-        app.set_list_filter("ZSH".to_string());
+        app.apply_list_filter_immediately("ZSH".to_string());
         let items = app.current_items();
         assert_eq!(items.len(), 1);
         assert!(items[0].contains(".zshrc"));
@@ -1669,7 +2204,7 @@ mod tests {
         ];
         app.switch_view(ListView::Managed);
 
-        app.set_list_filter("cargo".to_string());
+        app.apply_list_filter_immediately("cargo".to_string());
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("dev/")));
         assert!(items.iter().any(|line| line.contains("chezmoi-tui/")));
@@ -1695,13 +2230,60 @@ mod tests {
         app.unmanaged_entries = vec![PathBuf::from(".config")];
         app.switch_view(ListView::Unmanaged);
 
-        app.set_list_filter("init.lua".to_string());
+        app.apply_list_filter_immediately("init.lua".to_string());
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains(".config/")));
         assert!(items.iter().any(|line| line.contains("nvim/")));
         assert!(items.iter().any(|line| line.contains("init.lua")));
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn list_filter_unmanaged_keeps_ancestors_without_fs_walk() {
+        let mut app = App::new(AppConfig::default());
+        app.unmanaged_entries = vec![PathBuf::from("dev/chezmoi-tui/src/main.rs")];
+        app.switch_view(ListView::Unmanaged);
+
+        app.apply_list_filter_immediately("main.rs".to_string());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("dev/")));
+        assert!(items.iter().any(|line| line.contains("chezmoi-tui/")));
+        assert!(items.iter().any(|line| line.contains("src/")));
+        assert!(items.iter().any(|line| line.contains("main.rs")));
+    }
+
+    #[test]
+    fn staged_filter_is_flushed_only_after_debounce_interval() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".zshrc"),
+                actual_vs_state: ChangeKind::Modified,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".gitconfig"),
+                actual_vs_state: ChangeKind::Modified,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(ListView::Status);
+        assert_eq!(app.current_items().len(), 2);
+
+        app.stage_list_filter("zsh".to_string());
+        assert_eq!(app.current_items().len(), 2);
+
+        let just_now = app
+            .staged_filter_updated_at
+            .expect("staged filter timestamp should exist");
+        assert!(!app.flush_staged_filter(just_now + Duration::from_millis(10)));
+        assert!(app.list_filter().is_empty());
+
+        app.staged_filter_updated_at = Some(Instant::now() - Duration::from_millis(200));
+        assert!(app.flush_staged_filter(Instant::now()));
+        assert_eq!(app.list_filter(), "zsh");
+        assert_eq!(app.current_items().len(), 1);
     }
 
     #[test]

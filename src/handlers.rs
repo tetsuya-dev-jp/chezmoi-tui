@@ -21,9 +21,7 @@ pub(crate) fn handle_backend_event(
             managed,
             unmanaged,
         } => {
-            app.status_entries = status;
-            app.managed_entries = managed;
-            app.unmanaged_entries = unmanaged;
+            app.apply_refresh_entries(status, managed, unmanaged);
             app.rebuild_visible_entries();
             app.busy = false;
             maybe_enqueue_auto_detail(app, task_tx)?;
@@ -103,6 +101,12 @@ fn handle_key_without_modal(
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.toggle_footer_help(),
         KeyCode::Char('/') if app.focus == crate::app::PaneFocus::List => app.open_list_filter(),
+        KeyCode::Esc
+            if app.focus == crate::app::PaneFocus::List && !app.list_filter().is_empty() =>
+        {
+            app.apply_list_filter_immediately(String::new());
+            selection_changed = true;
+        }
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::Char(' ') if app.focus == crate::app::PaneFocus::List => {
             let _ = app.toggle_selected_mark();
@@ -263,7 +267,8 @@ fn handle_list_filter_key(
     key: KeyEvent,
     task_tx: &UnboundedSender<BackendTask>,
 ) -> Result<()> {
-    let mut next_filter: Option<String> = None;
+    let mut staged_filter: Option<String> = None;
+    let mut commit_filter: Option<String> = None;
     let mut finalize = false;
     let mut restore_filter: Option<String> = None;
 
@@ -278,12 +283,12 @@ fn handle_list_filter_key(
                 finalize = true;
             }
             KeyCode::Enter => {
-                next_filter = Some(value.clone());
+                commit_filter = Some(value.clone());
                 finalize = true;
             }
             KeyCode::Backspace => {
                 value.pop();
-                next_filter = Some(value.clone());
+                staged_filter = Some(value.clone());
             }
             KeyCode::Char(c)
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -291,21 +296,25 @@ fn handle_list_filter_key(
                     && !key.modifiers.contains(KeyModifiers::SUPER) =>
             {
                 value.push(c);
-                next_filter = Some(value.clone());
+                staged_filter = Some(value.clone());
             }
             _ => {}
         }
     }
 
     if let Some(filter) = restore_filter {
-        app.set_list_filter(filter);
+        app.apply_list_filter_immediately(filter);
         app.close_modal();
         maybe_enqueue_auto_detail(app, task_tx)?;
         return Ok(());
     }
 
-    if let Some(filter) = next_filter {
-        app.set_list_filter(filter);
+    if let Some(filter) = staged_filter {
+        app.stage_list_filter(filter);
+    }
+
+    if let Some(filter) = commit_filter {
+        app.apply_list_filter_immediately(filter);
     }
 
     if finalize {
@@ -607,6 +616,7 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
     use tokio::sync::mpsc;
 
     #[test]
@@ -620,6 +630,89 @@ mod tests {
 
         handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
         assert!(!app.footer_help);
+    }
+
+    #[test]
+    fn list_filter_typing_is_staged_until_flushed() {
+        let mut app = App::new(AppConfig::default());
+        app.open_list_filter();
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_list_filter_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle key");
+
+        assert!(matches!(app.modal, ModalState::ListFilter { .. }));
+        assert!(app.list_filter().is_empty());
+        assert!(app.flush_staged_filter(Instant::now() + Duration::from_millis(200)));
+        assert_eq!(app.list_filter(), "z");
+    }
+
+    #[test]
+    fn list_filter_enter_applies_immediately_and_closes_modal() {
+        let mut app = App::new(AppConfig::default());
+        app.open_list_filter();
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_list_filter_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle key");
+        handle_list_filter_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle key");
+
+        assert_eq!(app.list_filter(), "z");
+        assert!(matches!(app.modal, ModalState::None));
+    }
+
+    #[test]
+    fn list_filter_esc_restores_original_value() {
+        let mut app = App::new(AppConfig::default());
+        app.apply_list_filter_immediately("git".to_string());
+        app.open_list_filter();
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_list_filter_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle key");
+        handle_list_filter_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle key");
+
+        assert_eq!(app.list_filter(), "git");
+        assert!(matches!(app.modal, ModalState::None));
+    }
+
+    #[test]
+    fn esc_without_modal_clears_applied_list_filter() {
+        let mut app = App::new(AppConfig::default());
+        app.apply_list_filter_immediately("git".to_string());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_key_without_modal(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("handle key");
+
+        assert!(app.list_filter().is_empty());
+        assert!(matches!(app.modal, ModalState::None));
     }
 
     #[test]

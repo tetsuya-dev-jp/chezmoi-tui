@@ -23,7 +23,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 #[tokio::main]
@@ -74,6 +74,7 @@ async fn run_app(
             run_foreground_action(terminal, &mut app, &task_tx, request)?;
         }
 
+        app.flush_staged_filter(Instant::now());
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         if event::poll(Duration::from_millis(100)).context("event poll failed")?
