@@ -37,7 +37,7 @@ Notes:
 
 ### Requirements
 
-- Rust 1.93+
+- Rust 1.85+ (edition 2024)
 - `chezmoi` in `PATH`
 - macOS or Linux
 
