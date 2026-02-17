@@ -158,7 +158,7 @@ Action visibility is view-aware.
 - Symlink-aware rendering and preview messages (directory link / broken link handling)
 - Multi-select batch execution for selected-item actions
 - Log auto-follow with manual scrolling
-- Persistent config at `~/.config/chezmoi-tui/config.toml`
+- Built-in safe defaults (no application config file)
 
 ## Development
 

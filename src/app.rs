@@ -166,14 +166,12 @@ pub struct App {
     batch_queue: VecDeque<ActionRequest>,
     visible_entries: Vec<VisibleEntry>,
     unmanaged_filter_cache: UnmanagedFilterCache,
-    unmanaged_exclude_prefixes: Vec<PathBuf>,
 }
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
         let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
-        let unmanaged_exclude_prefixes = Self::build_unmanaged_exclude_prefixes(&config);
         let mut app = Self {
             config,
             focus: PaneFocus::List,
@@ -207,7 +205,6 @@ impl App {
             batch_queue: VecDeque::new(),
             visible_entries: Vec::new(),
             unmanaged_filter_cache: UnmanagedFilterCache::default(),
-            unmanaged_exclude_prefixes,
         };
 
         app.rebuild_visible_entries_reset();
@@ -1314,58 +1311,7 @@ impl App {
 
     fn is_excluded_unmanaged_path(&self, path: &Path) -> bool {
         let abs = self.resolve_with_base(path, &self.working_dir);
-        if self.is_exact_managed_path_in_working_dir(&abs) {
-            return true;
-        }
-
-        let normalized = self.normalize_unmanaged_relative_path(path);
-        self.unmanaged_exclude_prefixes
-            .iter()
-            .any(|exclude| normalized.starts_with(exclude))
-    }
-
-    fn build_unmanaged_exclude_prefixes(config: &AppConfig) -> Vec<PathBuf> {
-        let mut excludes = Vec::new();
-
-        for entry in config.unmanaged_exclude_paths.iter().map(String::as_str) {
-            if let Some(normalized) = Self::normalize_exclude_entry(entry) {
-                excludes.push(normalized);
-            }
-        }
-
-        excludes
-    }
-
-    fn normalize_unmanaged_relative_path(&self, path: &Path) -> PathBuf {
-        let relative = if path.is_absolute() {
-            path.strip_prefix(&self.working_dir).unwrap_or(path)
-        } else {
-            path
-        };
-        Self::normalize_match_path(relative)
-    }
-
-    fn normalize_exclude_entry(entry: &str) -> Option<PathBuf> {
-        let normalized = Self::normalize_match_path(Path::new(entry));
-        if normalized == Path::new(".") {
-            return None;
-        }
-        Some(normalized)
-    }
-
-    fn normalize_match_path(path: &Path) -> PathBuf {
-        let normalized = path
-            .to_string_lossy()
-            .replace('\\', "/")
-            .trim_start_matches("./")
-            .trim_start_matches('/')
-            .trim_end_matches('/')
-            .to_string();
-        if normalized.is_empty() {
-            PathBuf::from(".")
-        } else {
-            PathBuf::from(normalized)
-        }
+        self.is_exact_managed_path_in_working_dir(&abs)
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
@@ -1841,36 +1787,6 @@ mod tests {
         app.apply_list_filter_immediately("skill".to_string());
         let filtered = app.current_items();
         assert!(filtered.iter().any(|line| line.contains("SKILL.md")));
-
-        let _ = fs::remove_dir_all(temp_root);
-    }
-
-    #[test]
-    fn unmanaged_view_supports_custom_excludes_from_config() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_custom_exclude_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        fs::create_dir_all(temp_root.join(".codex/skills")).expect("create codex dir");
-        fs::write(temp_root.join(".codex/skills/SKILL.md"), "skill").expect("write skill");
-        fs::create_dir_all(temp_root.join("notes")).expect("create notes dir");
-        fs::write(temp_root.join("notes/todo.md"), "todo").expect("write note");
-
-        let mut app = App::new(AppConfig {
-            unmanaged_exclude_paths: vec![".codex".to_string()],
-            ..AppConfig::default()
-        });
-        app.working_dir = temp_root.clone();
-        app.unmanaged_entries = vec![PathBuf::from(".codex"), PathBuf::from("notes")];
-        app.switch_view(ListView::Unmanaged);
-
-        let items = app.current_items();
-        assert!(!items.iter().any(|line| line.contains(".codex")));
-        assert!(items.iter().any(|line| line.contains("notes/")));
 
         let _ = fs::remove_dir_all(temp_root);
     }

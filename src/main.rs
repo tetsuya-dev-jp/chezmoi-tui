@@ -28,19 +28,11 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = match AppConfig::load_or_default() {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            eprintln!("failed to load config, using defaults: {err:#}");
-            AppConfig::default()
-        }
-    };
-
     setup_terminal()?;
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to create terminal")?;
 
-    let run_result = run_app(&mut terminal, config).await;
+    let run_result = run_app(&mut terminal, AppConfig::default()).await;
 
     restore_terminal(&mut terminal)?;
     if let Err(err) = run_result {
@@ -83,10 +75,6 @@ async fn run_app(
         {
             handle_key_event(&mut app, key, &task_tx)?;
         }
-    }
-
-    if let Err(err) = app.config.save() {
-        eprintln!("failed to save config: {err:#}");
     }
 
     Ok(())
