@@ -10,6 +10,9 @@ const LIST_FILTER_DEBOUNCE_MS: u64 = 120;
 const INITIAL_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 50_000;
 const UNMANAGED_FILTER_INDEX_STEP: usize = 50_000;
 const MAX_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 200_000;
+const LIVE_FILTER_INITIAL_UNMANAGED_INDEX_ENTRIES: usize = 2_000;
+const LIVE_FILTER_UNMANAGED_INDEX_STEP: usize = 2_000;
+const LIVE_FILTER_MAX_UNMANAGED_INDEX_ENTRIES: usize = 20_000;
 const DEFAULT_UNMANAGED_EXCLUDES: &[&str] = &[
     ".cache",
     ".vscode-server",
@@ -505,11 +508,6 @@ impl App {
         &self.list_filter
     }
 
-    pub fn stage_list_filter(&mut self, value: String) {
-        self.staged_list_filter = Some(value);
-        self.staged_filter_updated_at = Some(Instant::now());
-    }
-
     pub fn flush_staged_filter(&mut self, now: Instant) -> bool {
         let Some(updated_at) = self.staged_filter_updated_at else {
             return false;
@@ -815,7 +813,11 @@ impl App {
                 &query,
             ),
             ListView::Unmanaged => {
-                let source_paths = self.unmanaged_filter_source_paths(&query);
+                let source_paths = if matches!(self.modal, ModalState::ListFilter { .. }) {
+                    self.unmanaged_filter_source_paths_live(&query)
+                } else {
+                    self.unmanaged_filter_source_paths(&query)
+                };
                 self.build_filtered_tree_entries(source_paths, &query)
             }
         }
@@ -982,12 +984,42 @@ impl App {
         )
     }
 
+    fn unmanaged_filter_source_paths_live(&mut self, query: &str) -> Vec<PathBuf> {
+        self.unmanaged_filter_source_paths_with_limits_and_options(
+            query,
+            LIVE_FILTER_INITIAL_UNMANAGED_INDEX_ENTRIES,
+            LIVE_FILTER_UNMANAGED_INDEX_STEP,
+            LIVE_FILTER_MAX_UNMANAGED_INDEX_ENTRIES,
+            1,
+            false,
+        )
+    }
+
     fn unmanaged_filter_source_paths_with_limits(
         &mut self,
         query: &str,
         initial_limit: usize,
         step: usize,
         max_limit: usize,
+    ) -> Vec<PathBuf> {
+        self.unmanaged_filter_source_paths_with_limits_and_options(
+            query,
+            initial_limit,
+            step,
+            max_limit,
+            usize::MAX,
+            true,
+        )
+    }
+
+    fn unmanaged_filter_source_paths_with_limits_and_options(
+        &mut self,
+        query: &str,
+        initial_limit: usize,
+        step: usize,
+        max_limit: usize,
+        scan_rounds: usize,
+        allow_fallback_scan: bool,
     ) -> Vec<PathBuf> {
         let initial = initial_limit.min(max_limit).max(1);
         self.scan_unmanaged_filter_index_to(initial);
@@ -997,13 +1029,16 @@ impl App {
             return self.unmanaged_filter_cache.entries.clone();
         }
 
-        let mut current_limit = initial;
+        let mut current_limit = self.unmanaged_filter_cache.entries.len().max(initial);
+        let mut rounds = 0usize;
         while !self.unmanaged_filter_cache.scan_complete
             && !self.unmanaged_index_has_match(&normalized_query)
             && current_limit < max_limit
+            && rounds < scan_rounds
         {
             current_limit = (current_limit + step).min(max_limit);
             self.scan_unmanaged_filter_index_to(current_limit);
+            rounds += 1;
         }
 
         if self.unmanaged_filter_cache.scan_complete
@@ -1012,7 +1047,7 @@ impl App {
             return self.unmanaged_filter_cache.entries.clone();
         }
 
-        if current_limit >= max_limit {
+        if allow_fallback_scan && current_limit >= max_limit {
             let mut source_paths = self.unmanaged_filter_cache.entries.clone();
             source_paths.extend(self.fallback_unmanaged_matches_outside_index(&normalized_query));
             return source_paths;
@@ -2408,7 +2443,8 @@ mod tests {
         app.switch_view(ListView::Status);
         assert_eq!(app.current_items().len(), 2);
 
-        app.stage_list_filter("zsh".to_string());
+        app.staged_list_filter = Some("zsh".to_string());
+        app.staged_filter_updated_at = Some(Instant::now());
         assert_eq!(app.current_items().len(), 2);
 
         let just_now = app

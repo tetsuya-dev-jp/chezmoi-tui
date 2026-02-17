@@ -267,9 +267,9 @@ fn handle_list_filter_key(
     key: KeyEvent,
     task_tx: &UnboundedSender<BackendTask>,
 ) -> Result<()> {
-    let mut staged_filter: Option<String> = None;
-    let mut commit_filter: Option<String> = None;
+    let mut immediate_filter: Option<String> = None;
     let mut finalize = false;
+    let mut committed = false;
     let mut restore_filter: Option<String> = None;
 
     {
@@ -283,12 +283,12 @@ fn handle_list_filter_key(
                 finalize = true;
             }
             KeyCode::Enter => {
-                commit_filter = Some(value.clone());
                 finalize = true;
+                committed = true;
             }
             KeyCode::Backspace => {
                 value.pop();
-                staged_filter = Some(value.clone());
+                immediate_filter = Some(value.clone());
             }
             KeyCode::Char(c)
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -296,29 +296,29 @@ fn handle_list_filter_key(
                     && !key.modifiers.contains(KeyModifiers::SUPER) =>
             {
                 value.push(c);
-                staged_filter = Some(value.clone());
+                immediate_filter = Some(value.clone());
             }
             _ => {}
         }
     }
 
+    if let Some(filter) = immediate_filter {
+        app.apply_list_filter_immediately(filter);
+    }
+
     if let Some(filter) = restore_filter {
         app.apply_list_filter_immediately(filter);
         app.close_modal();
+        app.rebuild_visible_entries();
         maybe_enqueue_auto_detail(app, task_tx)?;
         return Ok(());
     }
 
-    if let Some(filter) = staged_filter {
-        app.stage_list_filter(filter);
-    }
-
-    if let Some(filter) = commit_filter {
-        app.apply_list_filter_immediately(filter);
-    }
-
     if finalize {
         app.close_modal();
+        if committed {
+            app.rebuild_visible_entries();
+        }
         maybe_enqueue_auto_detail(app, task_tx)?;
     }
 
@@ -616,7 +616,6 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
     use tokio::sync::mpsc;
 
     #[test]
@@ -633,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn list_filter_typing_is_staged_until_flushed() {
+    fn list_filter_typing_applies_immediately() {
         let mut app = App::new(AppConfig::default());
         app.open_list_filter();
         let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
@@ -646,8 +645,6 @@ mod tests {
         .expect("handle key");
 
         assert!(matches!(app.modal, ModalState::ListFilter { .. }));
-        assert!(app.list_filter().is_empty());
-        assert!(app.flush_staged_filter(Instant::now() + Duration::from_millis(200)));
         assert_eq!(app.list_filter(), "z");
     }
 
