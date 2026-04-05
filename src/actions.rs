@@ -197,6 +197,16 @@ pub(crate) fn validate_action_requests(
         );
     }
 
+    if action == Action::ReAdd {
+        if targets.iter().any(|path| path.is_dir()) {
+            return Some("re-add is available only for files".to_string());
+        }
+
+        if !app.readd_selection_is_eligible() {
+            return Some("re-add is available only for modified files in status view".to_string());
+        }
+    }
+
     if action == Action::Edit
         && targets
             .iter()
@@ -343,6 +353,113 @@ mod tests {
         let message = validate_action_requests(&app, Action::Add, &requests);
         assert!(message.is_some());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn build_action_requests_creates_targeted_readd_requests_for_marked_entries() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_readd_requests_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        std::fs::write(temp_root.join(".a"), "a").expect("write a");
+        std::fs::write(temp_root.join(".b"), "b").expect("write b");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![
+            crate::domain::StatusEntry {
+                path: PathBuf::from(".a"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            crate::domain::StatusEntry {
+                path: PathBuf::from(".b"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(crate::domain::ListView::Status);
+        app.toggle_selected_mark();
+        app.select_next();
+        app.toggle_selected_mark();
+
+        let requests = build_action_requests(&app, Action::ReAdd);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].target.as_ref(), Some(&temp_root.join(".a")));
+        assert_eq!(requests[1].target.as_ref(), Some(&temp_root.join(".b")));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn validate_action_requests_rejects_readd_for_non_modified_status_entries() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_readd_invalid_status_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        std::fs::write(temp_root.join(".gitconfig"), "[user]").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![crate::domain::StatusEntry {
+            path: PathBuf::from(".gitconfig"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Added,
+        }];
+        app.switch_view(crate::domain::ListView::Status);
+
+        let requests = build_action_requests(&app, Action::ReAdd);
+        let message = validate_action_requests(&app, Action::ReAdd, &requests);
+
+        assert_eq!(
+            message.as_deref(),
+            Some("re-add is available only for modified files in status view")
+        );
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn validate_action_requests_rejects_readd_for_directory_targets() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_readd_invalid_dir_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        let managed_dir = temp_root.join(".config");
+        std::fs::create_dir_all(&managed_dir).expect("create dir");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![crate::domain::StatusEntry {
+            path: PathBuf::from(".config"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.switch_view(crate::domain::ListView::Status);
+
+        let requests = build_action_requests(&app, Action::ReAdd);
+        let message = validate_action_requests(&app, Action::ReAdd, &requests);
+
+        assert_eq!(
+            message.as_deref(),
+            Some("re-add is available only for files")
+        );
+
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

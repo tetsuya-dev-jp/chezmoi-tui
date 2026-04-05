@@ -384,45 +384,53 @@ fn handle_action_menu_key(
 ) -> Result<()> {
     let mut selected_action: Option<Action> = None;
     let mut no_action_match = false;
-    let view = app.view;
 
-    let ModalState::ActionMenu { selected, filter } = &mut app.modal else {
-        return Ok(());
+    let (selected_index, filter_text) = match &app.modal {
+        ModalState::ActionMenu { selected, filter } => (*selected, filter.clone()),
+        _ => return Ok(()),
     };
 
     match key.code {
         KeyCode::Esc => app.close_modal(),
         KeyCode::Down => {
-            let indices = App::action_menu_indices(view, filter);
-            if !indices.is_empty() {
-                *selected = (*selected + 1) % indices.len();
+            let indices = app.action_menu_indices(&filter_text);
+            if !indices.is_empty()
+                && let ModalState::ActionMenu { selected, .. } = &mut app.modal
+            {
+                *selected = (selected_index + 1) % indices.len();
             }
         }
         KeyCode::Up => {
-            let indices = App::action_menu_indices(view, filter);
-            if !indices.is_empty() {
-                if *selected == 0 {
-                    *selected = indices.len() - 1;
+            let indices = app.action_menu_indices(&filter_text);
+            if !indices.is_empty()
+                && let ModalState::ActionMenu { selected, .. } = &mut app.modal
+            {
+                *selected = if selected_index == 0 {
+                    indices.len() - 1
                 } else {
-                    *selected -= 1;
-                }
+                    selected_index - 1
+                };
             }
         }
         KeyCode::Backspace => {
-            filter.pop();
-            *selected = 0;
+            if let ModalState::ActionMenu { selected, filter } = &mut app.modal {
+                filter.pop();
+                *selected = 0;
+            }
         }
         KeyCode::Char(c)
             if !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT)
                 && !key.modifiers.contains(KeyModifiers::SUPER) =>
         {
-            filter.push(c);
-            *selected = 0;
+            if let ModalState::ActionMenu { selected, filter } = &mut app.modal {
+                filter.push(c);
+                *selected = 0;
+            }
         }
         KeyCode::Enter => {
-            let indices = App::action_menu_indices(view, filter);
-            if let Some(index) = indices.get(*selected).copied() {
+            let indices = app.action_menu_indices(&filter_text);
+            if let Some(index) = indices.get(selected_index).copied() {
                 selected_action = App::action_by_index(index);
             } else {
                 no_action_match = true;

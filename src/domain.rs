@@ -124,7 +124,7 @@ impl Action {
             Action::EditConfig => "edit chezmoi config file",
             Action::EditConfigTemplate => "edit chezmoi config template",
             Action::EditIgnore => "edit .chezmoiignore",
-            Action::ReAdd => "re-import modified files",
+            Action::ReAdd => "re-import selected modified file",
             Action::Merge => "run 3-way merge",
             Action::MergeAll => "run 3-way merge for all changes",
             Action::Add => "add existing file to managed set",
@@ -152,7 +152,8 @@ impl Action {
     pub fn needs_target(self) -> bool {
         matches!(
             self,
-            Action::Merge
+            Action::ReAdd
+                | Action::Merge
                 | Action::Add
                 | Action::Ignore
                 | Action::Edit
@@ -238,5 +239,14 @@ mod tests {
             chattr_attrs: None,
         };
         assert_eq!(req.confirmation_phrase(), Some("PURGE ALL".to_string()));
+    }
+
+    #[test]
+    fn readd_action_requires_target() {
+        assert!(Action::ReAdd.needs_target());
+        assert_eq!(
+            Action::ReAdd.description(),
+            "re-import selected modified file"
+        );
     }
 }

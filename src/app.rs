@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
-use crate::domain::{Action, ActionRequest, CommandResult, DiffText, ListView, StatusEntry};
+use crate::domain::{
+    Action, ActionRequest, ChangeKind, CommandResult, DiffText, ListView, StatusEntry,
+};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -157,7 +159,7 @@ pub struct App {
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
-    home_dir: PathBuf,
+    pub(crate) home_dir: PathBuf,
     working_dir: PathBuf,
     expanded_dirs: BTreeSet<PathBuf>,
     marked_entries: BTreeSet<PathBuf>,
@@ -569,13 +571,13 @@ impl App {
         Action::ALL.get(index).copied()
     }
 
-    pub fn action_menu_indices(view: ListView, filter: &str) -> Vec<usize> {
+    pub fn action_menu_indices(&self, filter: &str) -> Vec<usize> {
         let query = filter.trim().to_ascii_lowercase();
         let mut matches: Vec<(usize, u8, u8, String)> = Action::ALL
             .iter()
             .enumerate()
             .filter_map(|(index, action)| {
-                if !Self::action_visible_in_view(view, *action) {
+                if !self.action_visible(*action) {
                     return None;
                 }
 
@@ -603,6 +605,55 @@ impl App {
         matches.into_iter().map(|(index, _, _, _)| index).collect()
     }
 
+    pub(crate) fn readd_selection_is_eligible(&self) -> bool {
+        if self.view != ListView::Status {
+            return false;
+        }
+
+        let entries = self.selected_status_entries_for_actions();
+        !entries.is_empty()
+            && entries
+                .iter()
+                .all(|entry| entry.actual_vs_target == ChangeKind::Modified)
+            && entries.iter().all(|entry| {
+                !self
+                    .resolve_path_for_view(&entry.path, ListView::Status)
+                    .is_dir()
+            })
+    }
+
+    fn selected_status_entries_for_actions(&self) -> Vec<&StatusEntry> {
+        if self.view != ListView::Status {
+            return Vec::new();
+        }
+
+        if self.marked_entries.is_empty() {
+            return self
+                .selected_path()
+                .into_iter()
+                .filter_map(|path| self.status_entries.iter().find(|entry| entry.path == path))
+                .collect();
+        }
+
+        self.visible_entries
+            .iter()
+            .filter(|entry| self.marked_entries.contains(&entry.path))
+            .filter_map(|entry| {
+                self.status_entries
+                    .iter()
+                    .find(|status| status.path == entry.path)
+            })
+            .collect()
+    }
+
+    fn action_visible(&self, action: Action) -> bool {
+        if action == Action::ReAdd {
+            return self.readd_selection_is_eligible();
+        }
+
+        Self::action_visible_in_view(self.view, action)
+    }
+
     fn action_section_order(action: Action) -> u8 {
         if action.is_dangerous() {
             2
@@ -620,7 +671,6 @@ impl App {
                     | Action::EditConfig
                     | Action::EditConfigTemplate
                     | Action::EditIgnore
-                    | Action::ReAdd
                     | Action::Merge
                     | Action::MergeAll
                     | Action::Edit
@@ -2029,7 +2079,10 @@ mod tests {
 
     #[test]
     fn action_menu_indices_filters_by_label_only() {
-        let merge = App::action_menu_indices(ListView::Status, "merge");
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Status);
+
+        let merge = app.action_menu_indices("merge");
         assert!(
             merge
                 .iter()
@@ -2042,23 +2095,30 @@ mod tests {
         );
         assert!(!merge.is_empty());
 
-        let attrs = App::action_menu_indices(ListView::Status, "chattr");
+        let attrs = app.action_menu_indices("chattr");
         assert_eq!(attrs.len(), 1);
         assert_eq!(App::action_by_index(attrs[0]), Some(Action::Chattr));
 
-        let by_description_only = App::action_menu_indices(ListView::Status, "attributes");
+        let by_description_only = app.action_menu_indices("attributes");
         assert!(by_description_only.is_empty());
     }
 
     #[test]
     fn action_menu_indices_are_sorted_alphabetically_by_label() {
-        let got = App::action_menu_indices(ListView::Unmanaged, "ad");
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Unmanaged);
+
+        let got = app.action_menu_indices("ad");
         assert_eq!(App::action_by_index(got[0]), Some(Action::Add));
     }
 
     #[test]
     fn action_menu_indices_prioritize_exact_match_over_partial_match() {
-        let got: Vec<Action> = App::action_menu_indices(ListView::Unmanaged, "ignore")
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Unmanaged);
+
+        let got: Vec<Action> = app
+            .action_menu_indices("ignore")
             .into_iter()
             .filter_map(App::action_by_index)
             .collect();
@@ -2077,7 +2137,11 @@ mod tests {
 
     #[test]
     fn action_menu_indices_follow_section_order_for_display_and_execution() {
-        let got: Vec<Action> = App::action_menu_indices(ListView::Managed, "")
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Managed);
+
+        let got: Vec<Action> = app
+            .action_menu_indices("")
             .into_iter()
             .filter_map(App::action_by_index)
             .collect();
@@ -2101,7 +2165,10 @@ mod tests {
 
     #[test]
     fn action_menu_indices_are_filtered_by_view() {
-        let unmanaged = App::action_menu_indices(ListView::Unmanaged, "");
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Unmanaged);
+
+        let unmanaged = app.action_menu_indices("");
         assert!(
             unmanaged
                 .iter()
@@ -2133,7 +2200,10 @@ mod tests {
                 .any(|i| App::action_by_index(*i) == Some(Action::Edit))
         );
 
-        let managed = App::action_menu_indices(ListView::Managed, "");
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Managed);
+
+        let managed = app.action_menu_indices("");
         assert!(
             managed
                 .iter()
@@ -2144,6 +2214,81 @@ mod tests {
                 .iter()
                 .any(|i| App::action_by_index(*i) == Some(Action::Add))
         );
+    }
+
+    #[test]
+    fn readd_action_menu_indices_show_readd_for_modified_status_selection() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_readd_visible_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        fs::write(temp_root.join(".zshrc"), "export ZDOTDIR=$HOME").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.switch_view(ListView::Status);
+
+        let actions: Vec<Action> = app
+            .action_menu_indices("")
+            .into_iter()
+            .filter_map(App::action_by_index)
+            .collect();
+
+        assert!(actions.contains(&Action::ReAdd));
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn readd_action_menu_indices_hide_readd_for_mixed_marked_status_entries() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_readd_hidden_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        fs::write(temp_root.join(".zshrc"), "export ZDOTDIR=$HOME").expect("write file");
+        fs::write(temp_root.join(".gitconfig"), "[user]").expect("write file");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".zshrc"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".gitconfig"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Added,
+            },
+        ];
+        app.switch_view(ListView::Status);
+        app.toggle_selected_mark();
+        app.select_next();
+        app.toggle_selected_mark();
+
+        let actions: Vec<Action> = app
+            .action_menu_indices("")
+            .into_iter()
+            .filter_map(App::action_by_index)
+            .collect();
+
+        assert!(!actions.contains(&Action::ReAdd));
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

@@ -1195,7 +1195,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false });
             frame.render_widget(filter_widget, sections[0]);
 
-            let indices = App::action_menu_indices(app.view, filter);
+            let indices = app.action_menu_indices(filter);
             let actions: Vec<Action> = indices
                 .iter()
                 .filter_map(|index| App::action_by_index(*index))
