@@ -1,5 +1,7 @@
 # chezmoi-tui
 
+<img width="803" height="461" alt="screenshot" src="https://github.com/user-attachments/assets/219eb2c8-7faf-4273-9bc0-0f3ac84cb1ac" />
+
 `chezmoi-tui` is a Rust TUI that makes day-to-day `chezmoi` operations easier to inspect and run.
 It focuses on visual clarity, fast navigation, and safer execution for common workflows.
 
