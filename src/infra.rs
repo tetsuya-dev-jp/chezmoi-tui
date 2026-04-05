@@ -303,7 +303,7 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<OsString>> {
         Action::EditIgnore => {
             bail!("edit-ignore is an internal action and does not map to a chezmoi CLI command")
         }
-        Action::ReAdd => vec![os("re-add")],
+        Action::ReAdd => vec![os("re-add"), os("--"), required_target(target, action)?],
         Action::Merge => {
             let mut args = vec![os("merge")];
             if let Some(path) = target {
@@ -510,6 +510,16 @@ mod tests {
         assert_eq!(
             action_to_args(&chattr).expect("chattr args"),
             vec![os("chattr"), os("--"), os("private,template"), os(".zshrc")]
+        );
+
+        let readd = ActionRequest {
+            action: Action::ReAdd,
+            target: Some(PathBuf::from(".zshrc")),
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&readd).expect("re-add args"),
+            vec![os("re-add"), os("--"), os(".zshrc")]
         );
 
         let ignore = ActionRequest {
