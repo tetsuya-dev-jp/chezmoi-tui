@@ -124,11 +124,11 @@ Action menu:
 
 ## Implemented Actions
 
-Action visibility is view-aware, and `re-add` is available only for selected modified entries in `status`.
+Action visibility is view-aware.
 
 | View | Actions |
 | --- | --- |
-| `status` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add` (selected modified files), `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
+| `status` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add`, `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
 | `managed` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `edit`, `forget`, `chattr`, `destroy`, `purge` |
 | `unmanaged` | `add`, `ignore`, `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
 
@@ -156,7 +156,6 @@ Action visibility is view-aware, and `re-add` is available only for selected mod
 - File preview with extension-based syntax highlighting
 - Tree navigation in `managed` and `unmanaged`
 - Symlink-aware rendering and preview messages (directory link / broken link handling)
-- Targeted `re-add` for the selected modified file or marked modified files in `status`
 - Multi-select batch execution for selected-item actions
 - Log auto-follow with manual scrolling
 - Built-in safe defaults (no application config file)
