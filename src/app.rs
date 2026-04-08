@@ -2695,7 +2695,25 @@ mod tests {
 
     #[test]
     fn unmanaged_view_keeps_managed_ancestors_as_context_for_unmanaged_descendants() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_unmanaged_managed_ancestors_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join(".worktrees/diff-view-ansi/src"))
+            .expect("create source dir");
+        fs::write(
+            temp_root.join(".worktrees/diff-view-ansi/Cargo.lock"),
+            "lock",
+        )
+        .expect("write lock file");
+
         let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
         app.managed_entries = vec![
             PathBuf::from(".worktrees"),
             PathBuf::from(".worktrees/diff-view-ansi"),
@@ -2730,6 +2748,8 @@ mod tests {
         let third = app.current_items();
         assert!(third.iter().any(|line| line.contains("src/")));
         assert!(third.iter().any(|line| line.contains("Cargo.lock")));
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
