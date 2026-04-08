@@ -347,7 +347,12 @@ fn required_target(target: Option<OsString>, action: Action) -> Result<OsString>
 }
 
 fn diff_args(target: Option<&Path>) -> Vec<OsString> {
-    let mut args = vec![os("diff")];
+    let mut args = vec![
+        os("diff"),
+        os("--no-pager"),
+        os("--use-builtin-diff"),
+        os("--color=true"),
+    ];
     if let Some(path) = target {
         args.push(os("--"));
         args.push(path.as_os_str().to_os_string());
@@ -540,7 +545,31 @@ mod tests {
     #[test]
     fn diff_target_args_are_option_safe() {
         let got = diff_args(Some(Path::new("-n")));
-        assert_eq!(got, vec![os("diff"), os("--"), os("-n")]);
+        assert_eq!(
+            got,
+            vec![
+                os("diff"),
+                os("--no-pager"),
+                os("--use-builtin-diff"),
+                os("--color=true"),
+                os("--"),
+                os("-n")
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_args_force_builtin_colorized_diff_without_target() {
+        let got = diff_args(None);
+        assert_eq!(
+            got,
+            vec![
+                os("diff"),
+                os("--no-pager"),
+                os("--use-builtin-diff"),
+                os("--color=true")
+            ]
+        );
     }
 
     #[test]

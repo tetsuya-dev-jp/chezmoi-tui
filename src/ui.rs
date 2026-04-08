@@ -1479,24 +1479,20 @@ fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
     }
 
     let mut out = Vec::new();
-    let mut old_line = 0usize;
-    let mut new_line = 0usize;
-    let mut in_hunk = false;
 
     for raw in diff.lines() {
+        if let Some(line) = ansi_line_to_spans(raw) {
+            out.push(line);
+            continue;
+        }
+
         if raw.starts_with("diff --git ") {
-            in_hunk = false;
-            out.push(Line::from(vec![
-                Span::styled(
-                    " FILE ",
-                    Style::default()
-                        .bg(Color::Blue)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(raw.to_string(), Style::default().fg(Color::Cyan)),
-            ]));
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
             continue;
         }
 
@@ -1515,52 +1511,26 @@ fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
         }
 
         if raw.starts_with("--- ") {
-            out.push(Line::from(vec![
-                Span::styled(
-                    " OLD ",
-                    Style::default()
-                        .bg(Color::Red)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(raw.to_string(), Style::default().fg(Color::Red)),
-            ]));
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Red),
+            )));
             continue;
         }
 
         if raw.starts_with("+++ ") {
-            out.push(Line::from(vec![
-                Span::styled(
-                    " NEW ",
-                    Style::default()
-                        .bg(Color::Green)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(raw.to_string(), Style::default().fg(Color::Green)),
-            ]));
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Green),
+            )));
             continue;
         }
 
         if raw.starts_with("@@") {
-            if let Some((old_start, new_start)) = parse_hunk_header(raw) {
-                old_line = old_start;
-                new_line = new_start;
-                in_hunk = true;
-            }
-            out.push(Line::from(vec![
-                Span::styled(
-                    " HUNK ",
-                    Style::default()
-                        .bg(Color::Yellow)
-                        .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(raw.to_string(), Style::default().fg(Color::Yellow)),
-            ]));
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Yellow),
+            )));
             continue;
         }
 
@@ -1574,43 +1544,28 @@ fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
             continue;
         }
 
-        if in_hunk {
-            if let Some(body) = raw.strip_prefix('+') {
-                out.push(render_diff_code_line(
-                    None,
-                    Some(new_line),
-                    '+',
-                    body,
-                    Style::default().fg(Color::Green).bg(Color::Rgb(12, 32, 12)),
-                ));
-                new_line += 1;
-                continue;
-            }
+        if raw.starts_with('+') {
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Green).bg(Color::Rgb(12, 32, 12)),
+            )));
+            continue;
+        }
 
-            if let Some(body) = raw.strip_prefix('-') {
-                out.push(render_diff_code_line(
-                    Some(old_line),
-                    None,
-                    '-',
-                    body,
-                    Style::default().fg(Color::Red).bg(Color::Rgb(40, 14, 14)),
-                ));
-                old_line += 1;
-                continue;
-            }
+        if raw.starts_with('-') {
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Red).bg(Color::Rgb(40, 14, 14)),
+            )));
+            continue;
+        }
 
-            if let Some(body) = raw.strip_prefix(' ') {
-                out.push(render_diff_code_line(
-                    Some(old_line),
-                    Some(new_line),
-                    ' ',
-                    body,
-                    Style::default().fg(Color::Gray),
-                ));
-                old_line += 1;
-                new_line += 1;
-                continue;
-            }
+        if raw.starts_with(' ') {
+            out.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(Color::Gray),
+            )));
+            continue;
         }
 
         out.push(Line::from(raw.to_string()));
@@ -1619,65 +1574,125 @@ fn colorized_diff_lines(diff: &str) -> Vec<Line<'static>> {
     out
 }
 
-fn parse_hunk_header(header: &str) -> Option<(usize, usize)> {
-    let mut parts = header.split_whitespace();
-    let at1 = parts.next()?;
-    let old = parts.next()?;
-    let new = parts.next()?;
-    let at2 = parts.next()?;
-
-    if at1 != "@@" || at2 != "@@" {
+fn ansi_line_to_spans(input: &str) -> Option<Line<'static>> {
+    if !input.contains('\u{1b}') {
         return None;
     }
 
-    let old_start = old
-        .strip_prefix('-')?
-        .split(',')
-        .next()?
-        .parse::<usize>()
-        .ok()?;
-    let new_start = new
-        .strip_prefix('+')?
-        .split(',')
-        .next()?
-        .parse::<usize>()
-        .ok()?;
+    let mut spans = Vec::new();
+    let mut text = String::new();
+    let mut chars = input.chars().peekable();
+    let mut style = Style::default();
 
-    Some((old_start, new_start))
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && matches!(chars.peek(), Some('[')) {
+            if !text.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut text), style));
+            }
+            chars.next();
+
+            let mut params = String::new();
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    if next == 'm' {
+                        style = apply_ansi_sgr(style, &params);
+                    }
+                    break;
+                }
+                params.push(next);
+            }
+            continue;
+        }
+
+        text.push(ch);
+    }
+
+    if !text.is_empty() {
+        spans.push(Span::styled(text, style));
+    }
+
+    Some(Line::from(spans))
 }
 
-fn render_diff_code_line(
-    old: Option<usize>,
-    new: Option<usize>,
-    marker: char,
-    body: &str,
-    body_style: Style,
-) -> Line<'static> {
-    let old_num = old.map_or_else(String::new, |n| n.to_string());
-    let new_num = new.map_or_else(String::new, |n| n.to_string());
-
-    let marker_style = match marker {
-        '+' => Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-        '-' => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        _ => Style::default().fg(Color::DarkGray),
+fn apply_ansi_sgr(mut style: Style, params: &str) -> Style {
+    let codes: Vec<u16> = if params.is_empty() {
+        vec![0]
+    } else {
+        params
+            .split(';')
+            .filter_map(|part| part.parse::<u16>().ok())
+            .collect()
     };
 
-    Line::from(vec![
-        Span::styled(
-            format!("{old_num:>5}"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{new_num:>5}"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw(" | "),
-        Span::styled(format!("{marker} "), marker_style),
-        Span::styled(body.to_string(), body_style),
-    ])
+    let mut i = 0usize;
+    while i < codes.len() {
+        match codes[i] {
+            0 => style = Style::default(),
+            1 => style = style.add_modifier(Modifier::BOLD),
+            3 => style = style.add_modifier(Modifier::ITALIC),
+            4 => style = style.add_modifier(Modifier::UNDERLINED),
+            22 => style = style.remove_modifier(Modifier::BOLD),
+            23 => style = style.remove_modifier(Modifier::ITALIC),
+            24 => style = style.remove_modifier(Modifier::UNDERLINED),
+            30..=37 => style = style.fg(ansi_basic_color(codes[i])),
+            39 => style.fg = None,
+            40..=47 => style = style.bg(ansi_basic_color(codes[i] - 10)),
+            49 => style.bg = None,
+            90..=97 => style = style.fg(ansi_bright_color(codes[i])),
+            100..=107 => style = style.bg(ansi_bright_color(codes[i] - 10)),
+            38 | 48 => {
+                let is_fg = codes[i] == 38;
+                if let Some((color, consumed)) = parse_ansi_extended_color(&codes[i + 1..]) {
+                    style = if is_fg {
+                        style.fg(color)
+                    } else {
+                        style.bg(color)
+                    };
+                    i += consumed;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    style
+}
+
+fn parse_ansi_extended_color(codes: &[u16]) -> Option<(Color, usize)> {
+    match codes {
+        [5, index, ..] => Some((Color::Indexed(*index as u8), 2)),
+        [2, r, g, b, ..] => Some((Color::Rgb(*r as u8, *g as u8, *b as u8), 4)),
+        _ => None,
+    }
+}
+
+fn ansi_basic_color(code: u16) -> Color {
+    match code {
+        30 => Color::Black,
+        31 => Color::Red,
+        32 => Color::Green,
+        33 => Color::Yellow,
+        34 => Color::Blue,
+        35 => Color::Magenta,
+        36 => Color::Cyan,
+        37 => Color::Gray,
+        _ => Color::Reset,
+    }
+}
+
+fn ansi_bright_color(code: u16) -> Color {
+    match code {
+        90 => Color::DarkGray,
+        91 => Color::LightRed,
+        92 => Color::LightGreen,
+        93 => Color::LightYellow,
+        94 => Color::LightBlue,
+        95 => Color::LightMagenta,
+        96 => Color::LightCyan,
+        97 => Color::White,
+        _ => Color::Reset,
+    }
 }
 
 fn colorized_preview_lines(path: Option<&Path>, content: &str) -> Vec<Line<'static>> {
@@ -1938,24 +1953,60 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::{
         ActionMenuRow, ActionMenuSection, action_menu_rows, action_menu_text,
-        build_action_menu_rows, cheat_groups, cheat_groups_width, fit_cheat_groups, footer_hints,
-        footer_left, hints_width, layout_hints, log_scroll_offset, parse_hunk_header,
+        build_action_menu_rows, cheat_groups, cheat_groups_width, colorized_diff_lines,
+        fit_cheat_groups, footer_hints, footer_left, hints_width, layout_hints, log_scroll_offset,
     };
     use crate::app::{App, PaneFocus};
     use crate::config::AppConfig;
     use crate::domain::Action;
     use crate::domain::ListView;
+    use ratatui::style::Color;
+    use ratatui::text::Line;
 
-    #[test]
-    fn parse_hunk_header_extracts_line_numbers() {
-        let parsed = parse_hunk_header("@@ -12,7 +30,9 @@ fn main()");
-        assert_eq!(parsed, Some((12, 30)));
+    fn render_line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
     }
 
     #[test]
-    fn parse_hunk_header_rejects_invalid_header() {
-        let parsed = parse_hunk_header("@ -12 +30 @");
-        assert_eq!(parsed, None);
+    fn colorized_diff_lines_normalize_ansi_wrapped_diff_output() {
+        let diff = concat!(
+            "\u{1b}[34mdiff --git a/.zshrc b/.zshrc\u{1b}[0m\n",
+            "\u{1b}[31m--- a/.zshrc\u{1b}[0m\n",
+            "\u{1b}[32m+++ b/.zshrc\u{1b}[0m\n",
+            "\u{1b}[33m@@ -1,1 +1,1 @@\u{1b}[0m\n",
+            "\u{1b}[31m-old\u{1b}[0m\n",
+            "\u{1b}[32m+new\u{1b}[0m\n",
+        );
+
+        let lines = colorized_diff_lines(diff);
+        let rendered: Vec<String> = lines.iter().map(render_line_text).collect();
+
+        assert!(rendered.iter().all(|line| !line.contains('\u{1b}')));
+        assert_eq!(rendered[0], "diff --git a/.zshrc b/.zshrc");
+        assert_eq!(rendered[1], "--- a/.zshrc");
+        assert_eq!(rendered[2], "+++ b/.zshrc");
+        assert_eq!(rendered[3], "@@ -1,1 +1,1 @@");
+        assert_eq!(rendered[4], "-old");
+        assert_eq!(rendered[5], "+new");
+    }
+
+    #[test]
+    fn colorized_diff_lines_preserve_ansi_colors_when_present() {
+        let diff = "\u{1b}[38;5;81mdiff --git a/.zshrc b/.zshrc\u{1b}[0m\n\u{1b}[38;5;203m-old\u{1b}[0m\n\u{1b}[38;5;149m+new\u{1b}[0m\n";
+
+        let lines = colorized_diff_lines(diff);
+
+        assert_eq!(render_line_text(&lines[0]), "diff --git a/.zshrc b/.zshrc");
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Indexed(81)));
+
+        assert_eq!(render_line_text(&lines[1]), "-old");
+        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Indexed(203)));
+
+        assert_eq!(render_line_text(&lines[2]), "+new");
+        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Indexed(149)));
     }
 
     #[test]
