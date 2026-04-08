@@ -812,9 +812,18 @@ impl App {
         let mut entries = Vec::new();
 
         if self.view == ListView::Unmanaged {
-            for base in base_paths {
-                self.push_visible_recursive(&base, 0, &mut entries, &mut seen, false);
+            if self
+                .unmanaged_entries
+                .iter()
+                .any(|path| path == Path::new("."))
+            {
+                for base in base_paths {
+                    self.push_visible_recursive(&base, 0, &mut entries, &mut seen, false);
+                }
+                return entries;
             }
+
+            self.push_unmanaged_visible_entries(&mut entries, false);
             return entries;
         }
 
@@ -1215,6 +1224,115 @@ impl App {
 
         for child in self.read_children(path) {
             self.push_visible_recursive(&child, depth + 1, out, seen, force_expand);
+        }
+    }
+
+    fn push_unmanaged_visible_entries(&self, out: &mut Vec<VisibleEntry>, force_expand: bool) {
+        let nodes = self.unmanaged_tree_nodes();
+
+        if nodes.is_empty() {
+            return;
+        }
+
+        let mut children: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        let mut roots = Vec::new();
+
+        for node in &nodes {
+            let parent = node.parent().map(Path::to_path_buf);
+            if let Some(parent) = parent
+                && !parent.as_os_str().is_empty()
+                && nodes.contains(&parent)
+            {
+                children.entry(parent).or_default().push(node.clone());
+            } else {
+                roots.push(node.clone());
+            }
+        }
+
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        }
+        roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+
+        let mut seen = HashSet::new();
+        for root in &roots {
+            self.push_unmanaged_visible_recursive(root, 0, out, &children, &mut seen, force_expand);
+        }
+    }
+
+    fn unmanaged_tree_nodes(&self) -> BTreeSet<PathBuf> {
+        let mut nodes = BTreeSet::new();
+
+        for unmanaged in &self.unmanaged_entries {
+            if unmanaged.as_os_str().is_empty() || unmanaged == Path::new(".") {
+                continue;
+            }
+
+            let mut current = unmanaged.clone();
+            loop {
+                if current.as_os_str().is_empty() {
+                    break;
+                }
+                nodes.insert(current.clone());
+
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                current = parent.to_path_buf();
+            }
+        }
+
+        nodes
+    }
+
+    fn push_unmanaged_visible_recursive(
+        &self,
+        path: &Path,
+        depth: usize,
+        out: &mut Vec<VisibleEntry>,
+        children: &BTreeMap<PathBuf, Vec<PathBuf>>,
+        seen: &mut HashSet<PathBuf>,
+        force_expand: bool,
+    ) {
+        if !seen.insert(path.to_path_buf()) {
+            return;
+        }
+
+        let virtual_children = children.get(path).cloned().unwrap_or_default();
+        let directory = Self::directory_state_with_base(path, &self.working_dir);
+        let is_dir = !virtual_children.is_empty() || directory.is_dir;
+        let can_expand = !virtual_children.is_empty() || directory.can_expand;
+        out.push(VisibleEntry {
+            path: path.to_path_buf(),
+            depth,
+            is_dir,
+            can_expand,
+            is_symlink: directory.is_symlink,
+        });
+
+        if !can_expand || (!force_expand && !self.expanded_dirs.contains(path)) {
+            return;
+        }
+
+        let mut child_paths = virtual_children;
+        if directory.can_expand {
+            child_paths.extend(self.read_children(path));
+        }
+        child_paths.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        child_paths.dedup();
+
+        for child in child_paths {
+            self.push_unmanaged_visible_recursive(
+                &child,
+                depth + 1,
+                out,
+                children,
+                seen,
+                force_expand,
+            );
         }
     }
 
@@ -2451,6 +2569,79 @@ mod tests {
         assert!(items.iter().any(|line| line.contains("chezmoi-tui/")));
         assert!(items.iter().any(|line| line.contains("src/")));
         assert!(items.iter().any(|line| line.contains("main.rs")));
+    }
+
+    #[test]
+    fn unmanaged_view_keeps_ancestors_for_deep_entries_without_root_placeholder() {
+        let mut app = App::new(AppConfig::default());
+        app.unmanaged_entries = vec![
+            PathBuf::from("dev/agent/.claude"),
+            PathBuf::from("dev/agent/src/main.rs"),
+        ];
+        app.switch_view(ListView::Unmanaged);
+
+        let initial = app.current_items();
+        assert!(initial.iter().any(|line| line.contains("dev/")));
+        assert!(!initial.iter().any(|line| line.contains("agent/")));
+        assert!(!initial.iter().any(|line| line.contains("main.rs")));
+
+        assert!(app.expand_selected_directory());
+        let second = app.current_items();
+        assert!(second.iter().any(|line| line.contains("agent/")));
+        assert!(!second.iter().any(|line| line.contains(".claude")));
+        assert!(!second.iter().any(|line| line.contains("main.rs")));
+
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        let third = app.current_items();
+        assert!(third.iter().any(|line| line.contains(".claude")));
+        assert!(third.iter().any(|line| line.contains("src/")));
+        assert!(!third.iter().any(|line| line.contains("main.rs")));
+
+        app.select_next();
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        let fourth = app.current_items();
+        assert!(fourth.iter().any(|line| line.contains("main.rs")));
+    }
+
+    #[test]
+    fn unmanaged_view_keeps_managed_ancestors_as_context_for_unmanaged_descendants() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![
+            PathBuf::from(".worktrees"),
+            PathBuf::from(".worktrees/diff-view-ansi"),
+        ];
+        app.unmanaged_entries = vec![
+            PathBuf::from(".worktrees/diff-view-ansi/src"),
+            PathBuf::from(".worktrees/diff-view-ansi/Cargo.lock"),
+        ];
+        app.switch_view(ListView::Unmanaged);
+
+        let initial = app.current_items();
+        assert!(initial.iter().any(|line| line.contains(".worktrees/")));
+        assert!(
+            !initial
+                .iter()
+                .any(|line| line.contains("diff-view-ansi/src/"))
+        );
+        assert!(!initial.iter().any(|line| line.contains("Cargo.lock")));
+
+        assert!(app.expand_selected_directory());
+        let second = app.current_items();
+        assert!(second.iter().any(|line| line.contains("diff-view-ansi/")));
+        assert!(
+            !second
+                .iter()
+                .any(|line| line.contains("diff-view-ansi/src/"))
+        );
+        assert!(!second.iter().any(|line| line.contains("Cargo.lock")));
+
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        let third = app.current_items();
+        assert!(third.iter().any(|line| line.contains("src/")));
+        assert!(third.iter().any(|line| line.contains("Cargo.lock")));
     }
 
     #[test]
