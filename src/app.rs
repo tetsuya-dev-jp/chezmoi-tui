@@ -1373,7 +1373,7 @@ impl App {
         let mut nodes = BTreeSet::new();
 
         for managed in &self.managed_entries {
-            if !self.managed_entry_should_seed_tree(managed) {
+            if managed.as_os_str().is_empty() {
                 continue;
             }
 
@@ -1395,22 +1395,6 @@ impl App {
         }
 
         nodes
-    }
-
-    fn managed_entry_should_seed_tree(&self, managed: &Path) -> bool {
-        if managed.as_os_str().is_empty() {
-            return false;
-        }
-
-        if self
-            .managed_entries
-            .iter()
-            .any(|other| other != managed && other.starts_with(managed))
-        {
-            return false;
-        }
-
-        !Self::directory_state_with_base(managed, &self.home_dir).is_dir
     }
 
     fn push_managed_visible_recursive(
@@ -2146,7 +2130,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_view_hides_directory_only_branch_without_managed_files() {
+    fn managed_view_keeps_directory_only_branch_without_managed_files() {
         let temp_root = std::env::temp_dir().join(format!(
             "chezmoi_tui_managed_empty_branch_{}_{}",
             std::process::id(),
@@ -2168,13 +2152,23 @@ mod tests {
         ];
         app.switch_view(ListView::Managed);
 
-        assert!(app.current_items().is_empty());
+        let first = app.current_items();
+        assert!(first.iter().any(|line| line.contains("dev/")));
+
+        assert!(app.expand_selected_directory());
+        let second = app.current_items();
+        assert!(second.iter().any(|line| line.contains("project/")));
+
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        let third = app.current_items();
+        assert!(third.iter().any(|line| line.contains(".worktrees/")));
 
         let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
-    fn managed_view_keeps_only_branches_that_still_have_managed_files() {
+    fn managed_view_keeps_directory_only_and_file_backed_branches() {
         let temp_root = std::env::temp_dir().join(format!(
             "chezmoi_tui_managed_keep_branch_{}_{}",
             std::process::id(),
@@ -2212,7 +2206,7 @@ mod tests {
         assert!(app.expand_selected_directory());
         let third = app.current_items();
         assert!(third.iter().any(|line| line.contains("keep/")));
-        assert!(!third.iter().any(|line| line.contains(".worktrees/")));
+        assert!(third.iter().any(|line| line.contains(".worktrees/")));
 
         let _ = fs::remove_dir_all(temp_root);
     }
