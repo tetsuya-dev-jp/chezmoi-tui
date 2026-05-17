@@ -42,11 +42,12 @@ pub(crate) fn handle_backend_event(
         BackendEvent::PreviewLoaded {
             request_id,
             target,
+            origin,
             content,
         } => {
             app.finish_busy_task();
             if app.accepts_detail_request(request_id) {
-                app.set_detail_preview(&target, content);
+                app.set_detail_preview(&target, origin, content);
             }
         }
         BackendEvent::ActionFinished { request, result } => {
@@ -135,6 +136,7 @@ pub(crate) fn handle_key_event(
         ModalState::AddOptions { .. } => handle_add_options_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
+        ModalState::ApplyPlan { .. } => handle_apply_plan_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
     }
 }
@@ -288,6 +290,7 @@ fn handle_key_without_modal(
                         request_id,
                         target,
                         absolute,
+                        origin: app.preview_origin_for_view(app.view),
                     },
                 )?;
             }
@@ -632,6 +635,43 @@ fn handle_action_menu_key(
     Ok(())
 }
 
+fn handle_apply_plan_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    let request = match &app.modal {
+        ModalState::ApplyPlan { request, .. } => request.clone(),
+        _ => return Ok(()),
+    };
+
+    match key.code {
+        KeyCode::Esc => app.close_modal(),
+        KeyCode::Enter => {
+            app.close_modal();
+            if request.action.requires_confirmation() && !app.batch_confirmed() {
+                app.open_confirm(request);
+            } else {
+                execute_action_request(app, task_tx, request)?;
+            }
+        }
+        KeyCode::Char('d') => {
+            let request_id = app.begin_detail_request();
+            send_task(
+                app,
+                task_tx,
+                BackendTask::LoadDiff {
+                    request_id,
+                    target: None,
+                },
+            )?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn handle_confirm_key(
     app: &mut App,
     key: KeyEvent,
@@ -789,6 +829,7 @@ mod tests {
             BackendEvent::PreviewLoaded {
                 request_id: 1,
                 target: PathBuf::from("a"),
+                origin: crate::app::PreviewOrigin::Destination,
                 content: "a".to_string(),
             },
         )
@@ -985,6 +1026,7 @@ mod tests {
             BackendEvent::PreviewLoaded {
                 request_id: stale_request_id,
                 target: PathBuf::from("old.txt"),
+                origin: crate::app::PreviewOrigin::Destination,
                 content: "old".to_string(),
             },
         )
@@ -997,6 +1039,7 @@ mod tests {
             BackendEvent::PreviewLoaded {
                 request_id: latest_request_id,
                 target: PathBuf::from("new.txt"),
+                origin: crate::app::PreviewOrigin::Destination,
                 content: "new".to_string(),
             },
         )
@@ -1148,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_opens_confirmation_before_execution() {
+    fn apply_opens_plan_before_confirmation() {
         let mut app = App::new(AppConfig::default());
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
 
@@ -1162,6 +1205,36 @@ mod tests {
             },
         )
         .expect("dispatch apply");
+
+        assert!(matches!(
+            app.modal,
+            ModalState::ApplyPlan {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(task_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn apply_plan_enter_opens_confirmation() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.open_apply_plan(ActionRequest {
+            action: Action::Apply,
+            target: None,
+            chattr_attrs: None,
+        });
+
+        handle_apply_plan_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("continue from apply plan");
 
         assert!(matches!(
             app.modal,

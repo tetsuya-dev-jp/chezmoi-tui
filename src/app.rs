@@ -40,6 +40,42 @@ pub enum DetailKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewOrigin {
+    Destination,
+    WorkingDirectory,
+    Source,
+}
+
+impl PreviewOrigin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Destination => "destination",
+            Self::WorkingDirectory => "cwd",
+            Self::Source => "source",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApplyPlan {
+    pub added: Vec<PathBuf>,
+    pub modified: Vec<PathBuf>,
+    pub deleted: Vec<PathBuf>,
+    pub run: Vec<PathBuf>,
+    pub unknown: Vec<PathBuf>,
+}
+
+impl ApplyPlan {
+    pub fn total(&self) -> usize {
+        self.added.len()
+            + self.modified.len()
+            + self.deleted.len()
+            + self.run.len()
+            + self.unknown.len()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoticeTone {
     Info,
     Success,
@@ -91,6 +127,10 @@ pub enum ModalState {
         step: ConfirmStep,
         typed: String,
     },
+    ApplyPlan {
+        request: ActionRequest,
+        plan: ApplyPlan,
+    },
     Input {
         kind: InputKind,
         request: ActionRequest,
@@ -109,6 +149,7 @@ pub enum BackendTask {
         request_id: u64,
         target: PathBuf,
         absolute: PathBuf,
+        origin: PreviewOrigin,
     },
     RunAction {
         request: ActionRequest,
@@ -132,6 +173,7 @@ pub enum BackendEvent {
     PreviewLoaded {
         request_id: u64,
         target: PathBuf,
+        origin: PreviewOrigin,
         content: String,
     },
     ActionFinished {
@@ -919,12 +961,52 @@ impl App {
         self.detail_scroll = 0;
     }
 
-    pub fn set_detail_preview(&mut self, target: &Path, content: String) {
+    pub fn set_detail_preview(&mut self, target: &Path, origin: PreviewOrigin, content: String) {
         self.detail_kind = DetailKind::Preview;
-        self.detail_title = format!("Preview: {}", target.display());
+        self.detail_title = format!("Preview({}): {}", origin.label(), target.display());
         self.detail_text = content;
         self.detail_target = Some(target.to_path_buf());
         self.detail_scroll = 0;
+    }
+
+    pub fn view_context_text(&self) -> String {
+        let (label, path) = match self.view {
+            ListView::Status | ListView::Managed => ("dest", &self.home_dir),
+            ListView::Unmanaged => ("cwd", &self.working_dir),
+            ListView::Source => (
+                "source",
+                self.config.source_dir.as_ref().unwrap_or(&self.working_dir),
+            ),
+        };
+        format!("{label}={}", path.display())
+    }
+
+    pub fn preview_origin_for_view(&self, view: ListView) -> PreviewOrigin {
+        match view {
+            ListView::Status | ListView::Managed => PreviewOrigin::Destination,
+            ListView::Unmanaged => PreviewOrigin::WorkingDirectory,
+            ListView::Source => PreviewOrigin::Source,
+        }
+    }
+
+    pub fn build_apply_plan(&self) -> ApplyPlan {
+        let mut plan = ApplyPlan::default();
+        for entry in &self.status_entries {
+            match entry.actual_vs_target {
+                ChangeKind::Added => plan.added.push(entry.path.clone()),
+                ChangeKind::Modified => plan.modified.push(entry.path.clone()),
+                ChangeKind::Deleted => plan.deleted.push(entry.path.clone()),
+                ChangeKind::Run => plan.run.push(entry.path.clone()),
+                ChangeKind::Unknown(_) => plan.unknown.push(entry.path.clone()),
+                ChangeKind::None => {}
+            }
+        }
+        plan
+    }
+
+    pub fn open_apply_plan(&mut self, request: ActionRequest) {
+        let plan = self.build_apply_plan();
+        self.modal = ModalState::ApplyPlan { request, plan };
     }
 
     pub fn clear_detail(&mut self) {
@@ -2531,7 +2613,11 @@ mod tests {
     #[test]
     fn detail_scroll_is_clamped() {
         let mut app = App::new(AppConfig::default());
-        app.set_detail_preview(Path::new(".config/test.txt"), "a\nb\nc\nd\ne".to_string());
+        app.set_detail_preview(
+            Path::new(".config/test.txt"),
+            PreviewOrigin::Destination,
+            "a\nb\nc\nd\ne".to_string(),
+        );
         assert!(app.scroll_detail_down(2));
         assert_eq!(app.detail_scroll, 2);
         assert!(app.scroll_detail_down(100));
@@ -2569,7 +2655,11 @@ mod tests {
     #[test]
     fn clear_detail_resets_preview_state() {
         let mut app = App::new(AppConfig::default());
-        app.set_detail_preview(Path::new(".config/test.txt"), "hello".to_string());
+        app.set_detail_preview(
+            Path::new(".config/test.txt"),
+            PreviewOrigin::Destination,
+            "hello".to_string(),
+        );
         assert!(!app.detail_text.is_empty());
         assert!(app.detail_target.is_some());
         app.clear_detail();
@@ -2592,6 +2682,76 @@ mod tests {
 
         app.managed_entries = vec![PathBuf::from(".gitconfig")];
         assert!(!app.selected_is_managed());
+    }
+
+    #[test]
+    fn view_context_text_uses_view_base_paths() {
+        let config = AppConfig {
+            destination_dir: Some(PathBuf::from("/tmp/home")),
+            source_dir: Some(PathBuf::from("/tmp/source")),
+            working_dir: PathBuf::from("/tmp/work"),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+
+        app.switch_view(ListView::Status);
+        assert_eq!(app.view_context_text(), "dest=/tmp/home");
+        app.switch_view(ListView::Managed);
+        assert_eq!(app.view_context_text(), "dest=/tmp/home");
+        app.switch_view(ListView::Unmanaged);
+        assert_eq!(app.view_context_text(), "cwd=/tmp/work");
+        app.switch_view(ListView::Source);
+        assert_eq!(app.view_context_text(), "source=/tmp/source");
+    }
+
+    #[test]
+    fn preview_title_includes_origin() {
+        let mut app = App::new(AppConfig::default());
+        app.set_detail_preview(
+            Path::new(".zshrc"),
+            PreviewOrigin::Destination,
+            "content".to_string(),
+        );
+        assert_eq!(app.detail_title, "Preview(destination): .zshrc");
+    }
+
+    #[test]
+    fn apply_plan_groups_status_entries_by_target_change_kind() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from("added"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Added,
+            },
+            StatusEntry {
+                path: PathBuf::from("modified"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from("deleted"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Deleted,
+            },
+            StatusEntry {
+                path: PathBuf::from("script"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Run,
+            },
+            StatusEntry {
+                path: PathBuf::from("clean"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::None,
+            },
+        ];
+
+        let plan = app.build_apply_plan();
+        assert_eq!(plan.total(), 4);
+        assert_eq!(plan.added, vec![PathBuf::from("added")]);
+        assert_eq!(plan.modified, vec![PathBuf::from("modified")]);
+        assert_eq!(plan.deleted, vec![PathBuf::from("deleted")]);
+        assert_eq!(plan.run, vec![PathBuf::from("script")]);
     }
 
     #[test]

@@ -317,6 +317,13 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
         badge: true,
     }];
 
+    segments.push(LeftSegment {
+        text: compact_label(&app.view_context_text(), 42),
+        style: Style::default().fg(Color::DarkGray),
+        essential: false,
+        badge: false,
+    });
+
     if app.is_busy() {
         segments.push(LeftSegment {
             text: "Busy".to_string(),
@@ -1441,6 +1448,53 @@ fn draw_modal(frame: &mut Frame, app: &App) {
 
             frame.render_widget(p, area);
         }
+        ModalState::ApplyPlan { request, plan } => {
+            let area = centered_rect(74, 58, frame.area());
+            frame.render_widget(Clear, area);
+
+            let mut lines = vec![
+                Line::from(format!("action: {}", request.action.label())),
+                Line::from(format!("total changes: {}", plan.total())),
+                Line::from(""),
+                Line::from(format!("Added: {}", plan.added.len())),
+                Line::from(format!("Modified: {}", plan.modified.len())),
+                Line::from(format!("Deleted: {}", plan.deleted.len())),
+                Line::from(format!("Run scripts: {}", plan.run.len())),
+                Line::from(format!("Unknown: {}", plan.unknown.len())),
+            ];
+
+            if plan.total() == 0 {
+                lines.push(Line::from(""));
+                lines.push(Line::from("No pending status entries were loaded."));
+            }
+            if !plan.run.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(
+                    Line::from("Warning: apply may run scripts.")
+                        .style(Style::default().fg(Color::LightYellow)),
+                );
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from("Sample paths:"));
+            for path in apply_plan_sample_paths(plan, 8) {
+                lines.push(Line::from(format!("  {}", path.display())));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "Enter: continue to confirmation  d: diff  Esc: cancel",
+            ));
+
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Apply Plan ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
         ModalState::Input {
             kind,
             request,
@@ -1577,6 +1631,18 @@ fn action_menu_item(action: Action) -> ListItem<'static> {
         Style::default().fg(Color::Gray)
     };
     ListItem::new(Line::styled(text, style))
+}
+
+fn apply_plan_sample_paths(plan: &crate::app::ApplyPlan, limit: usize) -> Vec<std::path::PathBuf> {
+    plan.added
+        .iter()
+        .chain(plan.modified.iter())
+        .chain(plan.deleted.iter())
+        .chain(plan.run.iter())
+        .chain(plan.unknown.iter())
+        .take(limit)
+        .cloned()
+        .collect()
 }
 
 fn action_menu_row_item(row: ActionMenuRow) -> ListItem<'static> {

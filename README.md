@@ -89,8 +89,10 @@ chezmoi-tui --no-auto-preview
 2. Switch views with `1`/`2`/`3`/`4`.
 3. Move with `j`/`k` or arrow keys.
 4. In `status`, diff is auto-loaded for selected file.
-5. In `managed` / `unmanaged`, preview is auto-loaded for selected file.
+5. In `managed` / `unmanaged` / `source`, preview is auto-loaded for selected file with its origin in the detail title.
 6. Use `Space` to mark multiple items and run batch actions from `a`.
+
+The footer shows the active view base path, for example `dest=/home/user`, `cwd=/work/project`, or `source=~/.local/share/chezmoi`.
 
 ## Keybindings
 
@@ -168,6 +170,7 @@ Action visibility is view-aware.
 - `destroy` and `purge` require typed confirmation phrases.
 - Dangerous actions are hidden from plain action-menu filtering; use `danger:destroy` or `danger:purge` to filter them explicitly.
 - Confirmation is also required for broad or state-changing actions: `apply`, `update`, `merge-all`, `forget`, `chattr`.
+- `apply` opens an Apply Plan summary before the normal confirmation.
 - Batch confirmation is reused for remaining queued non-dangerous items after the first confirmation.
 - Dangerous batch items require per-target confirmation.
 - `edit` is restricted to managed files.

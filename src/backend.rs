@@ -106,6 +106,7 @@ pub(crate) async fn worker_loop(
                 request_id,
                 target,
                 absolute,
+                origin,
             } => {
                 let result =
                     tokio::task::spawn_blocking(move || load_file_preview(&absolute)).await;
@@ -115,6 +116,7 @@ pub(crate) async fn worker_loop(
                             .send(BackendEvent::PreviewLoaded {
                                 request_id,
                                 target,
+                                origin,
                                 content,
                             })
                             .is_err()

@@ -95,6 +95,7 @@ fn maybe_enqueue_unmanaged_preview(
             request_id,
             target,
             absolute,
+            origin: app.preview_origin_for_view(ListView::Unmanaged),
         },
     )
 }
@@ -127,6 +128,7 @@ fn maybe_enqueue_managed_preview(
             request_id,
             target,
             absolute,
+            origin: app.preview_origin_for_view(ListView::Managed),
         },
     )
 }
@@ -159,6 +161,7 @@ fn maybe_enqueue_source_preview(
             request_id,
             target,
             absolute,
+            origin: app.preview_origin_for_view(ListView::Source),
         },
     )
 }
