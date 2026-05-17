@@ -137,8 +137,18 @@ Action menu:
 | type text | Filter by action label |
 | `danger:<action>` | Filter dangerous actions (`destroy`, `purge`) |
 | `↑` / `↓` | Move |
-| `Enter` | Execute |
+| `Enter` | Continue to preflight or execute low-risk action |
 | `Esc` | Close |
+
+Preflight / Apply Plan modals:
+
+| Key | Behavior |
+| --- | --- |
+| `j` / `k` or `↑` / `↓` | Scroll review content |
+| `PgUp` / `PgDn` | Page review content |
+| `Enter` | Continue to confirmation/execution |
+| `Esc` | Cancel before running |
+| `d` | Load full diff from Apply Plan |
 
 ## Implemented Actions
 
@@ -172,7 +182,11 @@ Action visibility is view-aware.
 - `destroy` and `purge` require typed confirmation phrases.
 - Dangerous actions are hidden from plain action-menu filtering; use `danger:destroy` or `danger:purge` to filter them explicitly.
 - Confirmation is also required for broad or state-changing actions: `apply`, `update`, `merge-all`, `forget`, `chattr`.
-- `apply` opens an Apply Plan summary before the normal confirmation.
+- Broad or risky operations open a preflight review before execution.
+- Preflight shows the action, impact, command preview, and affected targets.
+- `apply` opens an Apply Plan review before the normal confirmation.
+- Apply Plan lists every pending change grouped by added/modified/deleted/run/unknown.
+- Multi-target operations show all selected targets before any command runs.
 - Batch confirmation is reused for remaining queued non-dangerous items after the first confirmation.
 - Dangerous batch items require per-target confirmation.
 - `edit` is restricted to managed files.
@@ -219,6 +233,8 @@ CLI flags override config file values. Use `--config <path>` to load a specific 
 - Symlink-aware rendering and preview messages (directory link / broken link handling)
 - Multi-select batch execution for selected-item actions
 - Log auto-follow with manual scrolling
+- Busy indicator includes the current task when available
+- Common errors include recovery hints in the notice/log
 - Built-in safe defaults (no application config file)
 
 ## Development

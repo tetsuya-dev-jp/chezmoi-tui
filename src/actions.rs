@@ -19,11 +19,31 @@ pub(crate) fn send_task(
     task_tx: &UnboundedSender<BackendTask>,
     task: BackendTask,
 ) -> Result<()> {
+    let label = backend_task_label(&task);
     task_tx
         .send(task)
         .map_err(|err| anyhow::anyhow!("failed to dispatch task: {err}"))?;
-    app.begin_busy_task();
+    app.begin_busy_task_with_message(label);
     Ok(())
+}
+
+fn backend_task_label(task: &BackendTask) -> String {
+    match task {
+        BackendTask::RefreshAll => "refresh".to_string(),
+        BackendTask::LoadDiff { target, .. } => target.as_ref().map_or_else(
+            || "diff all".to_string(),
+            |path| format!("diff {}", path.display()),
+        ),
+        BackendTask::LoadPreview { target, .. } => format!("preview {}", target.display()),
+        BackendTask::RunAction { request } => format!(
+            "{} {}",
+            request.action.label(),
+            request
+                .target
+                .as_ref()
+                .map_or_else(|| "(none)".to_string(), |path| path.display().to_string())
+        ),
+    }
 }
 
 pub(crate) fn run_foreground_action(
@@ -154,8 +174,16 @@ pub(crate) fn execute_action_request(
             | Action::EditIgnore
             | Action::OpenSourceDir
     ) {
+        let label = format!(
+            "{} {}",
+            request.action.label(),
+            request
+                .target
+                .as_ref()
+                .map_or_else(|| "(none)".to_string(), |path| path.display().to_string())
+        );
         app.pending_foreground = Some(request);
-        app.begin_busy_task();
+        app.begin_busy_task_with_message(label);
     } else {
         send_task(app, task_tx, BackendTask::RunAction { request })?;
     }

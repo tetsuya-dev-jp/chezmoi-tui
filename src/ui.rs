@@ -1,5 +1,6 @@
 use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, NoticeTone, PaneFocus};
-use crate::domain::{Action, ListView};
+use crate::domain::{Action, ActionRequest, ListView};
+use crate::infra::action_to_args;
 use crate::ui_diff::colorized_diff_lines;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -327,8 +328,11 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
     }
 
     if app.is_busy() {
+        let text = app
+            .busy_message()
+            .map_or_else(|| "Busy".to_string(), |message| format!("Busy: {message}"));
         segments.push(LeftSegment {
-            text: "Busy".to_string(),
+            text: compact_label(&text, 48),
             style: Style::default().fg(Color::LightYellow),
             essential: false,
             badge: false,
@@ -1355,6 +1359,66 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             }
             frame.render_stateful_widget(list, sections[1], &mut state);
         }
+        ModalState::ActionPreflight { requests, scroll } => {
+            let area = centered_rect(76, 64, frame.area());
+            frame.render_widget(Clear, area);
+            let action = requests.first().map(|request| request.action);
+            let mut lines = Vec::new();
+            lines.push(Line::from("Review before running."));
+            lines.push(Line::from(""));
+            if let Some(action) = action {
+                lines.push(Line::from(format!("action: {}", action.label())));
+                lines.push(Line::from(format!(
+                    "impact: {}",
+                    action_preflight_impact(action)
+                )));
+                lines.push(Line::from(format!(
+                    "mode: {}",
+                    action_preflight_mode(action)
+                )));
+                lines.push(Line::from(format!(
+                    "targets: {}",
+                    requests.iter().filter(|r| r.target.is_some()).count()
+                )));
+                lines.push(Line::from(""));
+                lines.push(Line::from("command preview:"));
+                for command in action_preflight_commands(requests, 3) {
+                    lines.push(Line::from(format!("  {command}")));
+                }
+                if requests.len() > 3 && action.needs_target() {
+                    lines.push(Line::from(format!(
+                        "  ... and {} more target commands",
+                        requests.len() - 3
+                    )));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from("targets:"));
+                for request in requests {
+                    let target = request
+                        .target
+                        .as_ref()
+                        .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
+                    lines.push(Line::from(format!("  {target}")));
+                }
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "Enter: continue  Esc: cancel  j/k/PgUp/PgDn: scroll",
+            ));
+
+            let visible_rows = area.height.saturating_sub(2) as usize;
+            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Action Preflight ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightYellow)),
+                )
+                .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
         ModalState::Confirm {
             request,
             step,
@@ -1452,8 +1516,12 @@ fn draw_modal(frame: &mut Frame, app: &App) {
 
             frame.render_widget(p, area);
         }
-        ModalState::ApplyPlan { request, plan } => {
-            let area = centered_rect(74, 58, frame.area());
+        ModalState::ApplyPlan {
+            request,
+            plan,
+            scroll,
+        } => {
+            let area = centered_rect(76, 64, frame.area());
             frame.render_widget(Clear, area);
 
             let mut lines = vec![
@@ -1478,17 +1546,54 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                         .style(Style::default().fg(Color::LightYellow)),
                 );
             }
-
-            lines.push(Line::from(""));
-            lines.push(Line::from("Sample paths:"));
-            for path in apply_plan_sample_paths(plan, 8) {
-                lines.push(Line::from(format!("  {}", path.display())));
+            if !plan.unknown.is_empty() {
+                lines.push(
+                    Line::from("Warning: unknown status entries need manual review.")
+                        .style(Style::default().fg(Color::LightYellow)),
+                );
             }
+
+            push_apply_plan_group(
+                &mut lines,
+                "Added",
+                &plan.added,
+                Style::default().fg(Color::LightGreen),
+            );
+            push_apply_plan_group(
+                &mut lines,
+                "Modified",
+                &plan.modified,
+                Style::default().fg(Color::LightBlue),
+            );
+            push_apply_plan_group(
+                &mut lines,
+                "Deleted",
+                &plan.deleted,
+                Style::default().fg(Color::LightRed),
+            );
+            push_apply_plan_group(
+                &mut lines,
+                "Run scripts",
+                &plan.run,
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            );
+            push_apply_plan_group(
+                &mut lines,
+                "Unknown",
+                &plan.unknown,
+                Style::default()
+                    .fg(Color::LightMagenta)
+                    .add_modifier(Modifier::BOLD),
+            );
             lines.push(Line::from(""));
             lines.push(Line::from(
-                "Enter: continue to confirmation  d: diff  Esc: cancel",
+                "Enter: continue to confirmation  d: diff  Esc: cancel  j/k/PgUp/PgDn: scroll",
             ));
 
+            let visible_rows = area.height.saturating_sub(2) as usize;
+            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
             let p = Paragraph::new(lines)
                 .block(
                     Block::default()
@@ -1496,6 +1601,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
+                .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
                 .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
         }
@@ -1637,16 +1743,66 @@ fn action_menu_item(action: Action) -> ListItem<'static> {
     ListItem::new(Line::styled(text, style))
 }
 
-fn apply_plan_sample_paths(plan: &crate::app::ApplyPlan, limit: usize) -> Vec<std::path::PathBuf> {
-    plan.added
+fn action_preflight_impact(action: Action) -> &'static str {
+    match action {
+        Action::Apply => "may update files in the destination",
+        Action::Update => "updates source then applies changes",
+        Action::MergeAll => "runs merge workflow for all changes",
+        Action::Add => "imports selected files into chezmoi source state",
+        Action::Ignore => "appends ignore rules to .chezmoiignore",
+        Action::ReAdd => "re-imports selected modified files",
+        Action::Forget => "removes selected targets from chezmoi state",
+        Action::Chattr => "changes source attributes for selected targets",
+        Action::Destroy => "deletes selected target from source/destination/state",
+        Action::Purge => "removes chezmoi config and data for this environment",
+        _ => action.description(),
+    }
+}
+
+fn action_preflight_mode(action: Action) -> &'static str {
+    match action {
+        Action::Edit | Action::Update | Action::Merge | Action::MergeAll => "foreground command",
+        Action::Ignore => "internal file update",
+        _ => "background command",
+    }
+}
+
+fn action_preflight_commands(requests: &[ActionRequest], limit: usize) -> Vec<String> {
+    requests
         .iter()
-        .chain(plan.modified.iter())
-        .chain(plan.deleted.iter())
-        .chain(plan.run.iter())
-        .chain(plan.unknown.iter())
         .take(limit)
-        .cloned()
+        .map(|request| match action_to_args(request) {
+            Ok(args) => {
+                let args = args
+                    .into_iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("chezmoi {args}")
+            }
+            Err(_) if request.action == Action::Ignore => {
+                let mode = request.chattr_attrs.as_deref().unwrap_or("auto");
+                format!("internal ignore rule update ({mode})")
+            }
+            Err(_) => format!("internal/foreground action: {}", request.action.label()),
+        })
         .collect()
+}
+
+fn push_apply_plan_group(
+    lines: &mut Vec<Line<'static>>,
+    title: &'static str,
+    paths: &[std::path::PathBuf],
+    style: Style,
+) {
+    if paths.is_empty() {
+        return;
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("{title} ({})", paths.len())).style(style));
+    for path in paths {
+        lines.push(Line::from(format!("  {}", path.display())));
+    }
 }
 
 fn action_menu_row_item(row: ActionMenuRow) -> ListItem<'static> {

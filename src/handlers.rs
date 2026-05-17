@@ -79,6 +79,9 @@ pub(crate) fn handle_backend_event(
             }
             if !result.stderr.trim().is_empty() {
                 app.log(format!("stderr: {}", squash_lines(&result.stderr)));
+                if let Some(hint) = recovery_hint(&result.stderr) {
+                    app.log(format!("hint: {hint}"));
+                }
             }
 
             if matches!(request.action, Action::Doctor | Action::Data) {
@@ -127,8 +130,14 @@ pub(crate) fn handle_backend_event(
         }
         BackendEvent::Error { context, message } => {
             app.finish_busy_task();
+            let hint = recovery_hint(&message);
             app.log(format!("error[{context}]: {message}"));
-            app.set_error_notice(format!("{context} error: {message}"));
+            if let Some(hint) = hint {
+                app.log(format!("hint: {hint}"));
+                app.set_error_notice(format!("{context} error: {message} — {hint}"));
+            } else {
+                app.set_error_notice(format!("{context} error: {message}"));
+            }
             if context == "action" && app.batch_in_progress() {
                 maybe_continue_batch(app, task_tx)?;
             }
@@ -136,6 +145,28 @@ pub(crate) fn handle_backend_event(
     }
 
     Ok(())
+}
+
+fn recovery_hint(message: &str) -> Option<&'static str> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("no such file or directory") && lower.contains("chezmoi")
+        || lower.contains("command not found")
+    {
+        return Some("install chezmoi or fix PATH, then run doctor");
+    }
+    if lower.contains("permission denied") {
+        return Some("check file permissions or destination/source ownership");
+    }
+    if lower.contains("source") && (lower.contains("not found") || lower.contains("no such")) {
+        return Some("check --source/config source_dir or run open-source-dir/doctor");
+    }
+    if lower.contains("config") && (lower.contains("parse") || lower.contains("toml")) {
+        return Some("check config.toml syntax or retry with --no-config");
+    }
+    if lower.contains("failed to execute") || lower.contains("exit=") {
+        return Some("inspect stderr above; run doctor if the cause is unclear");
+    }
+    None
 }
 
 pub(crate) fn handle_key_event(
@@ -154,6 +185,7 @@ pub(crate) fn handle_key_event(
         ModalState::Ignore { .. } => handle_ignore_key(app, key, task_tx),
         ModalState::AddOptions { .. } => handle_add_options_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
+        ModalState::ActionPreflight { .. } => handle_action_preflight_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
         ModalState::ApplyPlan { .. } => handle_apply_plan_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
@@ -448,9 +480,7 @@ fn handle_ignore_key(
             app.log(format!("batch queued: action=ignore targets={count}"));
         }
         app.close_modal();
-        if let Some(first) = app.start_batch(requests) {
-            dispatch_action_request(app, task_tx, first)?;
-        }
+        start_action_requests_or_preflight(app, task_tx, requests)?;
     }
 
     Ok(())
@@ -535,9 +565,7 @@ fn handle_add_options_key(
             app.log(format!("batch queued: action=add targets={count}"));
         }
         app.close_modal();
-        if let Some(first) = app.start_batch(requests) {
-            dispatch_action_request(app, task_tx, first)?;
-        }
+        start_action_requests_or_preflight(app, task_tx, requests)?;
     }
 
     Ok(())
@@ -643,12 +671,101 @@ fn handle_action_menu_key(
             ));
         }
 
-        if let Some(first) = app.start_batch(requests) {
+        app.close_modal();
+        start_action_requests_or_preflight(app, task_tx, requests)?;
+    }
+
+    Ok(())
+}
+
+fn action_requests_require_preflight(requests: &[ActionRequest]) -> bool {
+    let Some(action) = requests.first().map(|request| request.action) else {
+        return false;
+    };
+    if requests.len() > 1 {
+        return true;
+    }
+    matches!(
+        action,
+        Action::Apply
+            | Action::Update
+            | Action::MergeAll
+            | Action::Forget
+            | Action::Chattr
+            | Action::Destroy
+            | Action::Purge
+    )
+}
+
+fn start_action_requests_or_preflight(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+    requests: Vec<ActionRequest>,
+) -> Result<()> {
+    if requests.is_empty() {
+        return Ok(());
+    }
+
+    if action_requests_require_preflight(&requests) {
+        app.open_action_preflight(requests);
+        return Ok(());
+    }
+
+    start_action_requests_now(app, task_tx, requests)
+}
+
+fn start_action_requests_now(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+    requests: Vec<ActionRequest>,
+) -> Result<()> {
+    let count = requests.len();
+    let action = requests.first().map(|request| request.action);
+    if count > 1
+        && let Some(action) = action
+    {
+        app.log(format!(
+            "batch queued: action={} targets={}",
+            action.label(),
+            count
+        ));
+    }
+
+    if let Some(first) = app.start_batch(requests) {
+        dispatch_action_request(app, task_tx, first)?;
+    }
+    Ok(())
+}
+
+fn handle_action_preflight_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    let requests = match &app.modal {
+        ModalState::ActionPreflight { requests, .. } => requests.clone(),
+        _ => return Ok(()),
+    };
+
+    match key.code {
+        KeyCode::Esc => app.close_modal(),
+        KeyCode::Enter => {
             app.close_modal();
-            dispatch_action_request(app, task_tx, first)?;
-        } else {
-            app.close_modal();
+            start_action_requests_now(app, task_tx, requests)?;
         }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.scroll_modal_down(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.scroll_modal_up(1);
+        }
+        KeyCode::PageDown => {
+            app.scroll_modal_down(10);
+        }
+        KeyCode::PageUp => {
+            app.scroll_modal_up(10);
+        }
+        _ => {}
     }
 
     Ok(())
@@ -684,6 +801,18 @@ fn handle_apply_plan_key(
                     target: None,
                 },
             )?;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.scroll_modal_down(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.scroll_modal_up(1);
+        }
+        KeyCode::PageDown => {
+            app.scroll_modal_down(10);
+        }
+        KeyCode::PageUp => {
+            app.scroll_modal_up(10);
         }
         _ => {}
     }
@@ -822,7 +951,7 @@ fn handle_input_key(
             app.apply_chattr_attrs_to_batch(&attrs);
         }
         app.close_modal();
-        dispatch_action_request(app, task_tx, request)?;
+        start_action_requests_or_preflight(app, task_tx, vec![request])?;
     }
 
     Ok(())

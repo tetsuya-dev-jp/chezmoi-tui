@@ -122,6 +122,10 @@ pub enum ModalState {
         selected: usize,
         filter: String,
     },
+    ActionPreflight {
+        requests: Vec<ActionRequest>,
+        scroll: usize,
+    },
     Confirm {
         request: ActionRequest,
         step: ConfirmStep,
@@ -130,6 +134,7 @@ pub enum ModalState {
     ApplyPlan {
         request: ActionRequest,
         plan: ApplyPlan,
+        scroll: usize,
     },
     Input {
         kind: InputKind,
@@ -234,6 +239,7 @@ pub struct App {
     staged_filter_updated_at: Option<Instant>,
     busy_tasks: usize,
     latest_notice: Option<Notice>,
+    busy_message: Option<String>,
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
@@ -283,6 +289,7 @@ impl App {
             staged_filter_updated_at: None,
             busy_tasks: 0,
             latest_notice: None,
+            busy_message: None,
             footer_help: false,
             pending_foreground: None,
             should_quit: false,
@@ -317,8 +324,16 @@ impl App {
         self.busy_tasks = self.busy_tasks.saturating_add(1);
     }
 
+    pub fn begin_busy_task_with_message(&mut self, message: impl Into<String>) {
+        self.busy_message = Some(message.into());
+        self.begin_busy_task();
+    }
+
     pub fn finish_busy_task(&mut self) {
         self.busy_tasks = self.busy_tasks.saturating_sub(1);
+        if self.busy_tasks == 0 {
+            self.busy_message = None;
+        }
     }
 
     pub fn is_busy(&self) -> bool {
@@ -328,6 +343,10 @@ impl App {
     #[cfg(test)]
     pub fn busy_task_count(&self) -> usize {
         self.busy_tasks
+    }
+
+    pub fn busy_message(&self) -> Option<&str> {
+        self.busy_message.as_deref()
     }
 
     pub fn set_notice(&mut self, tone: NoticeTone, message: impl Into<String>) {
@@ -643,6 +662,34 @@ impl App {
             step: ConfirmStep::Primary,
             typed: String::new(),
         };
+    }
+
+    pub fn open_action_preflight(&mut self, requests: Vec<ActionRequest>) {
+        self.modal = ModalState::ActionPreflight {
+            requests,
+            scroll: 0,
+        };
+    }
+
+    pub fn scroll_modal_down(&mut self, lines: usize) -> bool {
+        match &mut self.modal {
+            ModalState::ActionPreflight { scroll, .. } | ModalState::ApplyPlan { scroll, .. } => {
+                *scroll = scroll.saturating_add(lines);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn scroll_modal_up(&mut self, lines: usize) -> bool {
+        match &mut self.modal {
+            ModalState::ActionPreflight { scroll, .. } | ModalState::ApplyPlan { scroll, .. } => {
+                let before = *scroll;
+                *scroll = scroll.saturating_sub(lines);
+                *scroll != before
+            }
+            _ => false,
+        }
     }
 
     pub fn open_input(&mut self, kind: InputKind, request: ActionRequest) {
@@ -1018,7 +1065,11 @@ impl App {
 
     pub fn open_apply_plan(&mut self, request: ActionRequest) {
         let plan = self.build_apply_plan();
-        self.modal = ModalState::ApplyPlan { request, plan };
+        self.modal = ModalState::ApplyPlan {
+            request,
+            plan,
+            scroll: 0,
+        };
     }
 
     pub fn clear_detail(&mut self) {
