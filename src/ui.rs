@@ -1261,7 +1261,9 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Span::styled("query: ", Style::default().fg(Color::Gray)),
                     Span::styled(query, query_style),
                 ]),
-                Line::from("Backspace: delete  Up/Down: select  Enter: run  Esc: close"),
+                Line::from(
+                    "Backspace: delete  danger:<name>: filter danger  Enter: run  Esc: close",
+                ),
             ])
             .block(
                 Block::default()
@@ -1355,9 +1357,23 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     app.batch_action().map_or("unknown", Action::label),
                     app.batch_total()
                 )));
-                lines.push(Line::from(
-                    "Confirmation applies to the remaining queued batch items.",
-                ));
+                if request.action.is_dangerous() {
+                    lines.push(Line::from(
+                        "Dangerous batch items require confirmation for each target.",
+                    ));
+                } else {
+                    lines.push(Line::from(
+                        "Confirmation applies to the remaining queued batch items.",
+                    ));
+                }
+            }
+
+            let impact_lines = app.confirmation_impact_lines(request);
+            if !impact_lines.is_empty() {
+                lines.push(Line::from(""));
+                for line in impact_lines {
+                    lines.push(Line::from(line).style(Style::default().fg(Color::LightRed)));
+                }
             }
 
             lines.push(Line::from(""));

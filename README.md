@@ -131,6 +131,7 @@ Action menu:
 | Key | Behavior |
 | --- | --- |
 | type text | Filter by action label |
+| `danger:<action>` | Filter dangerous actions (`destroy`, `purge`) |
 | `↑` / `↓` | Move |
 | `Enter` | Execute |
 | `Esc` | Close |
@@ -165,8 +166,10 @@ Action visibility is view-aware.
 
 - Strict confirmation is always required for dangerous actions: `destroy`, `purge`.
 - `destroy` and `purge` require typed confirmation phrases.
+- Dangerous actions are hidden from plain action-menu filtering; use `danger:destroy` or `danger:purge` to filter them explicitly.
 - Confirmation is also required for broad or state-changing actions: `apply`, `update`, `merge-all`, `forget`, `chattr`.
-- Batch confirmation is reused for remaining queued items after the first confirmation.
+- Batch confirmation is reused for remaining queued non-dangerous items after the first confirmation.
+- Dangerous batch items require per-target confirmation.
 - `edit` is restricted to managed files.
 - Directory-wide `add` is blocked to avoid accidental bulk imports.
 - `forget` and `purge` run with `--force --no-tty` to avoid TUI deadlocks.

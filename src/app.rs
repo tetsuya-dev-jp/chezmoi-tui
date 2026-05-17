@@ -634,6 +634,8 @@ impl App {
 
     pub fn action_menu_indices(&self, filter: &str) -> Vec<usize> {
         let query = filter.trim().to_ascii_lowercase();
+        let danger_filter = query.strip_prefix("danger:");
+        let effective_query = danger_filter.unwrap_or(&query);
         let mut matches: Vec<(usize, u8, u8, String)> = Action::ALL
             .iter()
             .enumerate()
@@ -641,12 +643,18 @@ impl App {
                 if !self.action_visible(*action) {
                     return None;
                 }
+                if danger_filter.is_some() && !action.is_dangerous() {
+                    return None;
+                }
+                if !query.is_empty() && danger_filter.is_none() && action.is_dangerous() {
+                    return None;
+                }
 
                 let label = action.label().to_ascii_lowercase();
-                let match_rank = if query.is_empty() {
+                let match_rank = if effective_query.is_empty() {
                     0
                 } else {
-                    Self::action_filter_match_rank(&label, &query)?
+                    Self::action_filter_match_rank(&label, effective_query)?
                 };
 
                 Some((
@@ -794,6 +802,29 @@ impl App {
             return Some(3);
         }
         None
+    }
+
+    pub fn confirmation_impact_lines(&self, request: &ActionRequest) -> Vec<String> {
+        match request.action {
+            Action::Destroy => vec![
+                "Impact: removes the selected target from chezmoi source/destination/state."
+                    .to_string(),
+                "This cannot be undone from this TUI.".to_string(),
+            ],
+            Action::Purge => vec![
+                "Impact: removes chezmoi configuration and data for this environment.".to_string(),
+                format!("destination: {}", self.home_dir.display()),
+                format!(
+                    "source: {}",
+                    self.config.source_dir.as_ref().map_or_else(
+                        || "(resolved by chezmoi at runtime)".to_string(),
+                        |path| path.display().to_string()
+                    )
+                ),
+                "This cannot be undone from this TUI.".to_string(),
+            ],
+            _ => Vec::new(),
+        }
     }
 
     pub fn scroll_detail_up(&mut self, lines: usize) -> bool {
@@ -2491,6 +2522,48 @@ mod tests {
 
         let by_description_only = app.action_menu_indices("attributes");
         assert!(by_description_only.is_empty());
+    }
+
+    #[test]
+    fn action_menu_indices_hide_danger_actions_from_plain_filter() {
+        let mut app = App::new(AppConfig::default());
+        app.switch_view(ListView::Managed);
+
+        let plain: Vec<Action> = app
+            .action_menu_indices("purge")
+            .into_iter()
+            .filter_map(App::action_by_index)
+            .collect();
+        assert!(!plain.contains(&Action::Purge));
+
+        let danger: Vec<Action> = app
+            .action_menu_indices("danger:purge")
+            .into_iter()
+            .filter_map(App::action_by_index)
+            .collect();
+        assert_eq!(danger, vec![Action::Purge]);
+    }
+
+    #[test]
+    fn confirmation_impact_lines_show_purge_context() {
+        let source = PathBuf::from("/tmp/chezmoi-source");
+        let config = AppConfig {
+            destination_dir: Some(PathBuf::from("/tmp/chezmoi-home")),
+            source_dir: Some(source.clone()),
+            ..AppConfig::default()
+        };
+        let app = App::new(config);
+        let request = ActionRequest {
+            action: Action::Purge,
+            target: None,
+            chattr_attrs: None,
+        };
+
+        let lines = app.confirmation_impact_lines(&request).join("\n");
+        assert!(lines.contains("configuration and data"));
+        assert!(lines.contains("/tmp/chezmoi-home"));
+        assert!(lines.contains(&source.display().to_string()));
+        assert!(lines.contains("cannot be undone"));
     }
 
     #[test]

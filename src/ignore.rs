@@ -61,8 +61,7 @@ pub(crate) fn run_internal_ignore_action(app: &mut App, request: &ActionRequest)
         .file_type()
         .is_dir();
 
-    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
+    let home_dir = app.home_dir.clone();
     let mode = request
         .chattr_attrs
         .as_deref()
@@ -225,6 +224,9 @@ fn append_unique_line(path: &Path, line: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
+    use crate::domain::{Action, ActionRequest};
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -302,6 +304,93 @@ mod tests {
     }
 
     #[test]
+    fn run_internal_ignore_action_uses_configured_destination_base() {
+        let root = temp_root("chezmoi_tui_ignore_dest");
+        let destination = root.join("home");
+        let source = root.join("source");
+        let target = destination.join("project/.cache");
+        std::fs::create_dir_all(&target).expect("create target dir");
+        std::fs::create_dir_all(&source).expect("create source dir");
+
+        let config = AppConfig {
+            destination_dir: Some(destination.clone()),
+            source_dir: Some(source.clone()),
+            working_dir: root.join("work"),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+        let request = ActionRequest {
+            action: Action::Ignore,
+            target: Some(target),
+            chattr_attrs: Some(IgnorePatternMode::Auto.tag().to_string()),
+        };
+
+        run_internal_ignore_action(&mut app, &request).expect("ignore action");
+
+        let ignore = std::fs::read_to_string(source.join(".chezmoiignore")).expect("read ignore");
+        assert_eq!(ignore, "project/.cache/**\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_internal_ignore_action_rejects_destination_relative_mode_outside_destination() {
+        let root = temp_root("chezmoi_tui_ignore_outside");
+        let destination = root.join("home");
+        let source = root.join("source");
+        let target = root.join("outside/.cache");
+        std::fs::create_dir_all(&target).expect("create target dir");
+        std::fs::create_dir_all(&source).expect("create source dir");
+
+        let config = AppConfig {
+            destination_dir: Some(destination.clone()),
+            source_dir: Some(source),
+            working_dir: root.join("work"),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+        let request = ActionRequest {
+            action: Action::Ignore,
+            target: Some(target.clone()),
+            chattr_attrs: Some(IgnorePatternMode::Exact.tag().to_string()),
+        };
+
+        let err = run_internal_ignore_action(&mut app, &request).expect_err("outside target fails");
+        let message = format!("{err:#}");
+        assert!(message.contains(&target.display().to_string()));
+        assert!(message.contains(&destination.display().to_string()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_internal_ignore_action_allows_global_name_outside_destination() {
+        let root = temp_root("chezmoi_tui_ignore_global_outside");
+        let destination = root.join("home");
+        let source = root.join("source");
+        let target = root.join("outside/.cache");
+        std::fs::create_dir_all(&target).expect("create target dir");
+        std::fs::create_dir_all(&source).expect("create source dir");
+
+        let config = AppConfig {
+            destination_dir: Some(destination),
+            source_dir: Some(source.clone()),
+            working_dir: root.join("work"),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+        let request = ActionRequest {
+            action: Action::Ignore,
+            target: Some(target),
+            chattr_attrs: Some(IgnorePatternMode::GlobalName.tag().to_string()),
+        };
+
+        run_internal_ignore_action(&mut app, &request).expect("global name ignore action");
+
+        let ignore = std::fs::read_to_string(source.join(".chezmoiignore")).expect("read ignore");
+        assert_eq!(ignore, "**/.cache/**\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn append_unique_line_appends_once_and_avoids_duplicates() {
         let file = std::env::temp_dir().join(format!(
             "chezmoi_tui_ignore_{}_{}",
@@ -322,5 +411,17 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).expect("read file"), "a\nb\n");
 
         let _ = std::fs::remove_file(file);
+    }
+
+    fn temp_root(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{}_{}_{}",
+            prefix,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ))
     }
 }

@@ -685,7 +685,7 @@ fn handle_confirm_key(
     }
 
     if let Some(request) = execute_request {
-        if app.batch_in_progress() {
+        if app.batch_in_progress() && !request.action.is_dangerous() {
             app.mark_batch_confirmed();
         }
         app.close_modal();
@@ -1125,6 +1125,69 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn dangerous_batch_confirmation_is_not_reused_for_next_target() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let first = ActionRequest {
+            action: Action::Destroy,
+            target: Some(PathBuf::from("/tmp/a")),
+            chattr_attrs: None,
+        };
+        let second = ActionRequest {
+            action: Action::Destroy,
+            target: Some(PathBuf::from("/tmp/b")),
+            chattr_attrs: None,
+        };
+        let first = app
+            .start_batch(vec![first, second])
+            .expect("first batch request");
+
+        dispatch_action_request(&mut app, &task_tx, first).expect("dispatch first");
+        app.modal = ModalState::Confirm {
+            request: ActionRequest {
+                action: Action::Destroy,
+                target: Some(PathBuf::from("/tmp/a")),
+                chattr_attrs: None,
+            },
+            step: ConfirmStep::DangerPhrase,
+            typed: "DESTROY /tmp/a".to_string(),
+        };
+
+        handle_confirm_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("confirm first destroy");
+        let task = task_rx.try_recv().expect("first destroy dispatched");
+        assert!(matches!(
+            task,
+            BackendTask::RunAction {
+                request: ActionRequest {
+                    action: Action::Destroy,
+                    ..
+                }
+            }
+        ));
+
+        maybe_continue_batch(&mut app, &task_tx).expect("continue batch");
+
+        assert!(matches!(
+            app.modal,
+            ModalState::Confirm {
+                request: ActionRequest {
+                    action: Action::Destroy,
+                    ref target,
+                    ..
+                },
+                step: ConfirmStep::Primary,
+                ..
+            } if target.as_deref() == Some(std::path::Path::new("/tmp/b"))
+        ));
+        assert!(task_rx.try_recv().is_err());
     }
 
     #[test]
