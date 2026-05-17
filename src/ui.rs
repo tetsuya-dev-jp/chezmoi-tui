@@ -1,5 +1,6 @@
 use crate::app::{
-    App, ConfirmStep, DetailKind, InputKind, ModalState, NoticeTone, PaneFocus, SearchScope,
+    App, ConfirmStep, DetailKind, InputKind, LayoutMode, ModalState, NoticeTone, PaneFocus,
+    SearchScope,
 };
 use crate::domain::{Action, ActionRequest, ListView};
 use crate::infra::action_to_args;
@@ -18,19 +19,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
         .split(frame.area());
 
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(outer[0]);
+    match app.layout_mode {
+        LayoutMode::Normal => {
+            let main = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+                .split(outer[0]);
 
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-        .split(main[1]);
+            let right = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(main[1]);
 
-    draw_list(frame, app, main[0]);
-    draw_detail(frame, app, right[0]);
-    draw_logs(frame, app, right[1]);
+            draw_list(frame, app, main[0]);
+            draw_detail(frame, app, right[0]);
+            draw_logs(frame, app, right[1]);
+        }
+        LayoutMode::DetailMax => draw_detail(frame, app, outer[0]),
+        LayoutMode::LogMax => draw_logs(frame, app, outer[0]),
+    }
     draw_status_bar(frame, app, outer[1]);
     draw_modal(frame, app);
 }
@@ -49,7 +56,13 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = if app.list_filter().trim().is_empty() {
         format!(" {} ", app.view.title())
     } else {
-        format!(" {} /{} ", app.view.title(), app.list_filter())
+        let summary = app.current_filter_summary().unwrap_or_default();
+        format!(
+            " {} /{} ({}) ",
+            app.view.title(),
+            app.list_filter(),
+            summary
+        )
     };
 
     let list = List::new(items)
@@ -105,7 +118,10 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
-        .scroll((clamp_to_u16(app.detail_scroll), 0))
+        .scroll((
+            clamp_to_u16(app.detail_scroll),
+            clamp_to_u16(app.detail_hscroll),
+        ))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
@@ -118,11 +134,7 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
         Style::default()
     };
 
-    let lines: Vec<Line> = app
-        .logs
-        .iter()
-        .map(|line| Line::from(line.as_str()))
-        .collect();
+    let lines: Vec<Line> = app.logs.iter().map(|line| styled_log_line(line)).collect();
     let scroll = log_scroll_offset(lines.len(), area.height, app.log_tail_offset);
 
     let paragraph = Paragraph::new(lines)
@@ -132,10 +144,25 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(border_style),
         )
-        .scroll((scroll, 0))
+        .scroll((scroll, clamp_to_u16(app.log_hscroll)))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
+}
+
+fn styled_log_line(line: &str) -> Line<'static> {
+    let style = if line.starts_with("hint:") {
+        Style::default().fg(Color::LightBlue)
+    } else if line.contains("error") || line.starts_with("stderr:") {
+        Style::default().fg(Color::LightRed)
+    } else if line.contains("completed") || line.contains("exit=0") {
+        Style::default().fg(Color::LightGreen)
+    } else if line.starts_with("action") || line.starts_with("foreground") {
+        Style::default().fg(Color::LightYellow)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    Line::styled(line.to_string(), style)
 }
 
 fn log_scroll_offset(total_lines: usize, area_height: u16, tail_offset: usize) -> u16 {
@@ -372,6 +399,15 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
         segments.push(LeftSegment {
             text: compact_label(&search, 24),
             style: Style::default().fg(Color::LightYellow),
+            essential: false,
+            badge: false,
+        });
+    }
+
+    if app.layout_mode != LayoutMode::Normal {
+        segments.push(LeftSegment {
+            text: format!("layout={:?}", app.layout_mode),
+            style: Style::default().fg(Color::LightMagenta),
             essential: false,
             badge: false,
         });
@@ -935,6 +971,14 @@ fn cheat_groups(app: &App) -> Vec<CheatGroup> {
                     key: "C-u/d",
                     label: "Jump",
                 },
+                CheatItem {
+                    key: "/ n/N",
+                    label: "Search",
+                },
+                CheatItem {
+                    key: "H/L",
+                    label: "Wide",
+                },
             ]);
         }
     }
@@ -943,6 +987,10 @@ fn cheat_groups(app: &App) -> Vec<CheatGroup> {
         CheatItem {
             key: "Tab",
             label: "Pane",
+        },
+        CheatItem {
+            key: "m",
+            label: "Max",
         },
         CheatItem {
             key: "1-4",
@@ -1233,6 +1281,11 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             }
 
             lines.push(Line::from(""));
+            lines.push(Line::from(format!(
+                "preview pattern: {}",
+                ignore_pattern_preview(&target_text, *selected)
+            )));
+            lines.push(Line::from(""));
             lines.push(Line::from(
                 "Up/Down or j/k: select  Enter: apply  Esc: cancel",
             ));
@@ -1300,6 +1353,9 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 ]));
             }
 
+            let attrs_preview = add_attrs_preview(*template, *private, *executable, *encrypted);
+            lines.push(Line::from(""));
+            lines.push(Line::from(format!("attrs preview: {attrs_preview}")));
             lines.push(Line::from(""));
             lines.push(Line::from(
                 "Space: toggle  Up/Down or j/k: select  Enter: add  Esc: cancel",
@@ -1935,12 +1991,46 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("Search and history"),
         Line::from("  / in List filters paths. / in Detail or Log searches that pane."),
+        Line::from("  n/N jumps search matches; in diff without search, n/N jumps hunks."),
+        Line::from("  H/L horizontally scroll Detail or Log. m maximizes/restores focused pane."),
         Line::from("  ! opens notice history."),
         Line::from(""),
         Line::from("Keys"),
         Line::from("  Tab focus panes   j/k or arrows move/scroll   r refresh   q quit"),
         Line::from("  Esc closes modals. This help scrolls with j/k/PgUp/PgDn."),
     ]
+}
+
+fn ignore_pattern_preview(target: &str, selected: usize) -> String {
+    let name = Path::new(target)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(target);
+    match selected {
+        0 => format!("auto for {target}"),
+        1 => target.to_string(),
+        2 => format!("{target}/*"),
+        3 => format!("{target}/**"),
+        4 => format!("**/{name}/**"),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn add_attrs_preview(template: bool, private: bool, executable: bool, encrypted: bool) -> String {
+    let attrs = [
+        (template, "template"),
+        (private, "private"),
+        (executable, "executable"),
+        (encrypted, "encrypted"),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, label)| enabled.then_some(label))
+    .collect::<Vec<_>>();
+    if attrs.is_empty() {
+        "none".to_string()
+    } else {
+        attrs.join(",")
+    }
 }
 
 fn action_preflight_impact(action: Action) -> &'static str {

@@ -108,6 +108,7 @@ Global:
 | `r` | Refresh all lists |
 | `?` | Open help and legends |
 | `!` | Open notice history |
+| `m` | Maximize/restore focused detail or log pane |
 | `q` / `Ctrl+C` | Quit |
 
 List focus:
@@ -130,7 +131,9 @@ Detail or log focus:
 | `j` / `k` or `↑` / `↓` | Scroll |
 | `PgUp` / `PgDn` | Page scroll |
 | `Ctrl+u` / `Ctrl+d` | Half-page scroll |
+| `H` / `L` | Horizontal scroll for wide output |
 | `/` | Search focused pane |
+| `n` / `N` | Next/previous search match; in diff without active search, next/previous hunk |
 
 Action menu:
 
@@ -241,7 +244,12 @@ CLI flags override config file values. Use `--config <path>` to load a specific 
 - Common errors include recovery hints in the notice/log
 - Help/legend overlay for views, status columns, tree markers, and safety rules
 - Notice history for recent info/success/error messages
-- Detail and log pane search
+- Detail and log pane search with next/previous match navigation
+- Diff hunk navigation
+- Focused pane maximize/restore mode
+- Horizontal scrolling for wide detail/log output
+- Basename-preserving path compaction in compact list displays
+- Wizard previews for ignore patterns and add attributes
 - Built-in safe defaults (no application config file)
 
 ## Development

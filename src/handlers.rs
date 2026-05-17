@@ -221,6 +221,43 @@ fn handle_key_without_modal(
             selection_changed = true;
         }
         KeyCode::Tab => app.focus = app.focus.next(),
+        KeyCode::Char('m') => app.toggle_layout_mode_for_focus(),
+        KeyCode::Char('n') if app.focus == PaneFocus::Detail => {
+            if app.detail_kind == crate::app::DetailKind::Diff
+                && app.active_search_label().is_none()
+            {
+                app.jump_next_diff_hunk();
+            } else {
+                app.next_search_match(SearchScope::Detail);
+            }
+        }
+        KeyCode::Char('N') if app.focus == PaneFocus::Detail => {
+            if app.detail_kind == crate::app::DetailKind::Diff
+                && app.active_search_label().is_none()
+            {
+                app.jump_prev_diff_hunk();
+            } else {
+                app.prev_search_match(SearchScope::Detail);
+            }
+        }
+        KeyCode::Char('n') if app.focus == PaneFocus::Log => {
+            app.next_search_match(SearchScope::Log);
+        }
+        KeyCode::Char('N') if app.focus == PaneFocus::Log => {
+            app.prev_search_match(SearchScope::Log);
+        }
+        KeyCode::Char('L') if app.focus == PaneFocus::Detail => {
+            app.scroll_detail_right(8);
+        }
+        KeyCode::Char('H') if app.focus == PaneFocus::Detail => {
+            app.scroll_detail_left(8);
+        }
+        KeyCode::Char('L') if app.focus == PaneFocus::Log => {
+            app.scroll_log_right(8);
+        }
+        KeyCode::Char('H') if app.focus == PaneFocus::Log => {
+            app.scroll_log_left(8);
+        }
         KeyCode::Char(' ') if app.focus == crate::app::PaneFocus::List => {
             let _ = app.toggle_selected_mark();
         }

@@ -106,6 +106,25 @@ pub enum SearchScope {
     Log,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayoutMode {
+    #[default]
+    Normal,
+    DetailMax,
+    LogMax,
+}
+
+impl LayoutMode {
+    pub fn next_for_focus(self, focus: PaneFocus) -> Self {
+        match (self, focus) {
+            (Self::Normal, PaneFocus::Detail) => Self::DetailMax,
+            (Self::Normal, PaneFocus::Log) => Self::LogMax,
+            (Self::Normal, _) => Self::DetailMax,
+            _ => Self::Normal,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModalState {
     None,
@@ -250,6 +269,9 @@ pub struct App {
     pub detail_scroll: usize,
     pub logs: Vec<String>,
     pub log_tail_offset: usize,
+    pub detail_hscroll: usize,
+    pub log_hscroll: usize,
+    pub layout_mode: LayoutMode,
     pub modal: ModalState,
     list_filter: String,
     staged_list_filter: Option<String>,
@@ -260,6 +282,8 @@ pub struct App {
     busy_message: Option<String>,
     detail_search: Option<String>,
     log_search: Option<String>,
+    detail_search_index: usize,
+    log_search_index: usize,
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
@@ -303,6 +327,9 @@ impl App {
             detail_scroll: 0,
             logs: Vec::new(),
             log_tail_offset: 0,
+            detail_hscroll: 0,
+            log_hscroll: 0,
+            layout_mode: LayoutMode::Normal,
             modal: ModalState::None,
             list_filter: String::new(),
             staged_list_filter: None,
@@ -313,6 +340,8 @@ impl App {
             busy_message: None,
             detail_search: None,
             log_search: None,
+            detail_search_index: 0,
+            log_search_index: 0,
             footer_help: false,
             pending_foreground: None,
             should_quit: false,
@@ -713,39 +742,165 @@ impl App {
 
         match scope {
             SearchScope::Detail => {
-                self.detail_search = Some(query.clone());
-                if let Some(index) = self.detail_text.lines().position(|line| {
-                    line.to_ascii_lowercase()
-                        .contains(&query.to_ascii_lowercase())
-                }) {
-                    self.detail_scroll = index;
-                    return true;
-                }
+                self.detail_search = Some(query);
+                self.detail_search_index = 0;
+                self.jump_to_search_match(SearchScope::Detail, 0)
             }
             SearchScope::Log => {
-                self.log_search = Some(query.clone());
-                if let Some(index) = self.logs.iter().position(|line| {
-                    line.to_ascii_lowercase()
-                        .contains(&query.to_ascii_lowercase())
-                }) {
-                    self.log_tail_offset = self.logs.len().saturating_sub(index + 1);
-                    return true;
-                }
+                self.log_search = Some(query);
+                self.log_search_index = 0;
+                self.jump_to_search_match(SearchScope::Log, 0)
             }
         }
-        false
+    }
+
+    pub fn search_match_count(&self, scope: SearchScope) -> usize {
+        let Some(query) = self.search_query(scope) else {
+            return 0;
+        };
+        let query = query.to_ascii_lowercase();
+        match scope {
+            SearchScope::Detail => self
+                .detail_text
+                .lines()
+                .filter(|line| line.to_ascii_lowercase().contains(&query))
+                .count(),
+            SearchScope::Log => self
+                .logs
+                .iter()
+                .filter(|line| line.to_ascii_lowercase().contains(&query))
+                .count(),
+        }
+    }
+
+    pub fn next_search_match(&mut self, scope: SearchScope) -> bool {
+        let count = self.search_match_count(scope);
+        if count == 0 {
+            return false;
+        }
+        let next = match scope {
+            SearchScope::Detail => (self.detail_search_index + 1) % count,
+            SearchScope::Log => (self.log_search_index + 1) % count,
+        };
+        self.jump_to_search_match(scope, next)
+    }
+
+    pub fn prev_search_match(&mut self, scope: SearchScope) -> bool {
+        let count = self.search_match_count(scope);
+        if count == 0 {
+            return false;
+        }
+        let next = match scope {
+            SearchScope::Detail => self.detail_search_index.checked_sub(1).unwrap_or(count - 1),
+            SearchScope::Log => self.log_search_index.checked_sub(1).unwrap_or(count - 1),
+        };
+        self.jump_to_search_match(scope, next)
+    }
+
+    pub fn jump_next_diff_hunk(&mut self) -> bool {
+        if self.detail_kind != DetailKind::Diff {
+            return false;
+        }
+        let hunks = self.diff_hunk_lines();
+        let Some(next) = hunks.into_iter().find(|line| *line > self.detail_scroll) else {
+            return self.diff_hunk_lines().first().copied().is_some_and(|line| {
+                self.detail_scroll = line;
+                true
+            });
+        };
+        self.detail_scroll = next;
+        true
+    }
+
+    pub fn jump_prev_diff_hunk(&mut self) -> bool {
+        if self.detail_kind != DetailKind::Diff {
+            return false;
+        }
+        let hunks = self.diff_hunk_lines();
+        let Some(prev) = hunks.iter().rev().find(|line| **line < self.detail_scroll) else {
+            return hunks.last().copied().is_some_and(|line| {
+                self.detail_scroll = line;
+                true
+            });
+        };
+        self.detail_scroll = *prev;
+        true
+    }
+
+    fn diff_hunk_lines(&self) -> Vec<usize> {
+        self.detail_text
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| line.starts_with("@@").then_some(index))
+            .collect()
+    }
+
+    fn search_query(&self, scope: SearchScope) -> Option<&str> {
+        match scope {
+            SearchScope::Detail => self.detail_search.as_deref(),
+            SearchScope::Log => self.log_search.as_deref(),
+        }
+    }
+
+    fn jump_to_search_match(&mut self, scope: SearchScope, match_index: usize) -> bool {
+        let Some(query) = self.search_query(scope) else {
+            return false;
+        };
+        let query = query.to_ascii_lowercase();
+        let line_index = match scope {
+            SearchScope::Detail => self
+                .detail_text
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.to_ascii_lowercase().contains(&query))
+                .nth(match_index)
+                .map(|(index, _)| index),
+            SearchScope::Log => self
+                .logs
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.to_ascii_lowercase().contains(&query))
+                .nth(match_index)
+                .map(|(index, _)| index),
+        };
+        let Some(line_index) = line_index else {
+            return false;
+        };
+        match scope {
+            SearchScope::Detail => {
+                self.detail_search_index = match_index;
+                self.detail_scroll = line_index;
+            }
+            SearchScope::Log => {
+                self.log_search_index = match_index;
+                self.log_tail_offset = self.logs.len().saturating_sub(line_index + 1);
+            }
+        }
+        true
     }
 
     pub fn active_search_label(&self) -> Option<String> {
         match self.focus {
-            PaneFocus::Detail => self
-                .detail_search
-                .as_ref()
-                .map(|query| format!("detail /{query}")),
-            PaneFocus::Log => self
-                .log_search
-                .as_ref()
-                .map(|query| format!("log /{query}")),
+            PaneFocus::Detail => self.detail_search.as_ref().map(|query| {
+                format!(
+                    "detail /{} {}/{}",
+                    query,
+                    self.detail_search_index
+                        .saturating_add(1)
+                        .min(self.search_match_count(SearchScope::Detail).max(1)),
+                    self.search_match_count(SearchScope::Detail)
+                )
+            }),
+            PaneFocus::Log => self.log_search.as_ref().map(|query| {
+                format!(
+                    "log /{} {}/{}",
+                    query,
+                    self.log_search_index
+                        .saturating_add(1)
+                        .min(self.search_match_count(SearchScope::Log).max(1)),
+                    self.search_match_count(SearchScope::Log)
+                )
+            }),
             PaneFocus::List => None,
         }
     }
@@ -1134,6 +1289,34 @@ impl App {
         true
     }
 
+    pub fn scroll_detail_right(&mut self, cols: usize) -> bool {
+        let before = self.detail_hscroll;
+        self.detail_hscroll = self.detail_hscroll.saturating_add(cols);
+        self.detail_hscroll != before
+    }
+
+    pub fn scroll_detail_left(&mut self, cols: usize) -> bool {
+        let before = self.detail_hscroll;
+        self.detail_hscroll = self.detail_hscroll.saturating_sub(cols);
+        self.detail_hscroll != before
+    }
+
+    pub fn scroll_log_right(&mut self, cols: usize) -> bool {
+        let before = self.log_hscroll;
+        self.log_hscroll = self.log_hscroll.saturating_add(cols);
+        self.log_hscroll != before
+    }
+
+    pub fn scroll_log_left(&mut self, cols: usize) -> bool {
+        let before = self.log_hscroll;
+        self.log_hscroll = self.log_hscroll.saturating_sub(cols);
+        self.log_hscroll != before
+    }
+
+    pub fn toggle_layout_mode_for_focus(&mut self) {
+        self.layout_mode = self.layout_mode.next_for_focus(self.focus);
+    }
+
     fn detail_max_scroll(&self) -> usize {
         self.detail_text.lines().count().saturating_sub(1)
     }
@@ -1147,6 +1330,7 @@ impl App {
         self.detail_text = text;
         self.detail_target = target.map(Path::to_path_buf);
         self.detail_scroll = 0;
+        self.detail_hscroll = 0;
     }
 
     pub fn set_detail_preview(&mut self, target: &Path, origin: PreviewOrigin, content: String) {
@@ -1155,6 +1339,7 @@ impl App {
         self.detail_text = content;
         self.detail_target = Some(target.to_path_buf());
         self.detail_scroll = 0;
+        self.detail_hscroll = 0;
     }
 
     pub fn view_context_text(&self) -> String {
@@ -2052,7 +2237,7 @@ impl App {
                 label.push(' ');
             }
             label.push(' ');
-            label.push_str(&entry.path.display().to_string());
+            label.push_str(&compact_path_for_list(&entry.path));
             if entry.is_symlink {
                 label.push('@');
             }
@@ -2082,7 +2267,7 @@ impl App {
         label.push(' ');
 
         let name = if entry.depth == 0 {
-            entry.path.display().to_string()
+            compact_path_for_list(&entry.path)
         } else {
             entry.path.file_name().and_then(|n| n.to_str()).map_or_else(
                 || entry.path.display().to_string(),
@@ -2164,6 +2349,13 @@ impl App {
         }
     }
 
+    pub fn current_filter_summary(&self) -> Option<String> {
+        if self.list_filter.trim().is_empty() {
+            return None;
+        }
+        Some(format!("{} matched", self.current_len()))
+    }
+
     fn collapse_tree(&mut self, dir: &Path) {
         let targets: Vec<PathBuf> = self
             .expanded_dirs
@@ -2184,6 +2376,35 @@ impl App {
     fn invalidate_unmanaged_filter_index(&mut self) {
         self.unmanaged_filter_cache = UnmanagedFilterCache::default();
     }
+}
+
+fn compact_path_for_list(path: &Path) -> String {
+    const MAX: usize = 96;
+    let value = path.display().to_string();
+    if value.chars().count() <= MAX {
+        return value;
+    }
+    let file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !file.is_empty() && file.chars().count() + 4 < MAX {
+        let keep_prefix = MAX - file.chars().count() - 4;
+        let prefix: String = value.chars().take(keep_prefix).collect();
+        return format!("{prefix}.../{file}");
+    }
+    let head = MAX / 2;
+    let tail = MAX.saturating_sub(head + 3);
+    let prefix: String = value.chars().take(head).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}...{suffix}")
 }
 
 #[cfg(test)]
