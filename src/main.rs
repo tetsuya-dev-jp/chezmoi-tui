@@ -9,6 +9,7 @@ mod infra;
 mod preview;
 mod terminal;
 mod ui;
+mod ui_diff;
 
 use crate::actions::{run_foreground_action, send_task};
 use crate::app::{App, BackendEvent, BackendTask};
@@ -16,7 +17,7 @@ use crate::backend::worker_loop;
 use crate::config::AppConfig;
 use crate::handlers::{handle_backend_event, handle_key_event};
 use crate::infra::{ChezmoiClient, ShellChezmoiClient};
-use crate::terminal::{restore_terminal, setup_terminal};
+use crate::terminal::TerminalGuard;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
@@ -28,13 +29,13 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    setup_terminal()?;
+    let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to create terminal")?;
 
     let run_result = run_app(&mut terminal, AppConfig::default());
 
-    restore_terminal(&mut terminal)?;
+    terminal_guard.restore(&mut terminal)?;
     if let Err(err) = run_result {
         eprintln!("{err:#}");
         std::process::exit(1);

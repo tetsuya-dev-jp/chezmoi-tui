@@ -86,7 +86,7 @@ pub(crate) fn dispatch_action_request(
         app.open_input(InputKind::ChattrAttrs, request);
         return Ok(());
     }
-    if request.action.is_dangerous() {
+    if request.action.requires_confirmation() && !app.batch_confirmed() {
         app.open_confirm(request);
         return Ok(());
     }

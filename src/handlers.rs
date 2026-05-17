@@ -26,13 +26,25 @@ pub(crate) fn handle_backend_event(
             app.busy = false;
             maybe_enqueue_auto_detail(app, task_tx)?;
         }
-        BackendEvent::DiffLoaded { target, diff } => {
-            app.set_detail_diff(target.as_deref(), diff.text);
+        BackendEvent::DiffLoaded {
+            request_id,
+            target,
+            diff,
+        } => {
             app.busy = false;
+            if app.accepts_detail_request(request_id) {
+                app.set_detail_diff(target.as_deref(), diff.text);
+            }
         }
-        BackendEvent::PreviewLoaded { target, content } => {
-            app.set_detail_preview(&target, content);
+        BackendEvent::PreviewLoaded {
+            request_id,
+            target,
+            content,
+        } => {
             app.busy = false;
+            if app.accepts_detail_request(request_id) {
+                app.set_detail_preview(&target, content);
+            }
         }
         BackendEvent::ActionFinished { request, result } => {
             app.busy = false;
@@ -111,11 +123,11 @@ fn handle_key_without_modal(
             let _ = app.toggle_selected_mark();
         }
         KeyCode::Char('c')
-            if key.modifiers.is_empty() && app.focus == crate::app::PaneFocus::List =>
+            if key.modifiers.is_empty()
+                && app.focus == crate::app::PaneFocus::List
+                && app.clear_marked_entries() =>
         {
-            if app.clear_marked_entries() {
-                app.log("cleared multi-selection".to_string());
-            }
+            app.log("cleared multi-selection".to_string());
         }
         KeyCode::Char('j') | KeyCode::Down => match app.focus {
             crate::app::PaneFocus::Detail => {
@@ -159,15 +171,11 @@ fn handle_key_without_modal(
             }
             crate::app::PaneFocus::List => {}
         },
-        KeyCode::Char('l') | KeyCode::Right => {
-            if app.expand_selected_directory() {
-                selection_changed = true;
-            }
+        KeyCode::Char('l') | KeyCode::Right if app.expand_selected_directory() => {
+            selection_changed = true;
         }
-        KeyCode::Char('h') | KeyCode::Left => {
-            if app.collapse_selected_directory_or_parent() {
-                selection_changed = true;
-            }
+        KeyCode::Char('h') | KeyCode::Left if app.collapse_selected_directory_or_parent() => {
+            selection_changed = true;
         }
         KeyCode::Char('1') => {
             app.switch_view(ListView::Status);
@@ -205,26 +213,18 @@ fn handle_key_without_modal(
                 app.clear_detail();
                 return Ok(());
             }
-            send_task(
-                app,
-                task_tx,
-                BackendTask::LoadDiff {
-                    target: app.selected_absolute_path(),
-                },
-            )?;
+            let request_id = app.begin_detail_request();
+            let target = app.selected_absolute_path();
+            send_task(app, task_tx, BackendTask::LoadDiff { request_id, target })?;
         }
         KeyCode::Enter => {
             if app.view == ListView::Unmanaged && app.selected_is_directory() {
                 app.clear_detail();
                 return Ok(());
             }
-            send_task(
-                app,
-                task_tx,
-                BackendTask::LoadDiff {
-                    target: app.selected_absolute_path(),
-                },
-            )?;
+            let request_id = app.begin_detail_request();
+            let target = app.selected_absolute_path();
+            send_task(app, task_tx, BackendTask::LoadDiff { request_id, target })?;
         }
         KeyCode::Char('v') => match (app.selected_path(), app.selected_absolute_path()) {
             (Some(target), Some(absolute)) => {
@@ -232,7 +232,16 @@ fn handle_key_without_modal(
                     app.clear_detail();
                     return Ok(());
                 }
-                send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })?;
+                let request_id = app.begin_detail_request();
+                send_task(
+                    app,
+                    task_tx,
+                    BackendTask::LoadPreview {
+                        request_id,
+                        target,
+                        absolute,
+                    },
+                )?;
             }
             _ => app.log("No target selected for preview".to_string()),
         },
@@ -552,6 +561,9 @@ fn handle_confirm_key(
     }
 
     if let Some(request) = execute_request {
+        if app.batch_in_progress() {
+            app.mark_batch_confirmed();
+        }
         app.close_modal();
         execute_action_request(app, task_tx, request)?;
     }
@@ -730,7 +742,157 @@ mod tests {
         let task = task_rx.try_recv().expect("preview task");
         assert!(matches!(
             task,
-            BackendTask::LoadPreview { target, .. } if target == std::path::Path::new(".zshrc")
+            BackendTask::LoadPreview { target, request_id, .. }
+                if target == std::path::Path::new(".zshrc") && request_id > 0
+        ));
+    }
+
+    #[test]
+    fn stale_preview_event_does_not_overwrite_latest_detail() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let stale_request_id = app.begin_detail_request();
+        let latest_request_id = app.begin_detail_request();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::PreviewLoaded {
+                request_id: stale_request_id,
+                target: PathBuf::from("old.txt"),
+                content: "old".to_string(),
+            },
+        )
+        .expect("handle stale preview");
+        assert!(app.detail_text.is_empty());
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::PreviewLoaded {
+                request_id: latest_request_id,
+                target: PathBuf::from("new.txt"),
+                content: "new".to_string(),
+            },
+        )
+        .expect("handle latest preview");
+        assert_eq!(app.detail_text, "new");
+    }
+
+    #[test]
+    fn stale_diff_event_does_not_overwrite_latest_detail() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let stale_request_id = app.begin_detail_request();
+        let latest_request_id = app.begin_detail_request();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::DiffLoaded {
+                request_id: latest_request_id,
+                target: Some(PathBuf::from("new.txt")),
+                diff: crate::domain::DiffText {
+                    text: "new diff".to_string(),
+                },
+            },
+        )
+        .expect("handle latest diff");
+        assert_eq!(app.detail_text, "new diff");
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::DiffLoaded {
+                request_id: stale_request_id,
+                target: Some(PathBuf::from("old.txt")),
+                diff: crate::domain::DiffText {
+                    text: "old diff".to_string(),
+                },
+            },
+        )
+        .expect("handle stale diff");
+        assert_eq!(app.detail_text, "new diff");
+    }
+
+    #[test]
+    fn apply_opens_confirmation_before_execution() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        dispatch_action_request(
+            &mut app,
+            &task_tx,
+            ActionRequest {
+                action: Action::Apply,
+                target: None,
+                chattr_attrs: None,
+            },
+        )
+        .expect("dispatch apply");
+
+        assert!(matches!(
+            app.modal,
+            ModalState::Confirm {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(task_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn batch_confirmation_is_reused_for_remaining_items() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let first = ActionRequest {
+            action: Action::Forget,
+            target: Some(PathBuf::from("/tmp/a")),
+            chattr_attrs: None,
+        };
+        let second = ActionRequest {
+            action: Action::Forget,
+            target: Some(PathBuf::from("/tmp/b")),
+            chattr_attrs: None,
+        };
+        let first = app
+            .start_batch(vec![first, second])
+            .expect("first batch request");
+
+        dispatch_action_request(&mut app, &task_tx, first).expect("dispatch first");
+        assert!(matches!(app.modal, ModalState::Confirm { .. }));
+
+        handle_confirm_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("confirm first");
+        let task = task_rx.try_recv().expect("first task dispatched");
+        assert!(matches!(
+            task,
+            BackendTask::RunAction {
+                request: ActionRequest {
+                    action: Action::Forget,
+                    ..
+                }
+            }
+        ));
+
+        maybe_continue_batch(&mut app, &task_tx).expect("continue batch");
+        assert!(matches!(app.modal, ModalState::None));
+        let task = task_rx.try_recv().expect("second task dispatched");
+        assert!(matches!(
+            task,
+            BackendTask::RunAction {
+                request: ActionRequest {
+                    action: Action::Forget,
+                    ..
+                }
+            }
         ));
     }
 

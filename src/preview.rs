@@ -87,7 +87,16 @@ fn maybe_enqueue_unmanaged_preview(
         return Ok(());
     }
 
-    send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })
+    let request_id = app.begin_detail_request();
+    send_task(
+        app,
+        task_tx,
+        BackendTask::LoadPreview {
+            request_id,
+            target,
+            absolute,
+        },
+    )
 }
 
 fn maybe_enqueue_managed_preview(
@@ -110,7 +119,16 @@ fn maybe_enqueue_managed_preview(
         return Ok(());
     }
 
-    send_task(app, task_tx, BackendTask::LoadPreview { target, absolute })
+    let request_id = app.begin_detail_request();
+    send_task(
+        app,
+        task_tx,
+        BackendTask::LoadPreview {
+            request_id,
+            target,
+            absolute,
+        },
+    )
 }
 
 fn maybe_enqueue_status_diff(app: &mut App, task_tx: &UnboundedSender<BackendTask>) -> Result<()> {
@@ -125,10 +143,12 @@ fn maybe_enqueue_status_diff(app: &mut App, task_tx: &UnboundedSender<BackendTas
         return Ok(());
     }
 
+    let request_id = app.begin_detail_request();
     send_task(
         app,
         task_tx,
         BackendTask::LoadDiff {
+            request_id,
             target: Some(target),
         },
     )

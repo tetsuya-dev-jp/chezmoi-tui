@@ -52,7 +52,7 @@ pub(crate) async fn worker_loop(
                     }
                 }
             }
-            BackendTask::LoadDiff { target } => {
+            BackendTask::LoadDiff { request_id, target } => {
                 let c = client.clone();
                 let target_for_worker = target.clone();
                 let result =
@@ -60,7 +60,11 @@ pub(crate) async fn worker_loop(
                 match result {
                     Ok(Ok(diff)) => {
                         if event_tx
-                            .send(BackendEvent::DiffLoaded { target, diff })
+                            .send(BackendEvent::DiffLoaded {
+                                request_id,
+                                target,
+                                diff,
+                            })
                             .is_err()
                         {
                             break;
@@ -79,13 +83,21 @@ pub(crate) async fn worker_loop(
                     }
                 }
             }
-            BackendTask::LoadPreview { target, absolute } => {
+            BackendTask::LoadPreview {
+                request_id,
+                target,
+                absolute,
+            } => {
                 let result =
                     tokio::task::spawn_blocking(move || load_file_preview(&absolute)).await;
                 match result {
                     Ok(Ok(content)) => {
                         if event_tx
-                            .send(BackendEvent::PreviewLoaded { target, content })
+                            .send(BackendEvent::PreviewLoaded {
+                                request_id,
+                                target,
+                                content,
+                            })
                             .is_err()
                         {
                             break;

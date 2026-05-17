@@ -141,6 +141,19 @@ impl Action {
         matches!(self, Action::Destroy | Action::Purge)
     }
 
+    pub fn requires_confirmation(self) -> bool {
+        matches!(
+            self,
+            Action::Apply
+                | Action::Update
+                | Action::MergeAll
+                | Action::Forget
+                | Action::Chattr
+                | Action::Destroy
+                | Action::Purge
+        )
+    }
+
     pub fn confirm_phrase(self) -> Option<&'static str> {
         match self {
             Action::Destroy => Some("DESTROY"),

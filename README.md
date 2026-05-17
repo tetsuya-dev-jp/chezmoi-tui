@@ -146,6 +146,8 @@ Action visibility is view-aware.
 
 - Strict confirmation is always required for dangerous actions: `destroy`, `purge`.
 - `destroy` and `purge` require typed confirmation phrases.
+- Confirmation is also required for broad or state-changing actions: `apply`, `update`, `merge-all`, `forget`, `chattr`.
+- Batch confirmation is reused for remaining queued items after the first confirmation.
 - `edit` is restricted to managed files.
 - Directory-wide `add` is blocked to avoid accidental bulk imports.
 - `forget` and `purge` run with `--force --no-tty` to avoid TUI deadlocks.

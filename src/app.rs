@@ -80,9 +80,18 @@ pub enum ModalState {
 #[derive(Debug, Clone)]
 pub enum BackendTask {
     RefreshAll,
-    LoadDiff { target: Option<PathBuf> },
-    LoadPreview { target: PathBuf, absolute: PathBuf },
-    RunAction { request: ActionRequest },
+    LoadDiff {
+        request_id: u64,
+        target: Option<PathBuf>,
+    },
+    LoadPreview {
+        request_id: u64,
+        target: PathBuf,
+        absolute: PathBuf,
+    },
+    RunAction {
+        request: ActionRequest,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -93,10 +102,12 @@ pub enum BackendEvent {
         unmanaged: Vec<PathBuf>,
     },
     DiffLoaded {
+        request_id: u64,
         target: Option<PathBuf>,
         diff: DiffText,
     },
     PreviewLoaded {
+        request_id: u64,
         target: PathBuf,
         content: String,
     },
@@ -159,12 +170,15 @@ pub struct App {
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
+    detail_request_seq: u64,
+    latest_detail_request_id: Option<u64>,
     pub(crate) home_dir: PathBuf,
     working_dir: PathBuf,
     expanded_dirs: BTreeSet<PathBuf>,
     marked_entries: BTreeSet<PathBuf>,
     batch_action: Option<Action>,
     batch_total: usize,
+    batch_confirmed: bool,
     batch_queue: VecDeque<ActionRequest>,
     visible_entries: Vec<VisibleEntry>,
     unmanaged_filter_cache: UnmanagedFilterCache,
@@ -198,12 +212,15 @@ impl App {
             footer_help: false,
             pending_foreground: None,
             should_quit: false,
+            detail_request_seq: 0,
+            latest_detail_request_id: None,
             home_dir,
             working_dir,
             expanded_dirs: BTreeSet::new(),
             marked_entries: BTreeSet::new(),
             batch_action: None,
             batch_total: 0,
+            batch_confirmed: false,
             batch_queue: VecDeque::new(),
             visible_entries: Vec::new(),
             unmanaged_filter_cache: UnmanagedFilterCache::default(),
@@ -371,6 +388,7 @@ impl App {
         let first = queue.pop_front()?;
         self.batch_action = Some(first.action);
         self.batch_total = queue.len() + 1;
+        self.batch_confirmed = false;
         self.batch_queue = queue;
         Some(first)
     }
@@ -391,6 +409,14 @@ impl App {
         self.batch_action
     }
 
+    pub fn batch_confirmed(&self) -> bool {
+        self.batch_confirmed
+    }
+
+    pub fn mark_batch_confirmed(&mut self) {
+        self.batch_confirmed = true;
+    }
+
     pub fn apply_chattr_attrs_to_batch(&mut self, attrs: &str) {
         for request in &mut self.batch_queue {
             if request.action == Action::Chattr {
@@ -402,6 +428,7 @@ impl App {
     pub fn clear_batch(&mut self) {
         self.batch_action = None;
         self.batch_total = 0;
+        self.batch_confirmed = false;
         self.batch_queue.clear();
     }
 
@@ -771,6 +798,16 @@ impl App {
         self.detail_text.clear();
         self.detail_target = None;
         self.detail_scroll = 0;
+    }
+
+    pub fn begin_detail_request(&mut self) -> u64 {
+        self.detail_request_seq = self.detail_request_seq.wrapping_add(1).max(1);
+        self.latest_detail_request_id = Some(self.detail_request_seq);
+        self.detail_request_seq
+    }
+
+    pub fn accepts_detail_request(&self, request_id: u64) -> bool {
+        self.latest_detail_request_id == Some(request_id)
     }
 
     fn rebuild_visible_entries_reset(&mut self) {
