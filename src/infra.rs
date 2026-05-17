@@ -404,6 +404,14 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<OsString>> {
                 "open-source-dir is a foreground action and does not map to a chezmoi CLI command"
             )
         }
+        Action::ExternalDiff => {
+            bail!(
+                "external-diff is a foreground action and does not map to a direct chezmoi CLI command"
+            )
+        }
+        Action::DebugContext => {
+            bail!("debug-context is an internal action and does not map to a chezmoi CLI command")
+        }
         Action::Update => vec![os("update")],
         Action::EditConfig => vec![os("edit-config")],
         Action::EditConfigTemplate => vec![os("edit-config-template")],

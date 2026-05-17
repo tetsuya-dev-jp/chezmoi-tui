@@ -1,3 +1,4 @@
+use crate::app::LayoutMode;
 use crate::cli::CliArgs;
 use crate::domain::ListView;
 use anyhow::{Context, Result, bail};
@@ -12,6 +13,10 @@ pub struct AppConfig {
     pub show_apply_plan: bool,
     pub show_base_context: bool,
     pub show_notices: bool,
+    pub default_layout: LayoutMode,
+    pub list_ratio: u16,
+    pub detail_ratio: u16,
+    pub footer_help: bool,
     pub destination_dir: Option<PathBuf>,
     pub source_dir: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
@@ -31,6 +36,10 @@ impl Default for AppConfig {
             show_apply_plan: true,
             show_base_context: true,
             show_notices: true,
+            default_layout: LayoutMode::Normal,
+            list_ratio: 35,
+            detail_ratio: 65,
+            footer_help: false,
             destination_dir: None,
             source_dir: None,
             log_file: None,
@@ -55,6 +64,10 @@ struct UiConfig {
     auto_preview: Option<bool>,
     show_base_context: Option<bool>,
     show_notices: Option<bool>,
+    default_layout: Option<String>,
+    list_ratio: Option<u16>,
+    detail_ratio: Option<u16>,
+    footer_help: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -117,6 +130,18 @@ impl AppConfig {
             if let Some(show_notices) = ui.show_notices {
                 self.show_notices = show_notices;
             }
+            if let Some(default_layout) = ui.default_layout {
+                self.default_layout = parse_layout_mode(&default_layout)?;
+            }
+            if let Some(list_ratio) = ui.list_ratio {
+                self.list_ratio = validate_ratio("ui.list_ratio", list_ratio)?;
+            }
+            if let Some(detail_ratio) = ui.detail_ratio {
+                self.detail_ratio = validate_ratio("ui.detail_ratio", detail_ratio)?;
+            }
+            if let Some(footer_help) = ui.footer_help {
+                self.footer_help = footer_help;
+            }
         }
 
         if let Some(safety) = file_config.safety {
@@ -139,6 +164,23 @@ impl AppConfig {
 
 fn default_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("chezmoi-tui").join("config.toml"))
+}
+
+fn parse_layout_mode(value: &str) -> Result<LayoutMode> {
+    match value {
+        "normal" => Ok(LayoutMode::Normal),
+        "detail-max" | "detail_max" => Ok(LayoutMode::DetailMax),
+        "log-max" | "log_max" => Ok(LayoutMode::LogMax),
+        other => bail!("invalid ui.default_layout {other:?}"),
+    }
+}
+
+fn validate_ratio(name: &str, value: u16) -> Result<u16> {
+    if (10..=90).contains(&value) {
+        Ok(value)
+    } else {
+        bail!("{name} must be between 10 and 90")
+    }
 }
 
 fn parse_list_view(value: &str) -> Result<ListView> {
@@ -183,6 +225,10 @@ default_view = "source"
 auto_preview = false
 show_base_context = false
 show_notices = false
+default_layout = "detail-max"
+list_ratio = 40
+detail_ratio = 70
+footer_help = true
 
 [safety]
 require_two_step_confirmation = false
@@ -210,6 +256,10 @@ external_diff = "delta"
         assert!(!cfg.auto_preview);
         assert!(!cfg.show_base_context);
         assert!(!cfg.show_notices);
+        assert_eq!(cfg.default_layout, LayoutMode::DetailMax);
+        assert_eq!(cfg.list_ratio, 40);
+        assert_eq!(cfg.detail_ratio, 70);
+        assert!(cfg.footer_help);
         assert!(!cfg.require_two_step_confirmation);
         assert!(!cfg.show_apply_plan);
         assert_eq!(cfg.editor.as_deref(), Some("nvim"));

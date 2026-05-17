@@ -21,14 +21,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match app.layout_mode {
         LayoutMode::Normal => {
+            let list_ratio = app.config.list_ratio.min(90);
+            let detail_ratio = app.config.detail_ratio.min(90);
             let main = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+                .constraints([
+                    Constraint::Percentage(list_ratio),
+                    Constraint::Percentage(100 - list_ratio),
+                ])
                 .split(outer[0]);
 
             let right = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .constraints([
+                    Constraint::Percentage(detail_ratio),
+                    Constraint::Percentage(100 - detail_ratio),
+                ])
                 .split(main[1]);
 
             draw_list(frame, app, main[0]);
@@ -1993,6 +2001,9 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from("  / in List filters paths. / in Detail or Log searches that pane."),
         Line::from("  n/N jumps search matches; in diff without search, n/N jumps hunks."),
         Line::from("  H/L horizontally scroll Detail or Log. m maximizes/restores focused pane."),
+        Line::from("  Source attributes: {tmpl,priv,exec,enc} when encoded in source names."),
+        Line::from("  external-diff opens chezmoi diff in tools.external_diff (default delta)."),
+        Line::from("  debug-context shows current view/selection/config summary."),
         Line::from("  ! opens notice history."),
         Line::from(""),
         Line::from("Keys"),
@@ -2036,6 +2047,8 @@ fn add_attrs_preview(template: bool, private: bool, executable: bool, encrypted:
 fn action_preflight_impact(action: Action) -> &'static str {
     match action {
         Action::Apply => "may update files in the destination",
+        Action::ExternalDiff => "opens full diff in configured external diff tool",
+        Action::DebugContext => "shows current app context without changing files",
         Action::Update => "updates source then applies changes",
         Action::MergeAll => "runs merge workflow for all changes",
         Action::Add => "imports selected files into chezmoi source state",
@@ -2051,7 +2064,10 @@ fn action_preflight_impact(action: Action) -> &'static str {
 
 fn action_preflight_mode(action: Action) -> &'static str {
     match action {
-        Action::Edit | Action::Update | Action::Merge | Action::MergeAll => "foreground command",
+        Action::Edit | Action::Update | Action::Merge | Action::MergeAll | Action::ExternalDiff => {
+            "foreground command"
+        }
+        Action::DebugContext => "internal detail view",
         Action::Ignore => "internal file update",
         _ => "background command",
     }

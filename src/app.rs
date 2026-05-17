@@ -310,6 +310,8 @@ impl App {
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| working_dir.clone());
         let initial_view = config.initial_view;
+        let initial_layout = config.default_layout;
+        let initial_footer_help = config.footer_help;
         let mut app = Self {
             config,
             focus: PaneFocus::List,
@@ -329,7 +331,7 @@ impl App {
             log_tail_offset: 0,
             detail_hscroll: 0,
             log_hscroll: 0,
-            layout_mode: LayoutMode::Normal,
+            layout_mode: initial_layout,
             modal: ModalState::None,
             list_filter: String::new(),
             staged_list_filter: None,
@@ -342,7 +344,7 @@ impl App {
             log_search: None,
             detail_search_index: 0,
             log_search_index: 0,
-            footer_help: false,
+            footer_help: initial_footer_help,
             pending_foreground: None,
             should_quit: false,
             detail_request_seq: 0,
@@ -1172,6 +1174,8 @@ impl App {
                     | Action::Doctor
                     | Action::Data
                     | Action::OpenSourceDir
+                    | Action::ExternalDiff
+                    | Action::DebugContext
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -1189,6 +1193,8 @@ impl App {
                     | Action::Doctor
                     | Action::Data
                     | Action::OpenSourceDir
+                    | Action::ExternalDiff
+                    | Action::DebugContext
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -1208,6 +1214,8 @@ impl App {
                         | Action::Doctor
                         | Action::Data
                         | Action::OpenSourceDir
+                        | Action::ExternalDiff
+                        | Action::DebugContext
                         | Action::Update
                         | Action::EditConfig
                         | Action::EditConfigTemplate
@@ -1221,6 +1229,8 @@ impl App {
                     | Action::Doctor
                     | Action::Data
                     | Action::OpenSourceDir
+                    | Action::ExternalDiff
+                    | Action::DebugContext
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -2282,6 +2292,13 @@ impl App {
         if entry.is_dir {
             label.push('/');
         }
+        if self.view == ListView::Source {
+            let attrs = source_attr_markers(&entry.path);
+            if !attrs.is_empty() {
+                label.push(' ');
+                label.push_str(&attrs);
+            }
+        }
 
         label
     }
@@ -2356,6 +2373,40 @@ impl App {
         Some(format!("{} matched", self.current_len()))
     }
 
+    pub fn debug_context_text(&self) -> String {
+        let selected = self
+            .selected_absolute_path()
+            .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
+        let notice = self
+            .latest_notice()
+            .map_or_else(|| "(none)".to_string(), |notice| notice.message.clone());
+        format!(
+            "chezmoi-tui debug context\n\nview: {}\nfocus: {:?}\nlayout: {:?}\nbase: {}\nselected: {}\nitems: {}\nmarked: {}\nbusy: {}\nlatest notice: {}\nconfig file: {}\nsource: {}\ndestination: {}\nworking dir: {}\n",
+            self.view.title(),
+            self.focus,
+            self.layout_mode,
+            self.view_context_text(),
+            selected,
+            self.current_len(),
+            self.marked_count(),
+            self.busy_message().unwrap_or("no"),
+            notice,
+            self.config
+                .config_file
+                .as_ref()
+                .map_or_else(|| "(none)".to_string(), |p| p.display().to_string()),
+            self.config
+                .source_dir
+                .as_ref()
+                .map_or_else(|| "(runtime)".to_string(), |p| p.display().to_string()),
+            self.config.destination_dir.as_ref().map_or_else(
+                || self.home_dir.display().to_string(),
+                |p| p.display().to_string()
+            ),
+            self.working_dir.display(),
+        )
+    }
+
     fn collapse_tree(&mut self, dir: &Path) {
         let targets: Vec<PathBuf> = self
             .expanded_dirs
@@ -2375,6 +2426,37 @@ impl App {
 
     fn invalidate_unmanaged_filter_index(&mut self) {
         self.unmanaged_filter_cache = UnmanagedFilterCache::default();
+    }
+}
+
+fn source_attr_markers(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let mut attrs = Vec::new();
+    if name.ends_with(".tmpl") {
+        attrs.push("tmpl");
+    }
+    for component in path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+    {
+        for part in component.split('_') {
+            match part {
+                "private" => attrs.push("priv"),
+                "executable" => attrs.push("exec"),
+                "encrypted" => attrs.push("enc"),
+                _ => {}
+            }
+        }
+    }
+    attrs.sort_unstable();
+    attrs.dedup();
+    if attrs.is_empty() {
+        String::new()
+    } else {
+        format!("{{{}}}", attrs.join(","))
     }
 }
 
@@ -3283,10 +3365,12 @@ mod tests {
             vec![
                 Action::Apply,
                 Action::Data,
+                Action::DebugContext,
                 Action::Doctor,
                 Action::EditConfig,
                 Action::EditConfigTemplate,
                 Action::EditIgnore,
+                Action::ExternalDiff,
                 Action::OpenSourceDir,
                 Action::Update,
                 Action::Chattr,

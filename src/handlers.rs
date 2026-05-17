@@ -738,6 +738,7 @@ fn action_requests_require_preflight(requests: &[ActionRequest]) -> bool {
         Action::Apply
             | Action::Update
             | Action::MergeAll
+            | Action::ExternalDiff
             | Action::Forget
             | Action::Chattr
             | Action::Destroy

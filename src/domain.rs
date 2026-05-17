@@ -65,6 +65,8 @@ pub enum Action {
     Doctor,
     Data,
     OpenSourceDir,
+    ExternalDiff,
+    DebugContext,
     Update,
     EditConfig,
     EditConfigTemplate,
@@ -82,11 +84,13 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 20] = [
         Action::Apply,
         Action::Doctor,
         Action::Data,
         Action::OpenSourceDir,
+        Action::ExternalDiff,
+        Action::DebugContext,
         Action::Update,
         Action::EditConfig,
         Action::EditConfigTemplate,
@@ -109,6 +113,8 @@ impl Action {
             Action::Doctor => "doctor",
             Action::Data => "data",
             Action::OpenSourceDir => "open-source-dir",
+            Action::ExternalDiff => "external-diff",
+            Action::DebugContext => "debug-context",
             Action::Update => "update",
             Action::EditConfig => "edit-config",
             Action::EditConfigTemplate => "edit-config-template",
@@ -132,6 +138,8 @@ impl Action {
             Action::Doctor => "run chezmoi diagnostics",
             Action::Data => "show template data as JSON",
             Action::OpenSourceDir => "open an interactive shell in the source directory",
+            Action::ExternalDiff => "open full diff in configured external diff tool",
+            Action::DebugContext => "show current app/view/debug context",
             Action::Update => "update source and apply changes",
             Action::EditConfig => "edit chezmoi config file",
             Action::EditConfigTemplate => "edit chezmoi config template",

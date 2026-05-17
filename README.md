@@ -200,6 +200,8 @@ Action visibility is view-aware.
 - Directory-wide `add` is blocked to avoid accidental bulk imports.
 - `forget` and `purge` run with `--force --no-tty` to avoid TUI deadlocks.
 - Interactive tools run in foreground (for example merge tool/editor flows).
+- `external-diff` opens the full chezmoi diff through `tools.external_diff` (default fallback: `delta`).
+- `debug-context` displays current view/selection/config context for troubleshooting.
 
 ## Configuration
 
@@ -219,6 +221,10 @@ default_view = "status"
 auto_preview = true
 show_base_context = true
 show_notices = true
+default_layout = "normal" # normal, detail-max, log-max
+list_ratio = 35
+detail_ratio = 65
+footer_help = false
 
 [safety]
 require_two_step_confirmation = true
@@ -250,6 +256,10 @@ CLI flags override config file values. Use `--config <path>` to load a specific 
 - Horizontal scrolling for wide detail/log output
 - Basename-preserving path compaction in compact list displays
 - Wizard previews for ignore patterns and add attributes
+- Configurable layout defaults and pane ratios
+- Source view attribute markers for encoded source names (`{tmpl,priv,exec,enc}`)
+- External diff foreground action
+- Debug context action for troubleshooting
 - Built-in safe defaults (no application config file)
 
 ## Development

@@ -115,6 +115,7 @@ fn run_action_foreground(request: &ActionRequest, config: &AppConfig) -> Result<
     match request.action {
         Action::EditIgnore => run_edit_ignore_foreground(config),
         Action::OpenSourceDir => run_open_source_dir_foreground(config),
+        Action::ExternalDiff => run_external_diff_foreground(config),
         _ => run_chezmoi_foreground(request, config),
     }
 }
@@ -144,6 +145,16 @@ pub(crate) fn execute_action_request(
     task_tx: &UnboundedSender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
+    if request.action == Action::DebugContext {
+        app.set_detail_preview(
+            std::path::Path::new("debug-context"),
+            crate::app::PreviewOrigin::Source,
+            app.debug_context_text(),
+        );
+        app.set_info_notice("debug context generated");
+        return Ok(());
+    }
+
     if request.action == Action::Ignore {
         match run_internal_ignore_action(app, &request) {
             Ok(()) => {
@@ -173,6 +184,7 @@ pub(crate) fn execute_action_request(
             | Action::EditConfigTemplate
             | Action::EditIgnore
             | Action::OpenSourceDir
+            | Action::ExternalDiff
     ) {
         let label = format!(
             "{} {}",
@@ -302,6 +314,42 @@ fn run_open_source_dir_foreground(config: &AppConfig) -> Result<(i32, u64)> {
         .with_context(|| format!("failed to open shell in {}", source_dir.display()))?;
     let elapsed = elapsed_millis_u64(started);
     Ok((status.code().unwrap_or(-1), elapsed))
+}
+
+fn run_external_diff_foreground(config: &AppConfig) -> Result<(i32, u64)> {
+    let tool = config
+        .external_diff
+        .clone()
+        .or_else(|| std::env::var("CHEZMOI_TUI_EXTERNAL_DIFF").ok())
+        .unwrap_or_else(|| "delta".to_string());
+    let destination_dir = config
+        .destination_dir
+        .clone()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| config.working_dir.clone());
+    let mut command = format!(
+        "chezmoi --destination {}",
+        shell_quote(&destination_dir.display().to_string())
+    );
+    if let Some(source_dir) = &config.source_dir {
+        command.push_str(" --source ");
+        command.push_str(&shell_quote(&source_dir.display().to_string()));
+    }
+    command.push_str(" diff --no-pager --use-builtin-diff --color=true | ");
+    command.push_str(&tool);
+
+    let started = Instant::now();
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .status()
+        .context("failed to launch external diff command")?;
+    let elapsed = elapsed_millis_u64(started);
+    Ok((status.code().unwrap_or(-1), elapsed))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn resolve_source_dir_for_foreground(config: &AppConfig) -> Result<std::path::PathBuf> {
