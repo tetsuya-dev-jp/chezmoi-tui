@@ -62,6 +62,8 @@ pub struct DiffText {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Apply,
+    Doctor,
+    Data,
     Update,
     EditConfig,
     EditConfigTemplate,
@@ -79,8 +81,10 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 15] = [
+    pub const ALL: [Action; 17] = [
         Action::Apply,
+        Action::Doctor,
+        Action::Data,
         Action::Update,
         Action::EditConfig,
         Action::EditConfigTemplate,
@@ -100,6 +104,8 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Action::Apply => "apply",
+            Action::Doctor => "doctor",
+            Action::Data => "data",
             Action::Update => "update",
             Action::EditConfig => "edit-config",
             Action::EditConfigTemplate => "edit-config-template",
@@ -120,6 +126,8 @@ impl Action {
     pub fn description(self) -> &'static str {
         match self {
             Action::Apply => "apply target state to destination",
+            Action::Doctor => "run chezmoi diagnostics",
+            Action::Data => "show template data as JSON",
             Action::Update => "update source and apply changes",
             Action::EditConfig => "edit chezmoi config file",
             Action::EditConfigTemplate => "edit chezmoi config template",

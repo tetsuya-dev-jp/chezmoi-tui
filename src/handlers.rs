@@ -81,6 +81,25 @@ pub(crate) fn handle_backend_event(
                 app.log(format!("stderr: {}", squash_lines(&result.stderr)));
             }
 
+            if matches!(request.action, Action::Doctor | Action::Data) {
+                let mut output = result.stdout.clone();
+                if !result.stderr.trim().is_empty() {
+                    if !output.is_empty() {
+                        output.push_str("\n\n");
+                    }
+                    output.push_str("stderr:\n");
+                    output.push_str(&result.stderr);
+                }
+                if output.trim().is_empty() {
+                    output = format!("{} produced no output", request.action.label());
+                }
+                app.set_detail_preview(
+                    std::path::Path::new(request.action.label()),
+                    crate::app::PreviewOrigin::Source,
+                    output,
+                );
+            }
+
             if request.action == Action::Add
                 && result.exit_code == 0
                 && let Some(attrs) = request.chattr_attrs.clone()
@@ -848,6 +867,35 @@ mod tests {
         .expect("handle error");
         assert!(!app.is_busy());
         assert_eq!(app.busy_task_count(), 0);
+    }
+
+    #[test]
+    fn doctor_action_output_is_shown_in_detail() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.begin_busy_task();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::ActionFinished {
+                request: ActionRequest {
+                    action: Action::Doctor,
+                    target: None,
+                    chattr_attrs: None,
+                },
+                result: crate::domain::CommandResult {
+                    exit_code: 0,
+                    stdout: "ok\n".to_string(),
+                    stderr: String::new(),
+                    duration_ms: 10,
+                },
+            },
+        )
+        .expect("handle doctor");
+
+        assert!(app.detail_title.contains("doctor"));
+        assert_eq!(app.detail_text, "ok\n");
     }
 
     #[test]

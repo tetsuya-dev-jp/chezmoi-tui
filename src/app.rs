@@ -838,6 +838,8 @@ impl App {
             ListView::Status => matches!(
                 action,
                 Action::Apply
+                    | Action::Doctor
+                    | Action::Data
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -852,6 +854,8 @@ impl App {
             ListView::Managed => matches!(
                 action,
                 Action::Apply
+                    | Action::Doctor
+                    | Action::Data
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -868,6 +872,8 @@ impl App {
                     Action::Add
                         | Action::Ignore
                         | Action::Apply
+                        | Action::Doctor
+                        | Action::Data
                         | Action::Update
                         | Action::EditConfig
                         | Action::EditConfigTemplate
@@ -878,6 +884,8 @@ impl App {
             ListView::Source => matches!(
                 action,
                 Action::Apply
+                    | Action::Doctor
+                    | Action::Data
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -2869,6 +2877,8 @@ mod tests {
             got,
             vec![
                 Action::Apply,
+                Action::Data,
+                Action::Doctor,
                 Action::EditConfig,
                 Action::EditConfigTemplate,
                 Action::EditIgnore,

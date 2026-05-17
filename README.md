@@ -144,10 +144,10 @@ Action visibility is view-aware.
 
 | View | Actions |
 | --- | --- |
-| `status` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add`, `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
-| `managed` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `edit`, `forget`, `chattr`, `destroy`, `purge` |
-| `unmanaged` | `add`, `ignore`, `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
-| `source` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
+| `status` | `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add`, `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
+| `managed` | `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `edit`, `forget`, `chattr`, `destroy`, `purge` |
+| `unmanaged` | `add`, `ignore`, `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
+| `source` | `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
 
 `add` opens an attribute wizard before importing files. Selected attributes are applied after add with `chattr`:
 

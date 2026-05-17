@@ -397,6 +397,8 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<OsString>> {
 
     let args = match action {
         Action::Apply => vec![os("apply")],
+        Action::Doctor => vec![os("doctor")],
+        Action::Data => vec![os("data"), os("--format"), os("json")],
         Action::Update => vec![os("update")],
         Action::EditConfig => vec![os("edit-config")],
         Action::EditConfigTemplate => vec![os("edit-config-template")],
@@ -559,6 +561,26 @@ mod tests {
         assert_eq!(
             action_to_args(&purge).expect("purge args"),
             vec![os("purge"), os("--force"), os("--no-tty")]
+        );
+
+        let doctor = ActionRequest {
+            action: Action::Doctor,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&doctor).expect("doctor args"),
+            vec![os("doctor")]
+        );
+
+        let data = ActionRequest {
+            action: Action::Data,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&data).expect("data args"),
+            vec![os("data"), os("--format"), os("json")]
         );
 
         let edit = ActionRequest {
