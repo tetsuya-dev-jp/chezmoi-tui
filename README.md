@@ -106,7 +106,8 @@ Global:
 | `Tab` | Cycle focus (`List` -> `Detail` -> `Log`) |
 | `a` | Open action menu |
 | `r` | Refresh all lists |
-| `?` | Toggle footer help hints |
+| `?` | Open help and legends |
+| `!` | Open notice history |
 | `q` / `Ctrl+C` | Quit |
 
 List focus:
@@ -129,13 +130,14 @@ Detail or log focus:
 | `j` / `k` or `↑` / `↓` | Scroll |
 | `PgUp` / `PgDn` | Page scroll |
 | `Ctrl+u` / `Ctrl+d` | Half-page scroll |
+| `/` | Search focused pane |
 
 Action menu:
 
 | Key | Behavior |
 | --- | --- |
 | type text | Filter by action label |
-| `danger:<action>` | Filter dangerous actions (`destroy`, `purge`) |
+| `danger:<action>` | Reveal/filter dangerous actions (`destroy`, `purge`) |
 | `↑` / `↓` | Move |
 | `Enter` | Continue to preflight or execute low-risk action |
 | `Esc` | Close |
@@ -180,7 +182,9 @@ Action visibility is view-aware.
 
 - Strict confirmation is always required for dangerous actions: `destroy`, `purge`.
 - `destroy` and `purge` require typed confirmation phrases.
-- Dangerous actions are hidden from plain action-menu filtering; use `danger:destroy` or `danger:purge` to filter them explicitly.
+- Dangerous actions are hidden from plain action-menu filtering; use `danger:destroy` or `danger:purge` to reveal/filter them explicitly.
+- The help overlay explains status symbols, views, tree markers, symlink markers, and danger filtering.
+- The action menu can show unavailable actions with disabled reasons.
 - Confirmation is also required for broad or state-changing actions: `apply`, `update`, `merge-all`, `forget`, `chattr`.
 - Broad or risky operations open a preflight review before execution.
 - Preflight shows the action, impact, command preview, and affected targets.
@@ -235,6 +239,9 @@ CLI flags override config file values. Use `--config <path>` to load a specific 
 - Log auto-follow with manual scrolling
 - Busy indicator includes the current task when available
 - Common errors include recovery hints in the notice/log
+- Help/legend overlay for views, status columns, tree markers, and safety rules
+- Notice history for recent info/success/error messages
+- Detail and log pane search
 - Built-in safe defaults (no application config file)
 
 ## Development

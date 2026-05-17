@@ -1,4 +1,6 @@
-use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, NoticeTone, PaneFocus};
+use crate::app::{
+    App, ConfirmStep, DetailKind, InputKind, ModalState, NoticeTone, PaneFocus, SearchScope,
+};
 use crate::domain::{Action, ActionRequest, ListView};
 use crate::infra::action_to_args;
 use crate::ui_diff::colorized_diff_lines;
@@ -345,6 +347,31 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
         segments.push(LeftSegment {
             text: compact_label(&notice.message, 48),
             style: notice_style(notice.tone),
+            essential: false,
+            badge: false,
+        });
+    }
+
+    segments.push(LeftSegment {
+        text: format!("focus={}", focus_label(app.focus)),
+        style: Style::default().fg(Color::Gray),
+        essential: false,
+        badge: false,
+    });
+
+    if app.view == ListView::Status {
+        segments.push(LeftSegment {
+            text: "status cols: state/target".to_string(),
+            style: Style::default().fg(Color::DarkGray),
+            essential: false,
+            badge: false,
+        });
+    }
+
+    if let Some(search) = app.active_search_label() {
+        segments.push(LeftSegment {
+            text: compact_label(&search, 24),
+            style: Style::default().fg(Color::LightYellow),
             essential: false,
             badge: false,
         });
@@ -787,6 +814,14 @@ fn render_hints(hints: &[HintRendered]) -> (Vec<Span<'static>>, usize) {
     (spans, width)
 }
 
+fn notice_tone_label(tone: NoticeTone) -> &'static str {
+    match tone {
+        NoticeTone::Info => "INFO",
+        NoticeTone::Success => "OK  ",
+        NoticeTone::Error => "ERR ",
+    }
+}
+
 fn notice_style(tone: NoticeTone) -> Style {
     match tone {
         NoticeTone::Info => Style::default().fg(Color::LightBlue),
@@ -1094,6 +1129,14 @@ fn item_word(count: usize) -> &'static str {
     if count == 1 { "item" } else { "items" }
 }
 
+fn focus_label(focus: PaneFocus) -> &'static str {
+    match focus {
+        PaneFocus::List => "List",
+        PaneFocus::Detail => "Detail",
+        PaneFocus::Log => "Log",
+    }
+}
+
 fn compact_label(value: &str, max_chars: usize) -> String {
     let chars: Vec<char> = value.chars().collect();
     if chars.len() <= max_chars {
@@ -1296,7 +1339,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Span::styled(query, query_style),
                 ]),
                 Line::from(
-                    "Backspace: delete  danger:<name>: filter danger  Enter: run  Esc: close",
+                    "Backspace: delete  danger:<name>: reveal danger  Enter: run  Esc: close",
                 ),
             ])
             .block(
@@ -1315,16 +1358,17 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .collect();
             let filtering = !filter.trim().is_empty();
 
-            let (items, selectable_rows): (Vec<ListItem>, Vec<usize>) = if actions.is_empty() {
-                (
-                    vec![ListItem::new("No actions match the current filter")],
-                    Vec::new(),
-                )
+            let rows = action_menu_rows_for_app(app, &actions, filtering, filter);
+            let mut selectable = Vec::new();
+            let items: Vec<ListItem> = if rows.is_empty() {
+                let message = if filter.trim().starts_with("danger:") {
+                    "No dangerous actions match. Try danger:destroy or danger:purge"
+                } else {
+                    "No actions match. Dangerous actions require danger:<name>."
+                };
+                vec![ListItem::new(message)]
             } else {
-                let rows = action_menu_rows(&actions, filtering);
-                let mut selectable = Vec::new();
-                let items = rows
-                    .into_iter()
+                rows.into_iter()
                     .enumerate()
                     .map(|(row_index, row)| {
                         if matches!(row, ActionMenuRow::Action(_)) {
@@ -1332,8 +1376,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                         }
                         action_menu_row_item(row)
                     })
-                    .collect();
-                (items, selectable)
+                    .collect()
             };
 
             let list = List::new(items)
@@ -1354,7 +1397,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             let mut state = ListState::default();
             if !indices.is_empty() {
                 let action_index = (*selected).min(indices.len().saturating_sub(1));
-                let row_index = selectable_rows.get(action_index).copied().unwrap_or(0);
+                let row_index = selectable.get(action_index).copied().unwrap_or(0);
                 state.select(Some(row_index));
             }
             frame.render_stateful_widget(list, sections[1], &mut state);
@@ -1605,6 +1648,85 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
         }
+        ModalState::Help { scroll } => {
+            let area = centered_rect(78, 78, frame.area());
+            frame.render_widget(Clear, area);
+            let lines = help_lines();
+            let visible_rows = area.height.saturating_sub(2) as usize;
+            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Help / Legends ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
+        ModalState::NoticeHistory { scroll } => {
+            let area = centered_rect(76, 64, frame.area());
+            frame.render_widget(Clear, area);
+            let mut lines = vec![Line::from("Recent notices and errors:"), Line::from("")];
+            if app.notice_history().is_empty() {
+                lines.push(Line::from("No notices yet."));
+            } else {
+                for (index, notice) in app.notice_history().iter().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{:>2} ", index + 1),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(notice_tone_label(notice.tone), notice_style(notice.tone)),
+                        Span::raw(" "),
+                        Span::styled(notice.message.clone(), Style::default().fg(Color::White)),
+                    ]));
+                }
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from("Esc: close  j/k/PgUp/PgDn: scroll"));
+            let visible_rows = area.height.saturating_sub(2) as usize;
+            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Notice History ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
+        ModalState::Search { scope, value } => {
+            let area = centered_rect(62, 22, frame.area());
+            frame.render_widget(Clear, area);
+            let scope_label = match scope {
+                SearchScope::Detail => "Detail",
+                SearchScope::Log => "Log",
+            };
+            let shown = if value.is_empty() { "<empty>" } else { value };
+            let lines = vec![
+                Line::from(format!("Search in {scope_label} pane.")),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("query: ", Style::default().fg(Color::Gray)),
+                    Span::styled(shown.to_string(), Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+                Line::from("Enter: search/jump  Esc: cancel  Backspace: delete"),
+            ];
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Pane Search ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
         ModalState::Input {
             kind,
             request,
@@ -1650,6 +1772,7 @@ enum ActionMenuSection {
     Global,
     SelectedItem,
     Danger,
+    Unavailable,
 }
 
 impl ActionMenuSection {
@@ -1658,15 +1781,18 @@ impl ActionMenuSection {
             Self::Global => "Global",
             Self::SelectedItem => "Selected item",
             Self::Danger => "Danger",
+            Self::Unavailable => "Unavailable",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ActionMenuRow {
     Header(ActionMenuSection),
     Spacer,
+    Note(String),
     Action(Action),
+    Disabled(Action, String),
 }
 
 fn action_menu_section(action: Action) -> ActionMenuSection {
@@ -1689,6 +1815,7 @@ fn build_action_menu_rows(actions: &[Action]) -> Vec<ActionMenuRow> {
             ActionMenuSection::Global => global.push(*action),
             ActionMenuSection::SelectedItem => selected.push(*action),
             ActionMenuSection::Danger => danger.push(*action),
+            ActionMenuSection::Unavailable => {}
         }
     }
 
@@ -1721,6 +1848,43 @@ fn action_menu_rows(actions: &[Action], filtering: bool) -> Vec<ActionMenuRow> {
     build_action_menu_rows(actions)
 }
 
+fn action_menu_rows_for_app(
+    app: &App,
+    actions: &[Action],
+    filtering: bool,
+    filter: &str,
+) -> Vec<ActionMenuRow> {
+    let mut rows = action_menu_rows(actions, filtering);
+    if filter.trim().is_empty() {
+        rows.push(ActionMenuRow::Spacer);
+        rows.push(ActionMenuRow::Note(
+            "Danger actions are hidden from plain filtering; type danger:<name>.".to_string(),
+        ));
+        let disabled: Vec<_> = Action::ALL
+            .iter()
+            .copied()
+            .filter_map(|action| {
+                app.action_disabled_reason(action)
+                    .map(|reason| (action, reason))
+            })
+            .collect();
+        if !disabled.is_empty() {
+            rows.push(ActionMenuRow::Spacer);
+            rows.push(ActionMenuRow::Header(ActionMenuSection::Unavailable));
+            rows.extend(
+                disabled
+                    .into_iter()
+                    .map(|(action, reason)| ActionMenuRow::Disabled(action, reason)),
+            );
+        }
+    } else if filter.trim() == "danger:" {
+        rows.push(ActionMenuRow::Note(
+            "Examples: danger:destroy, danger:purge".to_string(),
+        ));
+    }
+    rows
+}
+
 fn action_menu_text(action: Action) -> String {
     if action.is_dangerous() {
         format!(
@@ -1741,6 +1905,42 @@ fn action_menu_item(action: Action) -> ListItem<'static> {
         Style::default().fg(Color::Gray)
     };
     ListItem::new(Line::styled(text, style))
+}
+
+fn help_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from("Views"),
+        Line::from("  1 Status    pending chezmoi changes at the destination/home"),
+        Line::from("  2 Managed   files managed by chezmoi under destination/home"),
+        Line::from("  3 Unmanaged files in current working directory not managed by chezmoi"),
+        Line::from("  4 Source    chezmoi source directory"),
+        Line::from(""),
+        Line::from("Status symbols"),
+        Line::from("  Two columns are shown before each status path."),
+        Line::from("  Column 1: actual file vs chezmoi source/state."),
+        Line::from("  Column 2: actual file vs target state to apply."),
+        Line::from("  A added   M modified   D deleted   R run script   other = unknown"),
+        Line::from(""),
+        Line::from("Tree symbols"),
+        Line::from("  [+] collapsed directory   [-] expanded directory   [ ] directory"),
+        Line::from("  [L] symlink directory     L symlink file           @ symlink suffix"),
+        Line::from("  / directory suffix"),
+        Line::from(""),
+        Line::from("Actions and safety"),
+        Line::from("  a opens actions. Broad/risky actions show a preflight review first."),
+        Line::from("  Dangerous actions are hidden from normal filtering."),
+        Line::from("  Type danger:destroy or danger:purge to reveal dangerous actions."),
+        Line::from("  Destroy/purge still require typed confirmation phrases."),
+        Line::from("  Disabled action rows explain why an action is unavailable."),
+        Line::from(""),
+        Line::from("Search and history"),
+        Line::from("  / in List filters paths. / in Detail or Log searches that pane."),
+        Line::from("  ! opens notice history."),
+        Line::from(""),
+        Line::from("Keys"),
+        Line::from("  Tab focus panes   j/k or arrows move/scroll   r refresh   q quit"),
+        Line::from("  Esc closes modals. This help scrolls with j/k/PgUp/PgDn."),
+    ]
 }
 
 fn action_preflight_impact(action: Action) -> &'static str {
@@ -1814,7 +2014,15 @@ fn action_menu_row_item(row: ActionMenuRow) -> ListItem<'static> {
                 .add_modifier(Modifier::BOLD),
         )),
         ActionMenuRow::Spacer => ListItem::new(Line::from("")),
+        ActionMenuRow::Note(text) => ListItem::new(Line::styled(
+            format!("  {text}"),
+            Style::default().fg(Color::DarkGray),
+        )),
         ActionMenuRow::Action(action) => action_menu_item(action),
+        ActionMenuRow::Disabled(action, reason) => ListItem::new(Line::styled(
+            format!("  {:<10} -- disabled: {}", action.label(), reason),
+            Style::default().fg(Color::DarkGray),
+        )),
     }
 }
 

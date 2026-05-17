@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const MAX_LOG_LINES: usize = 500;
+const MAX_NOTICE_HISTORY: usize = 50;
 const LIST_FILTER_DEBOUNCE_MS: u64 = 120;
 const INITIAL_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 50_000;
 const UNMANAGED_FILTER_INDEX_STEP: usize = 50_000;
@@ -99,6 +100,12 @@ pub enum InputKind {
     ChattrAttrs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    Detail,
+    Log,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModalState {
     None,
@@ -121,6 +128,16 @@ pub enum ModalState {
     ActionMenu {
         selected: usize,
         filter: String,
+    },
+    Help {
+        scroll: usize,
+    },
+    NoticeHistory {
+        scroll: usize,
+    },
+    Search {
+        scope: SearchScope,
+        value: String,
     },
     ActionPreflight {
         requests: Vec<ActionRequest>,
@@ -239,7 +256,10 @@ pub struct App {
     staged_filter_updated_at: Option<Instant>,
     busy_tasks: usize,
     latest_notice: Option<Notice>,
+    notice_history: Vec<Notice>,
     busy_message: Option<String>,
+    detail_search: Option<String>,
+    log_search: Option<String>,
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
@@ -289,7 +309,10 @@ impl App {
             staged_filter_updated_at: None,
             busy_tasks: 0,
             latest_notice: None,
+            notice_history: Vec::new(),
             busy_message: None,
+            detail_search: None,
+            log_search: None,
             footer_help: false,
             pending_foreground: None,
             should_quit: false,
@@ -350,10 +373,16 @@ impl App {
     }
 
     pub fn set_notice(&mut self, tone: NoticeTone, message: impl Into<String>) {
-        self.latest_notice = Some(Notice {
+        let notice = Notice {
             tone,
             message: message.into(),
-        });
+        };
+        self.latest_notice = Some(notice.clone());
+        self.notice_history.push(notice);
+        if self.notice_history.len() > MAX_NOTICE_HISTORY {
+            let trim = self.notice_history.len() - MAX_NOTICE_HISTORY;
+            self.notice_history.drain(0..trim);
+        }
     }
 
     pub fn set_info_notice(&mut self, message: impl Into<String>) {
@@ -370,6 +399,10 @@ impl App {
 
     pub fn latest_notice(&self) -> Option<&Notice> {
         self.latest_notice.as_ref()
+    }
+
+    pub fn notice_history(&self) -> &[Notice] {
+        &self.notice_history
     }
 
     #[cfg(test)]
@@ -652,8 +685,69 @@ impl App {
         };
     }
 
-    pub fn toggle_footer_help(&mut self) {
-        self.footer_help = !self.footer_help;
+    pub fn open_help(&mut self) {
+        self.modal = ModalState::Help { scroll: 0 };
+    }
+
+    pub fn open_notice_history(&mut self) {
+        self.modal = ModalState::NoticeHistory { scroll: 0 };
+    }
+
+    pub fn open_search(&mut self, scope: SearchScope) {
+        let value = match scope {
+            SearchScope::Detail => self.detail_search.clone().unwrap_or_default(),
+            SearchScope::Log => self.log_search.clone().unwrap_or_default(),
+        };
+        self.modal = ModalState::Search { scope, value };
+    }
+
+    pub fn apply_search(&mut self, scope: SearchScope, value: String) -> bool {
+        let query = value.trim().to_string();
+        if query.is_empty() {
+            match scope {
+                SearchScope::Detail => self.detail_search = None,
+                SearchScope::Log => self.log_search = None,
+            }
+            return false;
+        }
+
+        match scope {
+            SearchScope::Detail => {
+                self.detail_search = Some(query.clone());
+                if let Some(index) = self.detail_text.lines().position(|line| {
+                    line.to_ascii_lowercase()
+                        .contains(&query.to_ascii_lowercase())
+                }) {
+                    self.detail_scroll = index;
+                    return true;
+                }
+            }
+            SearchScope::Log => {
+                self.log_search = Some(query.clone());
+                if let Some(index) = self.logs.iter().position(|line| {
+                    line.to_ascii_lowercase()
+                        .contains(&query.to_ascii_lowercase())
+                }) {
+                    self.log_tail_offset = self.logs.len().saturating_sub(index + 1);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn active_search_label(&self) -> Option<String> {
+        match self.focus {
+            PaneFocus::Detail => self
+                .detail_search
+                .as_ref()
+                .map(|query| format!("detail /{query}")),
+            PaneFocus::Log => self
+                .log_search
+                .as_ref()
+                .map(|query| format!("log /{query}")),
+            PaneFocus::List => None,
+        }
     }
 
     pub fn open_confirm(&mut self, request: ActionRequest) {
@@ -673,7 +767,10 @@ impl App {
 
     pub fn scroll_modal_down(&mut self, lines: usize) -> bool {
         match &mut self.modal {
-            ModalState::ActionPreflight { scroll, .. } | ModalState::ApplyPlan { scroll, .. } => {
+            ModalState::ActionPreflight { scroll, .. }
+            | ModalState::ApplyPlan { scroll, .. }
+            | ModalState::Help { scroll }
+            | ModalState::NoticeHistory { scroll } => {
                 *scroll = scroll.saturating_add(lines);
                 true
             }
@@ -683,7 +780,10 @@ impl App {
 
     pub fn scroll_modal_up(&mut self, lines: usize) -> bool {
         match &mut self.modal {
-            ModalState::ActionPreflight { scroll, .. } | ModalState::ApplyPlan { scroll, .. } => {
+            ModalState::ActionPreflight { scroll, .. }
+            | ModalState::ApplyPlan { scroll, .. }
+            | ModalState::Help { scroll }
+            | ModalState::NoticeHistory { scroll } => {
                 let before = *scroll;
                 *scroll = scroll.saturating_sub(lines);
                 *scroll != before
@@ -779,6 +879,35 @@ impl App {
 
     pub fn action_by_index(index: usize) -> Option<Action> {
         Action::ALL.get(index).copied()
+    }
+
+    pub fn action_disabled_reason(&self, action: Action) -> Option<String> {
+        if action == Action::ReAdd && !self.readd_selection_is_eligible() {
+            return Some("only for modified status files".to_string());
+        }
+        if !Self::action_visible_in_view(self.view, action) {
+            return Some(format!("not available in {} view", self.view.title()));
+        }
+        if action.needs_target() && self.selected_action_targets_absolute().is_empty() {
+            return Some("requires a selected target".to_string());
+        }
+        if action == Action::Edit
+            && self
+                .selected_action_targets_absolute()
+                .iter()
+                .any(|path| !self.is_absolute_path_managed(path))
+        {
+            return Some("edit is only for managed files".to_string());
+        }
+        if action == Action::Add
+            && self
+                .selected_action_targets_absolute()
+                .iter()
+                .any(|path| path.is_dir())
+        {
+            return Some("directory add is disabled; expand and select files".to_string());
+        }
+        None
     }
 
     pub fn action_menu_indices(&self, filter: &str) -> Vec<usize> {

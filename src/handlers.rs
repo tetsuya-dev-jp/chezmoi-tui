@@ -2,7 +2,9 @@ use crate::actions::{
     build_action_requests, dispatch_action_request, execute_action_request, maybe_continue_batch,
     send_task, squash_lines, validate_action_requests,
 };
-use crate::app::{App, BackendEvent, BackendTask, ConfirmStep, InputKind, ModalState};
+use crate::app::{
+    App, BackendEvent, BackendTask, ConfirmStep, InputKind, ModalState, PaneFocus, SearchScope,
+};
 use crate::domain::{Action, ActionRequest, ListView};
 use crate::ignore::IgnorePatternMode;
 use crate::preview::maybe_enqueue_auto_detail;
@@ -185,6 +187,10 @@ pub(crate) fn handle_key_event(
         ModalState::Ignore { .. } => handle_ignore_key(app, key, task_tx),
         ModalState::AddOptions { .. } => handle_add_options_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
+        ModalState::Help { .. } | ModalState::NoticeHistory { .. } => {
+            handle_scroll_modal_key(app, key)
+        }
+        ModalState::Search { .. } => handle_search_key(app, key),
         ModalState::ActionPreflight { .. } => handle_action_preflight_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
         ModalState::ApplyPlan { .. } => handle_apply_plan_key(app, key, task_tx),
@@ -201,8 +207,13 @@ fn handle_key_without_modal(
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
-        KeyCode::Char('?') => app.toggle_footer_help(),
+        KeyCode::Char('?') => app.open_help(),
+        KeyCode::Char('!') => app.open_notice_history(),
         KeyCode::Char('/') if app.focus == crate::app::PaneFocus::List => app.open_list_filter(),
+        KeyCode::Char('/') if app.focus == PaneFocus::Detail => {
+            app.open_search(SearchScope::Detail)
+        }
+        KeyCode::Char('/') if app.focus == PaneFocus::Log => app.open_search(SearchScope::Log),
         KeyCode::Esc
             if app.focus == crate::app::PaneFocus::List && !app.list_filter().is_empty() =>
         {
@@ -771,6 +782,63 @@ fn handle_action_preflight_key(
     Ok(())
 }
 
+fn handle_scroll_modal_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('?') => app.close_modal(),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.scroll_modal_down(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.scroll_modal_up(1);
+        }
+        KeyCode::PageDown => {
+            app.scroll_modal_down(10);
+        }
+        KeyCode::PageUp => {
+            app.scroll_modal_up(10);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let mut apply: Option<(SearchScope, String)> = None;
+    {
+        let ModalState::Search { scope, value } = &mut app.modal else {
+            return Ok(());
+        };
+        match key.code {
+            KeyCode::Esc => {
+                app.close_modal();
+                return Ok(());
+            }
+            KeyCode::Enter => apply = Some((*scope, value.clone())),
+            KeyCode::Backspace => {
+                value.pop();
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !key.modifiers.contains(KeyModifiers::SUPER) =>
+            {
+                value.push(c);
+            }
+            _ => {}
+        }
+    }
+    if let Some((scope, value)) = apply {
+        let found = app.apply_search(scope, value.clone());
+        app.close_modal();
+        if found {
+            app.set_info_notice(format!("search matched: /{}", value.trim()));
+        } else {
+            app.set_error_notice(format!("search not found: /{}", value.trim()));
+        }
+    }
+    Ok(())
+}
+
 fn handle_apply_plan_key(
     app: &mut App,
     key: KeyEvent,
@@ -1080,16 +1148,13 @@ mod tests {
     }
 
     #[test]
-    fn question_key_toggles_footer_help() {
+    fn question_key_opens_help_modal() {
         let mut app = App::new(AppConfig::default());
         let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
 
         handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
-        assert!(app.footer_help);
-
-        handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
-        assert!(!app.footer_help);
+        assert!(matches!(app.modal, ModalState::Help { .. }));
     }
 
     #[test]
