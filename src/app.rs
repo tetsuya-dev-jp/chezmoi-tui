@@ -840,6 +840,7 @@ impl App {
                 Action::Apply
                     | Action::Doctor
                     | Action::Data
+                    | Action::OpenSourceDir
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -856,6 +857,7 @@ impl App {
                 Action::Apply
                     | Action::Doctor
                     | Action::Data
+                    | Action::OpenSourceDir
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -874,6 +876,7 @@ impl App {
                         | Action::Apply
                         | Action::Doctor
                         | Action::Data
+                        | Action::OpenSourceDir
                         | Action::Update
                         | Action::EditConfig
                         | Action::EditConfigTemplate
@@ -886,6 +889,7 @@ impl App {
                 Action::Apply
                     | Action::Doctor
                     | Action::Data
+                    | Action::OpenSourceDir
                     | Action::Update
                     | Action::EditConfig
                     | Action::EditConfigTemplate
@@ -2882,6 +2886,7 @@ mod tests {
                 Action::EditConfig,
                 Action::EditConfigTemplate,
                 Action::EditIgnore,
+                Action::OpenSourceDir,
                 Action::Update,
                 Action::Chattr,
                 Action::Edit,

@@ -64,6 +64,7 @@ pub enum Action {
     Apply,
     Doctor,
     Data,
+    OpenSourceDir,
     Update,
     EditConfig,
     EditConfigTemplate,
@@ -81,10 +82,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 17] = [
+    pub const ALL: [Action; 18] = [
         Action::Apply,
         Action::Doctor,
         Action::Data,
+        Action::OpenSourceDir,
         Action::Update,
         Action::EditConfig,
         Action::EditConfigTemplate,
@@ -106,6 +108,7 @@ impl Action {
             Action::Apply => "apply",
             Action::Doctor => "doctor",
             Action::Data => "data",
+            Action::OpenSourceDir => "open-source-dir",
             Action::Update => "update",
             Action::EditConfig => "edit-config",
             Action::EditConfigTemplate => "edit-config-template",
@@ -128,6 +131,7 @@ impl Action {
             Action::Apply => "apply target state to destination",
             Action::Doctor => "run chezmoi diagnostics",
             Action::Data => "show template data as JSON",
+            Action::OpenSourceDir => "open an interactive shell in the source directory",
             Action::Update => "update source and apply changes",
             Action::EditConfig => "edit chezmoi config file",
             Action::EditConfigTemplate => "edit chezmoi config template",

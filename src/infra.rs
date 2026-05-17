@@ -399,6 +399,11 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<OsString>> {
         Action::Apply => vec![os("apply")],
         Action::Doctor => vec![os("doctor")],
         Action::Data => vec![os("data"), os("--format"), os("json")],
+        Action::OpenSourceDir => {
+            bail!(
+                "open-source-dir is a foreground action and does not map to a chezmoi CLI command"
+            )
+        }
         Action::Update => vec![os("update")],
         Action::EditConfig => vec![os("edit-config")],
         Action::EditConfigTemplate => vec![os("edit-config-template")],
@@ -582,6 +587,13 @@ mod tests {
             action_to_args(&data).expect("data args"),
             vec![os("data"), os("--format"), os("json")]
         );
+
+        let open_source_dir = ActionRequest {
+            action: Action::OpenSourceDir,
+            target: None,
+            chattr_attrs: None,
+        };
+        assert!(action_to_args(&open_source_dir).is_err());
 
         let edit = ActionRequest {
             action: Action::Edit,

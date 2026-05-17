@@ -317,12 +317,14 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
         badge: true,
     }];
 
-    segments.push(LeftSegment {
-        text: compact_label(&app.view_context_text(), 42),
-        style: Style::default().fg(Color::DarkGray),
-        essential: false,
-        badge: false,
-    });
+    if app.config.show_base_context {
+        segments.push(LeftSegment {
+            text: compact_label(&app.view_context_text(), 42),
+            style: Style::default().fg(Color::DarkGray),
+            essential: false,
+            badge: false,
+        });
+    }
 
     if app.is_busy() {
         segments.push(LeftSegment {
@@ -333,7 +335,9 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
         });
     }
 
-    if let Some(notice) = app.latest_notice() {
+    if app.config.show_notices
+        && let Some(notice) = app.latest_notice()
+    {
         segments.push(LeftSegment {
             text: compact_label(&notice.message, 48),
             style: notice_style(notice.tone),

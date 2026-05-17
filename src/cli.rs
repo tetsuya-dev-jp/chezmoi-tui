@@ -21,6 +21,14 @@ pub(crate) struct CliArgs {
     #[arg(long)]
     pub log_file: Option<PathBuf>,
 
+    /// Load configuration from this TOML file
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Do not load a configuration file
+    #[arg(long)]
+    pub no_config: bool,
+
     /// Disable automatic diff/preview loading when selection changes
     #[arg(long)]
     pub no_auto_preview: bool,
@@ -62,6 +70,8 @@ mod tests {
             "managed",
             "--log-file",
             "/tmp/chezmoi-tui.log",
+            "--config",
+            "/tmp/chezmoi-tui.toml",
             "--no-auto-preview",
         ]);
 
@@ -69,6 +79,7 @@ mod tests {
         assert_eq!(args.source, Some(PathBuf::from("/tmp/source")));
         assert_eq!(args.view, Some(CliView::Managed));
         assert_eq!(args.log_file, Some(PathBuf::from("/tmp/chezmoi-tui.log")));
+        assert_eq!(args.config, Some(PathBuf::from("/tmp/chezmoi-tui.toml")));
         assert!(args.no_auto_preview);
     }
 

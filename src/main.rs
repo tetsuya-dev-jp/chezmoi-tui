@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = AppConfig::from_cli(CliArgs::parse());
+    let config = AppConfig::from_cli(CliArgs::parse())?;
     diagnostics::init(config.log_file.as_deref())?;
     tracing::info!(?config, "starting chezmoi-tui");
     let mut terminal_guard = TerminalGuard::enter()?;

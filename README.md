@@ -80,6 +80,8 @@ chezmoi-tui --source ~/.local/share/chezmoi
 chezmoi-tui --view managed
 chezmoi-tui --view source
 chezmoi-tui --log-file /tmp/chezmoi-tui.log
+chezmoi-tui --config ~/.config/chezmoi-tui/config.toml
+chezmoi-tui --no-config
 chezmoi-tui --no-auto-preview
 ```
 
@@ -144,10 +146,10 @@ Action visibility is view-aware.
 
 | View | Actions |
 | --- | --- |
-| `status` | `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add`, `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
-| `managed` | `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `edit`, `forget`, `chattr`, `destroy`, `purge` |
-| `unmanaged` | `add`, `ignore`, `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
-| `source` | `apply`, `doctor`, `data`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
+| `status` | `apply`, `doctor`, `data`, `open-source-dir`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add`, `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
+| `managed` | `apply`, `doctor`, `data`, `open-source-dir`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `edit`, `forget`, `chattr`, `destroy`, `purge` |
+| `unmanaged` | `add`, `ignore`, `apply`, `doctor`, `data`, `open-source-dir`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
+| `source` | `apply`, `doctor`, `data`, `open-source-dir`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
 
 `add` opens an attribute wizard before importing files. Selected attributes are applied after add with `chattr`:
 
@@ -177,6 +179,36 @@ Action visibility is view-aware.
 - Directory-wide `add` is blocked to avoid accidental bulk imports.
 - `forget` and `purge` run with `--force --no-tty` to avoid TUI deadlocks.
 - Interactive tools run in foreground (for example merge tool/editor flows).
+
+## Configuration
+
+Configuration is optional. Without a config file, built-in safe defaults are used.
+
+Default config path:
+
+```text
+~/.config/chezmoi-tui/config.toml
+```
+
+Example:
+
+```toml
+[ui]
+default_view = "status"
+auto_preview = true
+show_base_context = true
+show_notices = true
+
+[safety]
+require_two_step_confirmation = true
+show_apply_plan = true
+
+[tools]
+editor = "nvim"
+external_diff = "delta"
+```
+
+CLI flags override config file values. Use `--config <path>` to load a specific config file or `--no-config` to disable config loading.
 
 ## Features
 

@@ -94,6 +94,7 @@ pub(crate) fn run_foreground_action(
 fn run_action_foreground(request: &ActionRequest, config: &AppConfig) -> Result<(i32, u64)> {
     match request.action {
         Action::EditIgnore => run_edit_ignore_foreground(config),
+        Action::OpenSourceDir => run_open_source_dir_foreground(config),
         _ => run_chezmoi_foreground(request, config),
     }
 }
@@ -107,7 +108,7 @@ pub(crate) fn dispatch_action_request(
         app.open_input(InputKind::ChattrAttrs, request);
         return Ok(());
     }
-    if request.action == Action::Apply && !app.batch_in_progress() {
+    if request.action == Action::Apply && app.config.show_apply_plan && !app.batch_in_progress() {
         app.open_apply_plan(request);
         return Ok(());
     }
@@ -151,6 +152,7 @@ pub(crate) fn execute_action_request(
             | Action::EditConfig
             | Action::EditConfigTemplate
             | Action::EditIgnore
+            | Action::OpenSourceDir
     ) {
         app.pending_foreground = Some(request);
         app.begin_busy_task();
@@ -260,6 +262,40 @@ fn run_chezmoi_foreground(request: &ActionRequest, config: &AppConfig) -> Result
     let elapsed = elapsed_millis_u64(started);
 
     Ok((status.code().unwrap_or(-1), elapsed))
+}
+
+fn run_open_source_dir_foreground(config: &AppConfig) -> Result<(i32, u64)> {
+    let source_dir = resolve_source_dir_for_foreground(config)?;
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    let started = Instant::now();
+    let status = Command::new(shell)
+        .current_dir(&source_dir)
+        .status()
+        .with_context(|| format!("failed to open shell in {}", source_dir.display()))?;
+    let elapsed = elapsed_millis_u64(started);
+    Ok((status.code().unwrap_or(-1), elapsed))
+}
+
+fn resolve_source_dir_for_foreground(config: &AppConfig) -> Result<std::path::PathBuf> {
+    if let Some(source_dir) = &config.source_dir {
+        return Ok(source_dir.clone());
+    }
+
+    let output = Command::new("chezmoi")
+        .arg("source-path")
+        .output()
+        .context("failed to execute chezmoi source-path")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "chezmoi source-path failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let source_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if source_dir.is_empty() {
+        anyhow::bail!("chezmoi source-path returned empty output");
+    }
+    Ok(std::path::PathBuf::from(source_dir))
 }
 
 fn run_edit_ignore_foreground(config: &AppConfig) -> Result<(i32, u64)> {
