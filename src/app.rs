@@ -40,6 +40,19 @@ pub enum DetailKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeTone {
+    Info,
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub tone: NoticeTone,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmStep {
     Primary,
     DangerPhrase,
@@ -177,7 +190,8 @@ pub struct App {
     list_filter: String,
     staged_list_filter: Option<String>,
     staged_filter_updated_at: Option<Instant>,
-    pub busy: bool,
+    busy_tasks: usize,
+    latest_notice: Option<Notice>,
     pub footer_help: bool,
     pub pending_foreground: Option<ActionRequest>,
     pub should_quit: bool,
@@ -225,7 +239,8 @@ impl App {
             list_filter: String::new(),
             staged_list_filter: None,
             staged_filter_updated_at: None,
-            busy: false,
+            busy_tasks: 0,
+            latest_notice: None,
             footer_help: false,
             pending_foreground: None,
             should_quit: false,
@@ -254,6 +269,51 @@ impl App {
         self.invalidate_unmanaged_filter_index();
         self.clear_marked_entries();
         self.rebuild_visible_entries_reset();
+    }
+
+    pub fn begin_busy_task(&mut self) {
+        self.busy_tasks = self.busy_tasks.saturating_add(1);
+    }
+
+    pub fn finish_busy_task(&mut self) {
+        self.busy_tasks = self.busy_tasks.saturating_sub(1);
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy_tasks > 0
+    }
+
+    #[cfg(test)]
+    pub fn busy_task_count(&self) -> usize {
+        self.busy_tasks
+    }
+
+    pub fn set_notice(&mut self, tone: NoticeTone, message: impl Into<String>) {
+        self.latest_notice = Some(Notice {
+            tone,
+            message: message.into(),
+        });
+    }
+
+    pub fn set_info_notice(&mut self, message: impl Into<String>) {
+        self.set_notice(NoticeTone::Info, message);
+    }
+
+    pub fn set_success_notice(&mut self, message: impl Into<String>) {
+        self.set_notice(NoticeTone::Success, message);
+    }
+
+    pub fn set_error_notice(&mut self, message: impl Into<String>) {
+        self.set_notice(NoticeTone::Error, message);
+    }
+
+    pub fn latest_notice(&self) -> Option<&Notice> {
+        self.latest_notice.as_ref()
+    }
+
+    #[cfg(test)]
+    pub fn clear_notice(&mut self) {
+        self.latest_notice = None;
     }
 
     pub fn apply_refresh_entries(
@@ -1858,6 +1918,42 @@ mod tests {
     use crate::domain::ChangeKind;
     use std::path::Path;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn busy_task_counter_tracks_multiple_in_flight_tasks() {
+        let mut app = App::new(AppConfig::default());
+
+        assert!(!app.is_busy());
+        app.begin_busy_task();
+        app.begin_busy_task();
+        assert!(app.is_busy());
+        assert_eq!(app.busy_task_count(), 2);
+
+        app.finish_busy_task();
+        assert!(app.is_busy());
+        assert_eq!(app.busy_task_count(), 1);
+
+        app.finish_busy_task();
+        assert!(!app.is_busy());
+        assert_eq!(app.busy_task_count(), 0);
+
+        app.finish_busy_task();
+        assert!(!app.is_busy());
+        assert_eq!(app.busy_task_count(), 0);
+    }
+
+    #[test]
+    fn latest_notice_can_be_set_and_cleared() {
+        let mut app = App::new(AppConfig::default());
+
+        app.set_error_notice("boom");
+        let notice = app.latest_notice().expect("notice");
+        assert_eq!(notice.tone, NoticeTone::Error);
+        assert_eq!(notice.message, "boom");
+
+        app.clear_notice();
+        assert!(app.latest_notice().is_none());
+    }
 
     #[test]
     fn status_selection_returns_path() {

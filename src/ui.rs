@@ -1,4 +1,4 @@
-use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, PaneFocus};
+use crate::app::{App, ConfirmStep, DetailKind, InputKind, ModalState, NoticeTone, PaneFocus};
 use crate::domain::{Action, ListView};
 use crate::ui_diff::colorized_diff_lines;
 use ratatui::Frame;
@@ -317,10 +317,19 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
         badge: true,
     }];
 
-    if app.busy {
+    if app.is_busy() {
         segments.push(LeftSegment {
             text: "Busy".to_string(),
             style: Style::default().fg(Color::LightYellow),
+            essential: false,
+            badge: false,
+        });
+    }
+
+    if let Some(notice) = app.latest_notice() {
+        segments.push(LeftSegment {
+            text: compact_label(&notice.message, 48),
+            style: notice_style(notice.tone),
             essential: false,
             badge: false,
         });
@@ -763,6 +772,16 @@ fn render_hints(hints: &[HintRendered]) -> (Vec<Span<'static>>, usize) {
     (spans, width)
 }
 
+fn notice_style(tone: NoticeTone) -> Style {
+    match tone {
+        NoticeTone::Info => Style::default().fg(Color::LightBlue),
+        NoticeTone::Success => Style::default().fg(Color::LightGreen),
+        NoticeTone::Error => Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
 fn keycap_style(tone: HintTone) -> Style {
     match tone {
         HintTone::Primary => Style::default()
@@ -791,7 +810,7 @@ fn cheat_groups(app: &App) -> Vec<CheatGroup> {
         key: "a",
         label: "Actions",
     }];
-    if !app.busy {
+    if !app.is_busy() {
         global_items.push(CheatItem {
             key: "r",
             label: "Refresh",
@@ -1913,6 +1932,20 @@ mod tests {
             .collect::<String>();
 
         assert!(rendered.contains("2/3 items"));
+    }
+
+    #[test]
+    fn footer_left_shows_latest_notice() {
+        let mut app = App::new(AppConfig::default());
+        app.set_error_notice("apply failed for dotfile");
+
+        let (spans, _) = footer_left(&app, 120);
+        let rendered = spans
+            .into_iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>();
+
+        assert!(rendered.contains("apply failed for dotfile"));
     }
 
     #[test]

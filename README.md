@@ -66,7 +66,7 @@ cargo run
 
 ## Usage
 
-Start the app and refresh once to load current state:
+Start the app; it automatically loads the current state on startup:
 
 ```bash
 chezmoi-tui
@@ -85,7 +85,7 @@ chezmoi-tui --no-auto-preview
 
 ## Core Workflow
 
-1. Press `r` to refresh.
+1. Wait for the initial refresh, or press `r` to refresh again.
 2. Switch views with `1`/`2`/`3`/`4`.
 3. Move with `j`/`k` or arrow keys.
 4. In `status`, diff is auto-loaded for selected file.

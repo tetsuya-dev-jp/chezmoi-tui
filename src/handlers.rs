@@ -23,9 +23,10 @@ pub(crate) fn handle_backend_event(
             source_dir,
             source,
         } => {
+            app.finish_busy_task();
             app.apply_refresh_entries(status, managed, unmanaged, source_dir, source);
             app.rebuild_visible_entries();
-            app.busy = false;
+            app.set_info_notice("refresh completed");
             maybe_enqueue_auto_detail(app, task_tx)?;
         }
         BackendEvent::DiffLoaded {
@@ -33,7 +34,7 @@ pub(crate) fn handle_backend_event(
             target,
             diff,
         } => {
-            app.busy = false;
+            app.finish_busy_task();
             if app.accepts_detail_request(request_id) {
                 app.set_detail_diff(target.as_deref(), diff.text);
             }
@@ -43,13 +44,13 @@ pub(crate) fn handle_backend_event(
             target,
             content,
         } => {
-            app.busy = false;
+            app.finish_busy_task();
             if app.accepts_detail_request(request_id) {
                 app.set_detail_preview(&target, content);
             }
         }
         BackendEvent::ActionFinished { request, result } => {
-            app.busy = false;
+            app.finish_busy_task();
             let target = request
                 .target
                 .as_ref()
@@ -61,6 +62,20 @@ pub(crate) fn handle_backend_event(
                 result.exit_code,
                 result.duration_ms
             ));
+            if result.exit_code == 0 {
+                app.set_success_notice(format!(
+                    "{} completed for {}",
+                    request.action.label(),
+                    target
+                ));
+            } else {
+                app.set_error_notice(format!(
+                    "{} failed for {} (exit={})",
+                    request.action.label(),
+                    target,
+                    result.exit_code
+                ));
+            }
             if !result.stderr.trim().is_empty() {
                 app.log(format!("stderr: {}", squash_lines(&result.stderr)));
             }
@@ -91,8 +106,9 @@ pub(crate) fn handle_backend_event(
             }
         }
         BackendEvent::Error { context, message } => {
-            app.busy = false;
+            app.finish_busy_task();
             app.log(format!("error[{context}]: {message}"));
+            app.set_error_notice(format!("{context} error: {message}"));
             if context == "action" && app.batch_in_progress() {
                 maybe_continue_batch(app, task_tx)?;
             }
@@ -759,6 +775,91 @@ mod tests {
     use crate::config::AppConfig;
     use std::path::PathBuf;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn busy_stays_true_until_all_in_flight_events_finish() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.begin_busy_task();
+        app.begin_busy_task();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::PreviewLoaded {
+                request_id: 1,
+                target: PathBuf::from("a"),
+                content: "a".to_string(),
+            },
+        )
+        .expect("handle preview");
+        assert!(app.is_busy());
+        assert_eq!(app.busy_task_count(), 1);
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::Error {
+                context: "diff".to_string(),
+                message: "boom".to_string(),
+            },
+        )
+        .expect("handle error");
+        assert!(!app.is_busy());
+        assert_eq!(app.busy_task_count(), 0);
+    }
+
+    #[test]
+    fn action_failure_sets_error_notice() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.begin_busy_task();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::ActionFinished {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    target: None,
+                    chattr_attrs: None,
+                },
+                result: crate::domain::CommandResult {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: "failed".to_string(),
+                    duration_ms: 10,
+                },
+            },
+        )
+        .expect("handle action failure");
+
+        let notice = app.latest_notice().expect("notice");
+        assert_eq!(notice.tone, crate::app::NoticeTone::Error);
+        assert!(notice.message.contains("apply failed"));
+    }
+
+    #[test]
+    fn backend_error_sets_error_notice() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.begin_busy_task();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::Error {
+                context: "refresh".to_string(),
+                message: "no chezmoi".to_string(),
+            },
+        )
+        .expect("handle backend error");
+
+        let notice = app.latest_notice().expect("notice");
+        assert_eq!(notice.tone, crate::app::NoticeTone::Error);
+        assert!(notice.message.contains("refresh error"));
+        assert!(notice.message.contains("no chezmoi"));
+    }
 
     #[test]
     fn question_key_toggles_footer_help() {

@@ -1,4 +1,4 @@
-use crate::app::{App, BackendTask, InputKind};
+use crate::app::{App, BackendTask, InputKind, NoticeTone};
 use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest};
 use crate::ignore::{chezmoi_ignore_path_with_source, run_internal_ignore_action};
@@ -19,10 +19,11 @@ pub(crate) fn send_task(
     task_tx: &UnboundedSender<BackendTask>,
     task: BackendTask,
 ) -> Result<()> {
-    app.busy = true;
     task_tx
         .send(task)
-        .map_err(|err| anyhow::anyhow!("failed to dispatch task: {err}"))
+        .map_err(|err| anyhow::anyhow!("failed to dispatch task: {err}"))?;
+    app.begin_busy_task();
+    Ok(())
 }
 
 pub(crate) fn run_foreground_action(
@@ -38,7 +39,7 @@ pub(crate) fn run_foreground_action(
     setup_terminal()?;
     terminal.clear()?;
 
-    app.busy = false;
+    app.finish_busy_task();
 
     match result {
         Ok((code, elapsed)) => {
@@ -46,13 +47,28 @@ pub(crate) fn run_foreground_action(
                 .target
                 .as_ref()
                 .map_or_else(|| "(none)".to_string(), |p| p.display().to_string());
-            app.log(format!(
+            let message = format!(
                 "foreground action done: {} {} exit={} duration={}ms",
                 request.action.label(),
                 target,
                 code,
                 elapsed
-            ));
+            );
+            app.log(message.clone());
+            if code == 0 {
+                app.set_success_notice(format!(
+                    "{} completed for {}",
+                    request.action.label(),
+                    target
+                ));
+            } else {
+                app.set_error_notice(format!(
+                    "{} failed for {} (exit={})",
+                    request.action.label(),
+                    target,
+                    code
+                ));
+            }
 
             if app.batch_in_progress() {
                 maybe_continue_batch(app, task_tx)?;
@@ -62,6 +78,10 @@ pub(crate) fn run_foreground_action(
         }
         Err(err) => {
             app.log(format!("foreground action error: {err:#}"));
+            app.set_notice(
+                NoticeTone::Error,
+                format!("foreground action error: {err:#}"),
+            );
             if app.batch_in_progress() {
                 maybe_continue_batch(app, task_tx)?;
             }
@@ -129,7 +149,7 @@ pub(crate) fn execute_action_request(
             | Action::EditIgnore
     ) {
         app.pending_foreground = Some(request);
-        app.busy = true;
+        app.begin_busy_task();
     } else {
         send_task(app, task_tx, BackendTask::RunAction { request })?;
     }
