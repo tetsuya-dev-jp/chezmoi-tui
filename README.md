@@ -26,6 +26,7 @@ View behavior:
 | `status` | Home destination | Diff | No |
 | `managed` | Home destination | File preview | Yes |
 | `unmanaged` | Current working directory | File preview | Yes |
+| `source` | chezmoi source directory | File preview | Yes |
 
 Notes:
 
@@ -69,13 +70,23 @@ Start the app and refresh once to load current state:
 
 ```bash
 chezmoi-tui
-# then press r
+```
+
+Useful options:
+
+```bash
+chezmoi-tui --destination ~/test-home
+chezmoi-tui --source ~/.local/share/chezmoi
+chezmoi-tui --view managed
+chezmoi-tui --view source
+chezmoi-tui --log-file /tmp/chezmoi-tui.log
+chezmoi-tui --no-auto-preview
 ```
 
 ## Core Workflow
 
 1. Press `r` to refresh.
-2. Switch views with `1`/`2`/`3`.
+2. Switch views with `1`/`2`/`3`/`4`.
 3. Move with `j`/`k` or arrow keys.
 4. In `status`, diff is auto-loaded for selected file.
 5. In `managed` / `unmanaged`, preview is auto-loaded for selected file.
@@ -87,7 +98,7 @@ Global:
 
 | Key | Behavior |
 | --- | --- |
-| `1` / `2` / `3` | Switch view (`status`, `managed`, `unmanaged`) |
+| `1` / `2` / `3` / `4` | Switch view (`status`, `managed`, `unmanaged`, `source`) |
 | `Tab` | Cycle focus (`List` -> `Detail` -> `Log`) |
 | `a` | Open action menu |
 | `r` | Refresh all lists |
@@ -133,6 +144,14 @@ Action visibility is view-aware.
 | `status` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `re-add`, `merge`, `merge-all`, `edit`, `forget`, `chattr`, `purge` |
 | `managed` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `edit`, `forget`, `chattr`, `destroy`, `purge` |
 | `unmanaged` | `add`, `ignore`, `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
+| `source` | `apply`, `update`, `edit-config`, `edit-config-template`, `edit-ignore`, `purge` |
+
+`add` opens an attribute wizard before importing files. Selected attributes are applied after add with `chattr`:
+
+- `template`
+- `private`
+- `executable`
+- `encrypted`
 
 `ignore` opens a wizard with modes:
 

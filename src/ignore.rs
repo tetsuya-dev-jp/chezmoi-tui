@@ -69,7 +69,7 @@ pub(crate) fn run_internal_ignore_action(app: &mut App, request: &ActionRequest)
         .and_then(IgnorePatternMode::from_tag)
         .unwrap_or(IgnorePatternMode::Auto);
     let pattern = build_ignore_pattern(target, is_dir, &home_dir, mode)?;
-    let ignore_path = chezmoi_ignore_path()?;
+    let ignore_path = chezmoi_ignore_path_with_source(app.config.source_dir.as_deref())?;
 
     let already_exists = append_unique_line(&ignore_path, &pattern)?;
     if already_exists {
@@ -163,7 +163,13 @@ fn escape_ignore_glob_component(name: &str) -> String {
     escaped
 }
 
-pub(crate) fn chezmoi_ignore_path() -> Result<std::path::PathBuf> {
+pub(crate) fn chezmoi_ignore_path_with_source(
+    source_dir: Option<&Path>,
+) -> Result<std::path::PathBuf> {
+    if let Some(source_dir) = source_dir {
+        return Ok(source_dir.join(".chezmoiignore"));
+    }
+
     let output = Command::new("chezmoi")
         .arg("source-path")
         .output()

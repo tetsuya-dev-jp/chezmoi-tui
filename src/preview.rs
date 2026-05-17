@@ -131,6 +131,38 @@ fn maybe_enqueue_managed_preview(
     )
 }
 
+fn maybe_enqueue_source_preview(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    if app.view != ListView::Source {
+        return Ok(());
+    }
+    if app.selected_is_directory() {
+        app.clear_detail();
+        return Ok(());
+    }
+
+    let (Some(target), Some(absolute)) = (app.selected_path(), app.selected_absolute_path()) else {
+        return Ok(());
+    };
+
+    if app.detail_kind == DetailKind::Preview && app.detail_target.as_ref() == Some(&target) {
+        return Ok(());
+    }
+
+    let request_id = app.begin_detail_request();
+    send_task(
+        app,
+        task_tx,
+        BackendTask::LoadPreview {
+            request_id,
+            target,
+            absolute,
+        },
+    )
+}
+
 fn maybe_enqueue_status_diff(app: &mut App, task_tx: &UnboundedSender<BackendTask>) -> Result<()> {
     if app.view != ListView::Status {
         return Ok(());
@@ -158,9 +190,14 @@ pub(crate) fn maybe_enqueue_auto_detail(
     app: &mut App,
     task_tx: &UnboundedSender<BackendTask>,
 ) -> Result<()> {
+    if !app.config.auto_preview {
+        return Ok(());
+    }
+
     maybe_enqueue_status_diff(app, task_tx)?;
     maybe_enqueue_managed_preview(app, task_tx)?;
     maybe_enqueue_unmanaged_preview(app, task_tx)?;
+    maybe_enqueue_source_preview(app, task_tx)?;
     Ok(())
 }
 

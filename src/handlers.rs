@@ -20,8 +20,10 @@ pub(crate) fn handle_backend_event(
             status,
             managed,
             unmanaged,
+            source_dir,
+            source,
         } => {
-            app.apply_refresh_entries(status, managed, unmanaged);
+            app.apply_refresh_entries(status, managed, unmanaged, source_dir, source);
             app.rebuild_visible_entries();
             app.busy = false;
             maybe_enqueue_auto_detail(app, task_tx)?;
@@ -63,6 +65,25 @@ pub(crate) fn handle_backend_event(
                 app.log(format!("stderr: {}", squash_lines(&result.stderr)));
             }
 
+            if request.action == Action::Add
+                && result.exit_code == 0
+                && let Some(attrs) = request.chattr_attrs.clone()
+                && !attrs.trim().is_empty()
+            {
+                send_task(
+                    app,
+                    task_tx,
+                    BackendTask::RunAction {
+                        request: ActionRequest {
+                            action: Action::Chattr,
+                            target: request.target,
+                            chattr_attrs: Some(attrs),
+                        },
+                    },
+                )?;
+                return Ok(());
+            }
+
             if app.batch_in_progress() {
                 maybe_continue_batch(app, task_tx)?;
             } else if result.exit_code == 0 {
@@ -95,6 +116,7 @@ pub(crate) fn handle_key_event(
         ModalState::None => handle_key_without_modal(app, key, task_tx),
         ModalState::ListFilter { .. } => handle_list_filter_key(app, key, task_tx),
         ModalState::Ignore { .. } => handle_ignore_key(app, key, task_tx),
+        ModalState::AddOptions { .. } => handle_add_options_key(app, key, task_tx),
         ModalState::ActionMenu { .. } => handle_action_menu_key(app, key, task_tx),
         ModalState::Confirm { .. } => handle_confirm_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
@@ -189,6 +211,10 @@ fn handle_key_without_modal(
             app.switch_view(ListView::Unmanaged);
             selection_changed = true;
         }
+        KeyCode::Char('4') => {
+            app.switch_view(ListView::Source);
+            selection_changed = true;
+        }
         KeyCode::Char('r') => send_task(app, task_tx, BackendTask::RefreshAll)?,
         KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => match app.focus {
             crate::app::PaneFocus::Detail => {
@@ -209,7 +235,9 @@ fn handle_key_without_modal(
             crate::app::PaneFocus::List => {}
         },
         KeyCode::Char('d') if key.modifiers.is_empty() => {
-            if app.view == ListView::Unmanaged && app.selected_is_directory() {
+            if matches!(app.view, ListView::Unmanaged | ListView::Source)
+                && app.selected_is_directory()
+            {
                 app.clear_detail();
                 return Ok(());
             }
@@ -218,7 +246,9 @@ fn handle_key_without_modal(
             send_task(app, task_tx, BackendTask::LoadDiff { request_id, target })?;
         }
         KeyCode::Enter => {
-            if app.view == ListView::Unmanaged && app.selected_is_directory() {
+            if matches!(app.view, ListView::Unmanaged | ListView::Source)
+                && app.selected_is_directory()
+            {
                 app.clear_detail();
                 return Ok(());
             }
@@ -228,7 +258,9 @@ fn handle_key_without_modal(
         }
         KeyCode::Char('v') => match (app.selected_path(), app.selected_absolute_path()) {
             (Some(target), Some(absolute)) => {
-                if app.view == ListView::Unmanaged && app.selected_is_directory() {
+                if matches!(app.view, ListView::Unmanaged | ListView::Source)
+                    && app.selected_is_directory()
+                {
                     app.clear_detail();
                     return Ok(());
                 }
@@ -386,6 +418,93 @@ fn handle_ignore_key(
     Ok(())
 }
 
+fn add_options_attrs(
+    template: bool,
+    private: bool,
+    executable: bool,
+    encrypted: bool,
+) -> Option<String> {
+    let attrs = [
+        (template, "template"),
+        (private, "private"),
+        (executable, "executable"),
+        (encrypted, "encrypted"),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, attr)| enabled.then_some(attr))
+    .collect::<Vec<_>>();
+
+    if attrs.is_empty() {
+        None
+    } else {
+        Some(attrs.join(","))
+    }
+}
+
+fn handle_add_options_key(
+    app: &mut App,
+    key: KeyEvent,
+    task_tx: &UnboundedSender<BackendTask>,
+) -> Result<()> {
+    let mut start_requests: Option<Vec<ActionRequest>> = None;
+
+    {
+        let ModalState::AddOptions {
+            requests,
+            selected,
+            template,
+            private,
+            executable,
+            encrypted,
+        } = &mut app.modal
+        else {
+            return Ok(());
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                app.close_modal();
+                return Ok(());
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                *selected = (*selected + 1) % 4;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                *selected = if *selected == 0 { 3 } else { *selected - 1 };
+            }
+            KeyCode::Char(' ') => match *selected {
+                0 => *template = !*template,
+                1 => *private = !*private,
+                2 => *executable = !*executable,
+                3 => *encrypted = !*encrypted,
+                _ => {}
+            },
+            KeyCode::Enter => {
+                let attrs = add_options_attrs(*template, *private, *executable, *encrypted);
+                let mut prepared = requests.clone();
+                for request in &mut prepared {
+                    request.chattr_attrs = attrs.clone();
+                }
+                start_requests = Some(prepared);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(requests) = start_requests {
+        let count = requests.len();
+        if count > 1 {
+            app.log(format!("batch queued: action=add targets={count}"));
+        }
+        app.close_modal();
+        if let Some(first) = app.start_batch(requests) {
+            dispatch_action_request(app, task_tx, first)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn handle_action_menu_key(
     app: &mut App,
     key: KeyEvent,
@@ -469,6 +588,11 @@ fn handle_action_menu_key(
         if action == Action::Ignore {
             app.close_modal();
             app.open_ignore_menu(requests);
+            return Ok(());
+        }
+        if action == Action::Add {
+            app.close_modal();
+            app.open_add_options_menu(requests);
             return Ok(());
         }
 
@@ -813,6 +937,113 @@ mod tests {
         )
         .expect("handle stale diff");
         assert_eq!(app.detail_text, "new diff");
+    }
+
+    #[test]
+    fn add_action_opens_attribute_wizard() {
+        let mut app = App::new(AppConfig::default());
+        app.unmanaged_entries = vec![PathBuf::from("new.txt")];
+        app.switch_view(ListView::Unmanaged);
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.open_action_menu();
+        app.modal = ModalState::ActionMenu {
+            selected: 0,
+            filter: "add".to_string(),
+        };
+
+        handle_action_menu_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("select add");
+
+        assert!(matches!(app.modal, ModalState::AddOptions { .. }));
+    }
+
+    #[test]
+    fn add_options_apply_attrs_to_requests() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        app.open_add_options_menu(vec![ActionRequest {
+            action: Action::Add,
+            target: Some(PathBuf::from("/tmp/new.txt")),
+            chattr_attrs: None,
+        }]);
+
+        handle_add_options_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("toggle template");
+        handle_add_options_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("move private");
+        handle_add_options_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("toggle private");
+        handle_add_options_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &task_tx,
+        )
+        .expect("start add");
+
+        let task = task_rx.try_recv().expect("add task");
+        assert!(matches!(
+            task,
+            BackendTask::RunAction {
+                request: ActionRequest {
+                    action: Action::Add,
+                    chattr_attrs: Some(attrs),
+                    ..
+                }
+            } if attrs == "template,private"
+        ));
+    }
+
+    #[test]
+    fn successful_add_with_attrs_dispatches_chattr() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::ActionFinished {
+                request: ActionRequest {
+                    action: Action::Add,
+                    target: Some(PathBuf::from("/tmp/new.txt")),
+                    chattr_attrs: Some("template,private".to_string()),
+                },
+                result: crate::domain::CommandResult {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: 1,
+                },
+            },
+        )
+        .expect("handle add finished");
+
+        let task = task_rx.try_recv().expect("chattr task");
+        assert!(matches!(
+            task,
+            BackendTask::RunAction {
+                request: ActionRequest {
+                    action: Action::Chattr,
+                    chattr_attrs: Some(attrs),
+                    ..
+                }
+            } if attrs == "template,private"
+        ));
     }
 
     #[test]

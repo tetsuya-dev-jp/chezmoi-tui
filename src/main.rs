@@ -1,7 +1,9 @@
 mod actions;
 mod app;
 mod backend;
+mod cli;
 mod config;
+mod diagnostics;
 mod domain;
 mod handlers;
 mod ignore;
@@ -14,11 +16,13 @@ mod ui_diff;
 use crate::actions::{run_foreground_action, send_task};
 use crate::app::{App, BackendEvent, BackendTask};
 use crate::backend::worker_loop;
+use crate::cli::CliArgs;
 use crate::config::AppConfig;
 use crate::handlers::{handle_backend_event, handle_key_event};
 use crate::infra::{ChezmoiClient, ShellChezmoiClient};
 use crate::terminal::TerminalGuard;
 use anyhow::{Context, Result};
+use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -29,11 +33,14 @@ use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let config = AppConfig::from_cli(CliArgs::parse());
+    diagnostics::init(config.log_file.as_deref())?;
+    tracing::info!(?config, "starting chezmoi-tui");
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal =
         Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to create terminal")?;
 
-    let run_result = run_app(&mut terminal, AppConfig::default());
+    let run_result = run_app(&mut terminal, config);
 
     terminal_guard.restore(&mut terminal)?;
     if let Err(err) = run_result {
@@ -45,8 +52,14 @@ async fn main() -> Result<()> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, config: AppConfig) -> Result<()> {
+    tracing::info!(?config, "initializing app");
     let mut app = App::new(config);
-    let client: Arc<dyn ChezmoiClient> = Arc::new(ShellChezmoiClient::default());
+    let client: Arc<dyn ChezmoiClient> = Arc::new(ShellChezmoiClient::new(
+        "chezmoi",
+        app.home_dir.clone(),
+        app.config.working_dir.clone(),
+        app.config.source_dir.clone(),
+    ));
 
     let (task_tx, task_rx) = mpsc::unbounded_channel::<BackendTask>();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<BackendEvent>();

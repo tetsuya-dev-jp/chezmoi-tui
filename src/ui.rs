@@ -80,7 +80,8 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let lines = if app.detail_text.trim().is_empty() {
-        if app.view == ListView::Unmanaged && app.selected_is_directory() {
+        if matches!(app.view, ListView::Unmanaged | ListView::Source) && app.selected_is_directory()
+        {
             vec![Line::from("")]
         } else {
             vec![
@@ -498,7 +499,11 @@ fn list_focus_hints(app: &App) -> Vec<Hint> {
             Some("tree"),
             62,
             HintTone::Muted,
-            app.footer_help && matches!(app.view, ListView::Managed | ListView::Unmanaged),
+            app.footer_help
+                && matches!(
+                    app.view,
+                    ListView::Managed | ListView::Unmanaged | ListView::Source
+                ),
             false,
         ),
     ]
@@ -548,7 +553,7 @@ fn help_only_global_hints() -> [Hint; 3] {
             false,
         ),
         hint(
-            "1-3",
+            "1-4",
             "Switch",
             Some("global"),
             58,
@@ -837,7 +842,10 @@ fn cheat_groups(app: &App) -> Vec<CheatGroup> {
                 });
             }
 
-            if matches!(app.view, ListView::Managed | ListView::Unmanaged) {
+            if matches!(
+                app.view,
+                ListView::Managed | ListView::Unmanaged | ListView::Source
+            ) {
                 view_items.push(CheatItem {
                     key: "h/l",
                     label: "Fold",
@@ -868,7 +876,7 @@ fn cheat_groups(app: &App) -> Vec<CheatGroup> {
             label: "Pane",
         },
         CheatItem {
-            key: "1-3",
+            key: "1-4",
             label: "Switch",
         },
     ]);
@@ -1156,6 +1164,74 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 .block(
                     Block::default()
                         .title(" Ignore Rule ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightBlue)),
+                )
+                .wrap(Wrap { trim: false });
+            frame.render_widget(p, area);
+        }
+        ModalState::AddOptions {
+            requests,
+            selected,
+            template,
+            private,
+            executable,
+            encrypted,
+        } => {
+            let area = centered_rect(70, 42, frame.area());
+            frame.render_widget(Clear, area);
+
+            let target_text = requests
+                .first()
+                .and_then(|request| request.target.as_ref())
+                .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
+            let count = requests.len();
+            let options = [
+                ("template", *template, "mark source as a template"),
+                ("private", *private, "remove group/world permissions"),
+                ("executable", *executable, "make destination executable"),
+                ("encrypted", *encrypted, "encrypt source state"),
+            ];
+
+            let mut lines = vec![
+                Line::from(format!("targets: {count}")),
+                Line::from(format!("sample target: {target_text}")),
+                Line::from(""),
+                Line::from("Select attributes to apply after add:"),
+            ];
+
+            for (index, (label, enabled, description)) in options.into_iter().enumerate() {
+                let prefix = if index == *selected { "▶" } else { " " };
+                let checkbox = if enabled { "[x]" } else { "[ ]" };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{prefix} {checkbox} {label}"),
+                        if index == *selected {
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::LightYellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        description.to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "Space: toggle  Up/Down or j/k: select  Enter: add  Esc: cancel",
+            ));
+
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Add Attributes ")
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
@@ -1965,7 +2041,7 @@ mod tests {
         let normal = layout_hints(120, footer_hints(&app));
         let normal_keys: Vec<&str> = normal.iter().map(|hint| hint.key).collect();
         assert!(!normal_keys.contains(&"Tab"));
-        assert!(!normal_keys.contains(&"1-3"));
+        assert!(!normal_keys.contains(&"1-4"));
         assert!(!normal_keys.contains(&"h/l"));
     }
 

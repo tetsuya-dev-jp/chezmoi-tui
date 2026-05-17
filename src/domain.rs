@@ -215,6 +215,7 @@ pub enum ListView {
     Status,
     Managed,
     Unmanaged,
+    Source,
 }
 
 impl ListView {
@@ -223,6 +224,7 @@ impl ListView {
             ListView::Status => "Status",
             ListView::Managed => "Managed",
             ListView::Unmanaged => "Unmanaged",
+            ListView::Source => "Source",
         }
     }
 }

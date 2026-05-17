@@ -61,6 +61,14 @@ pub enum ModalState {
         requests: Vec<ActionRequest>,
         selected: usize,
     },
+    AddOptions {
+        requests: Vec<ActionRequest>,
+        selected: usize,
+        template: bool,
+        private: bool,
+        executable: bool,
+        encrypted: bool,
+    },
     ActionMenu {
         selected: usize,
         filter: String,
@@ -100,6 +108,8 @@ pub enum BackendEvent {
         status: Vec<StatusEntry>,
         managed: Vec<PathBuf>,
         unmanaged: Vec<PathBuf>,
+        source_dir: Option<PathBuf>,
+        source: Vec<PathBuf>,
     },
     DiffLoaded {
         request_id: u64,
@@ -153,6 +163,7 @@ pub struct App {
     pub status_entries: Vec<StatusEntry>,
     pub managed_entries: Vec<PathBuf>,
     pub unmanaged_entries: Vec<PathBuf>,
+    pub source_entries: Vec<PathBuf>,
     pub selected_index: usize,
     list_scroll: usize,
     pub detail_kind: DetailKind,
@@ -186,15 +197,21 @@ pub struct App {
 
 impl App {
     pub fn new(config: AppConfig) -> Self {
-        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
+        let working_dir = config.working_dir.clone();
+        let home_dir = config
+            .destination_dir
+            .clone()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| working_dir.clone());
+        let initial_view = config.initial_view;
         let mut app = Self {
             config,
             focus: PaneFocus::List,
-            view: ListView::Status,
+            view: initial_view,
             status_entries: Vec::new(),
             managed_entries: Vec::new(),
             unmanaged_entries: Vec::new(),
+            source_entries: Vec::new(),
             selected_index: 0,
             list_scroll: 0,
             detail_kind: DetailKind::Diff,
@@ -244,10 +261,16 @@ impl App {
         status: Vec<StatusEntry>,
         managed: Vec<PathBuf>,
         unmanaged: Vec<PathBuf>,
+        source_dir: Option<PathBuf>,
+        source: Vec<PathBuf>,
     ) {
+        if self.config.source_dir.is_none() {
+            self.config.source_dir = source_dir;
+        }
         self.status_entries = status;
         self.managed_entries = managed;
         self.unmanaged_entries = unmanaged;
+        self.source_entries = source;
         self.invalidate_unmanaged_filter_index();
     }
 
@@ -486,6 +509,17 @@ impl App {
         self.modal = ModalState::Ignore {
             requests,
             selected: 0,
+        };
+    }
+
+    pub fn open_add_options_menu(&mut self, requests: Vec<ActionRequest>) {
+        self.modal = ModalState::AddOptions {
+            requests,
+            selected: 0,
+            template: false,
+            private: false,
+            executable: false,
+            encrypted: false,
         };
     }
 
@@ -731,6 +765,15 @@ impl App {
                         | Action::Purge
                 )
             }
+            ListView::Source => matches!(
+                action,
+                Action::Apply
+                    | Action::Update
+                    | Action::EditConfig
+                    | Action::EditConfigTemplate
+                    | Action::EditIgnore
+                    | Action::Purge
+            ),
         }
     }
 
@@ -869,6 +912,11 @@ impl App {
             return entries;
         }
 
+        if self.view == ListView::Source {
+            self.push_source_visible_entries(&mut entries, false);
+            return entries;
+        }
+
         for path in base_paths {
             if !seen.insert(path.clone()) {
                 continue;
@@ -902,6 +950,10 @@ impl App {
                 };
                 self.build_filtered_tree_entries(source_paths, &query)
             }
+            ListView::Source => self.build_filtered_tree_entries(
+                self.source_tree_nodes().into_iter().collect(),
+                &query,
+            ),
         }
     }
 
@@ -1034,7 +1086,10 @@ impl App {
     }
 
     fn view_supports_tree(&self) -> bool {
-        matches!(self.view, ListView::Managed | ListView::Unmanaged)
+        matches!(
+            self.view,
+            ListView::Managed | ListView::Unmanaged | ListView::Source
+        )
     }
 
     fn base_paths_for_view(&self) -> Vec<PathBuf> {
@@ -1061,6 +1116,7 @@ impl App {
 
                 base_paths
             }
+            ListView::Source => self.source_entries.clone(),
         }
     }
 
@@ -1479,6 +1535,102 @@ impl App {
         }
     }
 
+    fn push_source_visible_entries(&self, out: &mut Vec<VisibleEntry>, force_expand: bool) {
+        let nodes = self.source_tree_nodes();
+        if nodes.is_empty() {
+            return;
+        }
+
+        let mut children: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
+        let mut roots = Vec::new();
+        for node in &nodes {
+            let parent = node.parent().map(Path::to_path_buf);
+            if let Some(parent) = parent
+                && !parent.as_os_str().is_empty()
+                && nodes.contains(&parent)
+            {
+                children.entry(parent).or_default().push(node.clone());
+            } else {
+                roots.push(node.clone());
+            }
+        }
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+        }
+        roots.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+
+        let mut seen = HashSet::new();
+        for root in &roots {
+            self.push_source_visible_recursive(root, 0, out, &children, &mut seen, force_expand);
+        }
+    }
+
+    fn source_tree_nodes(&self) -> BTreeSet<PathBuf> {
+        let mut nodes = BTreeSet::new();
+        for source in &self.source_entries {
+            if source.as_os_str().is_empty() {
+                continue;
+            }
+            let mut current = source.clone();
+            loop {
+                if current.as_os_str().is_empty() {
+                    break;
+                }
+                nodes.insert(current.clone());
+                let Some(parent) = current.parent() else {
+                    break;
+                };
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                current = parent.to_path_buf();
+            }
+        }
+        nodes
+    }
+
+    fn push_source_visible_recursive(
+        &self,
+        path: &Path,
+        depth: usize,
+        out: &mut Vec<VisibleEntry>,
+        children: &BTreeMap<PathBuf, Vec<PathBuf>>,
+        seen: &mut HashSet<PathBuf>,
+        force_expand: bool,
+    ) {
+        if !seen.insert(path.to_path_buf()) {
+            return;
+        }
+        let has_children = children
+            .get(path)
+            .is_some_and(|entries| !entries.is_empty());
+        let directory = self.path_directory_state_for_view(path, ListView::Source);
+        let is_dir = has_children || directory.is_dir;
+        let can_expand = has_children || directory.can_expand;
+        out.push(VisibleEntry {
+            path: path.to_path_buf(),
+            depth,
+            is_dir,
+            can_expand,
+            is_symlink: directory.is_symlink,
+        });
+        if !can_expand || (!force_expand && !self.expanded_dirs.contains(path)) {
+            return;
+        }
+        if let Some(child_paths) = children.get(path) {
+            for child in child_paths {
+                self.push_source_visible_recursive(
+                    child,
+                    depth + 1,
+                    out,
+                    children,
+                    seen,
+                    force_expand,
+                );
+            }
+        }
+    }
+
     fn read_children(&self, parent: &Path) -> Vec<PathBuf> {
         let abs_parent = Self::resolve_with_base(parent, &self.working_dir);
         let Ok(read_dir) = fs::read_dir(abs_parent) else {
@@ -1634,6 +1786,7 @@ impl App {
         let base = match view {
             ListView::Status | ListView::Managed => &self.home_dir,
             ListView::Unmanaged => &self.working_dir,
+            ListView::Source => self.config.source_dir.as_ref().unwrap_or(&self.working_dir),
         };
         Self::resolve_with_base(path, base)
     }
@@ -2819,6 +2972,49 @@ mod tests {
         assert!(app.flush_staged_filter(Instant::now()));
         assert_eq!(app.list_filter(), "zsh");
         assert_eq!(app.current_items().len(), 1);
+    }
+
+    #[test]
+    fn source_view_is_hierarchical_and_resolves_to_source_dir() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_source_view_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        fs::create_dir_all(temp_root.join("dot_config/nvim")).expect("create source dir");
+        fs::write(
+            temp_root.join("dot_config/nvim/init.lua"),
+            "vim.opt.number = true",
+        )
+        .expect("write source file");
+
+        let config = AppConfig {
+            source_dir: Some(temp_root.clone()),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+        app.source_entries = vec![PathBuf::from("dot_config/nvim/init.lua")];
+        app.switch_view(ListView::Source);
+
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("dot_config/")));
+        assert!(!items.iter().any(|line| line.contains("init.lua")));
+        assert!(app.expand_selected_directory());
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        let expanded = app.current_items();
+        assert!(expanded.iter().any(|line| line.contains("init.lua")));
+
+        app.select_next();
+        assert_eq!(
+            app.selected_absolute_path(),
+            Some(temp_root.join("dot_config/nvim/init.lua"))
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub trait ChezmoiClient: Send + Sync {
     fn status(&self) -> Result<Vec<StatusEntry>>;
     fn managed(&self) -> Result<Vec<PathBuf>>;
     fn unmanaged(&self) -> Result<Vec<PathBuf>>;
+    fn source(&self) -> Result<(PathBuf, Vec<PathBuf>)>;
     fn diff(&self, target: Option<&Path>) -> Result<DiffText>;
     fn run(&self, request: &ActionRequest) -> Result<CommandResult>;
 }
@@ -20,6 +21,7 @@ pub struct ShellChezmoiClient {
     binary: String,
     home_dir: PathBuf,
     working_dir: PathBuf,
+    source_dir: Option<PathBuf>,
 }
 
 impl Default for ShellChezmoiClient {
@@ -30,11 +32,26 @@ impl Default for ShellChezmoiClient {
             binary: "chezmoi".to_string(),
             home_dir,
             working_dir,
+            source_dir: None,
         }
     }
 }
 
 impl ShellChezmoiClient {
+    pub fn new(
+        binary: impl Into<String>,
+        home_dir: PathBuf,
+        working_dir: PathBuf,
+        source_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            binary: binary.into(),
+            home_dir,
+            working_dir,
+            source_dir,
+        }
+    }
+
     fn run_raw<I, S>(&self, args: I, destination_dir: &Path) -> Result<CommandResult>
     where
         I: IntoIterator<Item = S>,
@@ -46,8 +63,18 @@ impl ShellChezmoiClient {
             .collect();
         let mut cmd = Command::new(&self.binary);
         cmd.arg("--destination").arg(destination_dir);
+        if let Some(source_dir) = &self.source_dir {
+            cmd.arg("--source").arg(source_dir);
+        }
         cmd.args(&args);
 
+        tracing::debug!(
+            binary = %self.binary,
+            destination = %destination_dir.display(),
+            source = self.source_dir.as_ref().map(|path| path.display().to_string()),
+            args = ?args,
+            "running chezmoi command"
+        );
         let started = Instant::now();
         let output = cmd
             .output()
@@ -57,6 +84,15 @@ impl ShellChezmoiClient {
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        tracing::info!(
+            binary = %self.binary,
+            args = ?args,
+            exit_code,
+            duration_ms,
+            stderr = %squash_for_log(&stderr),
+            "chezmoi command finished"
+        );
 
         Ok(CommandResult {
             exit_code,
@@ -128,6 +164,12 @@ impl ChezmoiClient for ShellChezmoiClient {
         }
     }
 
+    fn source(&self) -> Result<(PathBuf, Vec<PathBuf>)> {
+        let source_dir = self.source_dir()?;
+        let paths = list_source_paths(&source_dir)?;
+        Ok((source_dir, paths))
+    }
+
     fn diff(&self, target: Option<&Path>) -> Result<DiffText> {
         let args = diff_args(target);
         let destination = self.destination_for_target(target);
@@ -151,6 +193,22 @@ impl ChezmoiClient for ShellChezmoiClient {
 }
 
 impl ShellChezmoiClient {
+    fn source_dir(&self) -> Result<PathBuf> {
+        if let Some(source_dir) = &self.source_dir {
+            return Ok(source_dir.clone());
+        }
+
+        let result = self.run_raw(["source-path"], &self.home_dir)?;
+        if result.exit_code != 0 {
+            bail!("chezmoi source-path failed: {}", result.stderr.trim());
+        }
+        let source_dir = result.stdout.trim();
+        if source_dir.is_empty() {
+            bail!("chezmoi source-path returned empty output");
+        }
+        Ok(PathBuf::from(source_dir))
+    }
+
     fn expand_working_root_entries_from_home(&self, scoped: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
         let mut merged: BTreeSet<PathBuf> = scoped
             .into_iter()
@@ -240,8 +298,50 @@ pub fn parse_unmanaged_output(output: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+fn list_source_paths(source_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    collect_source_paths(source_dir, source_dir, &mut out)?;
+    out.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    Ok(out)
+}
+
+fn collect_source_paths(base: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let read_dir = std::fs::read_dir(current)
+        .with_context(|| format!("failed to read source dir {}", current.display()))?;
+    for entry in read_dir {
+        let entry =
+            entry.with_context(|| format!("failed to read child in {}", current.display()))?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(base)
+            .unwrap_or(path.as_path())
+            .to_path_buf();
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        out.push(relative);
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", path.display()))?;
+        if file_type.is_dir() && !file_type.is_symlink() {
+            collect_source_paths(base, &path, out)?;
+        }
+    }
+    Ok(())
+}
+
 fn elapsed_millis_u64(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn squash_for_log(input: &str) -> String {
+    input
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 fn filter_unmanaged_to_working_dir(
@@ -579,6 +679,57 @@ mod tests {
             client.working_dir,
             std::env::current_dir().expect("current dir")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_client_passes_destination_and_source_to_chezmoi() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_fake_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+        let log = root.join("args.log");
+        let fake = root.join("chezmoi");
+        std::fs::write(
+            &fake,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$@" > '{}'
+printf ' A .zshrc\n'
+"#,
+                log.display()
+            ),
+        )
+        .expect("write fake chezmoi");
+        let mut perms = std::fs::metadata(&fake).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake, perms).expect("chmod");
+
+        let client = ShellChezmoiClient::new(
+            fake.display().to_string(),
+            root.join("home"),
+            root.join("work"),
+            Some(root.join("source")),
+        );
+
+        let status = client.status().expect("status");
+        assert_eq!(status.len(), 1);
+        let args = std::fs::read_to_string(&log).expect("read log");
+        assert!(args.contains("--destination\n"));
+        assert!(args.contains("home\n"));
+        assert!(args.contains("--source\n"));
+        assert!(args.contains("source\n"));
+        assert!(args.contains("status\n"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

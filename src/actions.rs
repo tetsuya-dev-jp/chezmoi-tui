@@ -1,6 +1,7 @@
 use crate::app::{App, BackendTask, InputKind};
+use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest};
-use crate::ignore::{chezmoi_ignore_path, run_internal_ignore_action};
+use crate::ignore::{chezmoi_ignore_path_with_source, run_internal_ignore_action};
 use crate::infra::action_to_args;
 use crate::terminal::{restore_terminal, setup_terminal};
 use anyhow::{Context, Result};
@@ -32,7 +33,7 @@ pub(crate) fn run_foreground_action(
 ) -> Result<()> {
     restore_terminal(terminal)?;
 
-    let result = run_action_foreground(request);
+    let result = run_action_foreground(request, &app.config);
 
     setup_terminal()?;
     terminal.clear()?;
@@ -70,10 +71,10 @@ pub(crate) fn run_foreground_action(
     Ok(())
 }
 
-fn run_action_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
+fn run_action_foreground(request: &ActionRequest, config: &AppConfig) -> Result<(i32, u64)> {
     match request.action {
-        Action::EditIgnore => run_edit_ignore_foreground(),
-        _ => run_chezmoi_foreground(request),
+        Action::EditIgnore => run_edit_ignore_foreground(config),
+        _ => run_chezmoi_foreground(request, config),
     }
 }
 
@@ -218,13 +219,17 @@ pub(crate) fn validate_action_requests(
     None
 }
 
-fn run_chezmoi_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
+fn run_chezmoi_foreground(request: &ActionRequest, config: &AppConfig) -> Result<(i32, u64)> {
     let args = action_to_args(request)?;
-    let destination_dir = infer_destination_for_target(request.target.as_deref());
+    let destination_dir =
+        infer_destination_for_target_with_config(request.target.as_deref(), config);
     let started = Instant::now();
-    let status = Command::new("chezmoi")
-        .arg("--destination")
-        .arg(destination_dir)
+    let mut command = Command::new("chezmoi");
+    command.arg("--destination").arg(destination_dir);
+    if let Some(source_dir) = &config.source_dir {
+        command.arg("--source").arg(source_dir);
+    }
+    let status = command
         .args(args)
         .status()
         .context("failed to start foreground chezmoi command")?;
@@ -233,8 +238,8 @@ fn run_chezmoi_foreground(request: &ActionRequest) -> Result<(i32, u64)> {
     Ok((status.code().unwrap_or(-1), elapsed))
 }
 
-fn run_edit_ignore_foreground() -> Result<(i32, u64)> {
-    let ignore_path = chezmoi_ignore_path()?;
+fn run_edit_ignore_foreground(config: &AppConfig) -> Result<(i32, u64)> {
+    let ignore_path = chezmoi_ignore_path_with_source(config.source_dir.as_deref())?;
     if let Some(parent) = ignore_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -258,9 +263,16 @@ fn run_edit_ignore_foreground() -> Result<(i32, u64)> {
     Ok((status.code().unwrap_or(-1), elapsed))
 }
 
-pub(crate) fn infer_destination_for_target(target: Option<&Path>) -> std::path::PathBuf {
-    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let home_dir = dirs::home_dir().unwrap_or_else(|| working_dir.clone());
+fn infer_destination_for_target_with_config(
+    target: Option<&Path>,
+    config: &AppConfig,
+) -> std::path::PathBuf {
+    let working_dir = config.working_dir.clone();
+    let home_dir = config
+        .destination_dir
+        .clone()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| working_dir.clone());
 
     destination_for_target_with_bases(target, &home_dir, &working_dir)
 }

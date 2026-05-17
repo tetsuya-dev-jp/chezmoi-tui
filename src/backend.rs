@@ -9,6 +9,7 @@ pub(crate) async fn worker_loop(
     event_tx: UnboundedSender<BackendEvent>,
 ) {
     while let Some(task) = task_rx.recv().await {
+        tracing::debug!(task = ?task, "backend task received");
         match task {
             BackendTask::RefreshAll => {
                 let c1 = client.clone();
@@ -17,28 +18,46 @@ pub(crate) async fn worker_loop(
                 let managed_task = tokio::task::spawn_blocking(move || c2.managed());
                 let c3 = client.clone();
                 let unmanaged_task = tokio::task::spawn_blocking(move || c3.unmanaged());
-                let (status, managed, unmanaged) =
-                    tokio::join!(status_task, managed_task, unmanaged_task);
+                let c4 = client.clone();
+                let source_task = tokio::task::spawn_blocking(move || c4.source());
+                let (status, managed, unmanaged, source) =
+                    tokio::join!(status_task, managed_task, unmanaged_task, source_task);
 
-                match (status, managed, unmanaged) {
-                    (Ok(Ok(status)), Ok(Ok(managed)), Ok(Ok(unmanaged))) => {
+                match (status, managed, unmanaged, source) {
+                    (
+                        Ok(Ok(status)),
+                        Ok(Ok(managed)),
+                        Ok(Ok(unmanaged)),
+                        Ok(Ok((source_dir, source))),
+                    ) => {
+                        tracing::info!(
+                            status = status.len(),
+                            managed = managed.len(),
+                            unmanaged = unmanaged.len(),
+                            source = source.len(),
+                            source_dir = %source_dir.display(),
+                            "refresh completed"
+                        );
                         if event_tx
                             .send(BackendEvent::Refreshed {
                                 status,
                                 managed,
                                 unmanaged,
+                                source_dir: Some(source_dir),
+                                source,
                             })
                             .is_err()
                         {
                             break;
                         }
                     }
-                    (s, m, u) => {
+                    (s, m, u, src) => {
                         let message = format!(
-                            "refresh failed: status={:?}, managed={:?}, unmanaged={:?}",
+                            "refresh failed: status={:?}, managed={:?}, unmanaged={:?}, source={:?}",
                             flatten_error(s),
                             flatten_error(m),
-                            flatten_error(u)
+                            flatten_error(u),
+                            flatten_error(src)
                         );
                         if event_tx
                             .send(BackendEvent::Error {
