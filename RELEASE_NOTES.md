@@ -1,14 +1,18 @@
-# Release Notes: v0.2.0
+# Release Notes: v0.2.1
 
 ## Highlights
 
-This release focuses on making `chezmoi-tui` safer, clearer, and faster for daily chezmoi workflows.
+This release adds targeted apply support for marked `status` / `managed` entries, building on the v0.2.0 safety and workflow improvements.
 
-## Safety and preflight review
+## Targeted apply
+
+- Marked `status` / `managed` entries can now run targeted `apply` commands; unmarked `apply` still runs a full `chezmoi apply`.
+- Apply Plan is filtered for targeted apply requests so the preview matches the selected target(s).
+
+## v0.2.0 safety and preflight review
 
 - Added preflight review for broad/risky actions.
 - Multi-target actions now show affected targets before execution.
-- Marked `status` / `managed` entries can now run targeted `apply` commands; unmarked `apply` still runs a full `chezmoi apply`.
 - Apply Plan now shows all pending changes grouped by kind instead of only samples.
 - Busy indicator now includes the current task when available.
 - Common errors now include recovery hints in the notice/log.
@@ -56,9 +60,9 @@ cargo publish --dry-run --locked
 ## Release steps
 
 ```bash
-git tag v0.2.0
+git tag v0.2.1
 git push origin main
-git push origin v0.2.0
+git push origin v0.2.1
 ```
 
 Publishing is handled by the existing tag-based GitHub Actions workflow using crates.io Trusted Publishing.
