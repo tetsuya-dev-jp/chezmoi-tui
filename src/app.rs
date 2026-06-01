@@ -1372,10 +1372,6 @@ impl App {
         }
     }
 
-    pub fn build_apply_plan(&self) -> ApplyPlan {
-        self.build_apply_plan_for_target(None)
-    }
-
     fn build_apply_plan_for_target(&self, target: Option<&Path>) -> ApplyPlan {
         let mut plan = ApplyPlan::default();
         for entry in &self.status_entries {
@@ -3256,7 +3252,15 @@ mod tests {
             },
         ];
 
-        let plan = app.build_apply_plan();
+        app.open_apply_plan(ActionRequest {
+            action: Action::Apply,
+            target: None,
+            chattr_attrs: None,
+        });
+
+        let ModalState::ApplyPlan { plan, .. } = &app.modal else {
+            panic!("expected apply plan modal");
+        };
         assert_eq!(plan.total(), 4);
         assert_eq!(plan.added, vec![PathBuf::from("added")]);
         assert_eq!(plan.modified, vec![PathBuf::from("modified")]);
