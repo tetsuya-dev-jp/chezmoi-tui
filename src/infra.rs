@@ -396,7 +396,14 @@ pub fn action_to_args(request: &ActionRequest) -> Result<Vec<OsString>> {
         .map(|path| path.as_os_str().to_os_string());
 
     let args = match action {
-        Action::Apply => vec![os("apply")],
+        Action::Apply => {
+            let mut args = vec![os("apply")];
+            if let Some(path) = target {
+                args.push(os("--"));
+                args.push(path);
+            }
+            args
+        }
         Action::Doctor => vec![os("doctor")],
         Action::Data => vec![os("data"), os("--format"), os("json")],
         Action::OpenSourceDir => {
@@ -611,6 +618,16 @@ mod tests {
         assert_eq!(
             action_to_args(&edit).expect("edit args"),
             vec![os("edit"), os("--"), os(".zshrc")]
+        );
+
+        let apply = ActionRequest {
+            action: Action::Apply,
+            target: Some(PathBuf::from(".zshrc")),
+            chattr_attrs: None,
+        };
+        assert_eq!(
+            action_to_args(&apply).expect("apply args"),
+            vec![os("apply"), os("--"), os(".zshrc")]
         );
 
         let edit_config = ActionRequest {

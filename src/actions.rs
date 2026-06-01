@@ -1,6 +1,6 @@
 use crate::app::{App, BackendTask, InputKind, NoticeTone};
 use crate::config::AppConfig;
-use crate::domain::{Action, ActionRequest};
+use crate::domain::{Action, ActionRequest, ListView};
 use crate::ignore::{chezmoi_ignore_path_with_source, run_internal_ignore_action};
 use crate::infra::action_to_args;
 use crate::terminal::{restore_terminal, setup_terminal};
@@ -225,6 +225,23 @@ pub(crate) fn maybe_continue_batch(
 }
 
 pub(crate) fn build_action_requests(app: &App, action: Action) -> Vec<ActionRequest> {
+    if action == Action::Apply
+        && app.marked_count() > 0
+        && matches!(app.view, ListView::Status | ListView::Managed)
+    {
+        let targets = app.selected_action_targets_absolute();
+        if !targets.is_empty() {
+            return targets
+                .into_iter()
+                .map(|target| ActionRequest {
+                    action,
+                    target: Some(target),
+                    chattr_attrs: None,
+                })
+                .collect();
+        }
+    }
+
     if !action.needs_target() {
         return vec![ActionRequest {
             action,
@@ -542,6 +559,73 @@ mod tests {
         assert_eq!(requests[1].target.as_ref(), Some(&temp_root.join(".b")));
 
         let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn build_action_requests_creates_targeted_apply_requests_for_marked_status_entries() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_apply_requests_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        std::fs::write(temp_root.join(".a"), "a").expect("write a");
+        std::fs::write(temp_root.join(".b"), "b").expect("write b");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![
+            crate::domain::StatusEntry {
+                path: PathBuf::from(".a"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            crate::domain::StatusEntry {
+                path: PathBuf::from(".b"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Added,
+            },
+        ];
+        app.switch_view(crate::domain::ListView::Status);
+        app.toggle_selected_mark();
+        app.select_next();
+        app.toggle_selected_mark();
+
+        let requests = build_action_requests(&app, Action::Apply);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].target.as_ref(), Some(&temp_root.join(".a")));
+        assert_eq!(requests[1].target.as_ref(), Some(&temp_root.join(".b")));
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn build_action_requests_keeps_global_apply_outside_target_views() {
+        let mut app = App::new(AppConfig::default());
+        app.source_entries = vec![PathBuf::from("dot_zshrc")];
+        app.switch_view(crate::domain::ListView::Source);
+
+        let requests = build_action_requests(&app, Action::Apply);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].target, None);
+    }
+
+    #[test]
+    fn build_action_requests_keeps_global_apply_without_marks_in_status_view() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![crate::domain::StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.switch_view(crate::domain::ListView::Status);
+
+        let requests = build_action_requests(&app, Action::Apply);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].target, None);
     }
 
     #[test]
