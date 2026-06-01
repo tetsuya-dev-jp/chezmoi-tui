@@ -93,6 +93,7 @@ chezmoi-tui --no-auto-preview
 4. In `status`, diff is auto-loaded for selected file.
 5. In `managed` / `unmanaged` / `source`, preview is auto-loaded for selected file with its origin in the detail title.
 6. Use `Space` to mark multiple items and run batch actions from `a`.
+7. Run `apply` with no marks for a full `chezmoi apply`, or mark files in `status` / `managed` to apply only those targets.
 
 The footer shows the active view base path, for example `dest=/home/user`, `cwd=/work/project`, or `source=~/.local/share/chezmoi`.
 
@@ -181,6 +182,8 @@ Action visibility is view-aware.
 - `Recursive` (`/**`)
 - `Global by name` (example: `**/.git/**`)
 
+`apply` defaults to a full `chezmoi apply`. In `status` and `managed`, marked entries change `apply` into targeted commands such as `chezmoi apply -- ~/.zshrc`; multiple marks run as a reviewed batch.
+
 ## Safety Model
 
 - Strict confirmation is always required for dangerous actions: `destroy`, `purge`.
@@ -192,7 +195,7 @@ Action visibility is view-aware.
 - Broad or risky operations open a preflight review before execution.
 - Preflight shows the action, impact, command preview, and affected targets.
 - `apply` opens an Apply Plan review before the normal confirmation.
-- Apply Plan lists every pending change grouped by added/modified/deleted/run/unknown.
+- Apply Plan lists pending changes grouped by added/modified/deleted/run/unknown. For targeted apply, it shows only changes related to the target being applied.
 - Multi-target operations show all selected targets before any command runs.
 - Batch confirmation is reused for remaining queued non-dangerous items after the first confirmation.
 - Dangerous batch items require per-target confirmation.

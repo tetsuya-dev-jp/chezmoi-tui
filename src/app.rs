@@ -1373,8 +1373,18 @@ impl App {
     }
 
     pub fn build_apply_plan(&self) -> ApplyPlan {
+        self.build_apply_plan_for_target(None)
+    }
+
+    fn build_apply_plan_for_target(&self, target: Option<&Path>) -> ApplyPlan {
         let mut plan = ApplyPlan::default();
         for entry in &self.status_entries {
+            if let Some(target) = target
+                && !self.status_entry_matches_apply_target(entry.path.as_path(), target)
+            {
+                continue;
+            }
+
             match entry.actual_vs_target {
                 ChangeKind::Added => plan.added.push(entry.path.clone()),
                 ChangeKind::Modified => plan.modified.push(entry.path.clone()),
@@ -1387,8 +1397,13 @@ impl App {
         plan
     }
 
+    fn status_entry_matches_apply_target(&self, entry_path: &Path, target: &Path) -> bool {
+        let absolute = self.resolve_path_for_view(entry_path, ListView::Status);
+        target == entry_path || target == absolute || absolute.starts_with(target)
+    }
+
     pub fn open_apply_plan(&mut self, request: ActionRequest) {
-        let plan = self.build_apply_plan();
+        let plan = self.build_apply_plan_for_target(request.target.as_deref());
         self.modal = ModalState::ApplyPlan {
             request,
             plan,
@@ -3247,6 +3262,48 @@ mod tests {
         assert_eq!(plan.modified, vec![PathBuf::from("modified")]);
         assert_eq!(plan.deleted, vec![PathBuf::from("deleted")]);
         assert_eq!(plan.run, vec![PathBuf::from("script")]);
+    }
+
+    #[test]
+    fn open_apply_plan_filters_status_entries_for_targeted_apply() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "chezmoi_tui_apply_plan_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".a"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".b"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Added,
+            },
+        ];
+
+        app.open_apply_plan(ActionRequest {
+            action: Action::Apply,
+            target: Some(temp_root.join(".a")),
+            chattr_attrs: None,
+        });
+
+        let ModalState::ApplyPlan { plan, .. } = &app.modal else {
+            panic!("expected apply plan modal");
+        };
+        assert_eq!(plan.total(), 1);
+        assert_eq!(plan.modified, vec![PathBuf::from(".a")]);
+
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

@@ -8,6 +8,7 @@ This release focuses on making `chezmoi-tui` safer, clearer, and faster for dail
 
 - Added preflight review for broad/risky actions.
 - Multi-target actions now show affected targets before execution.
+- Marked `status` / `managed` entries can now run targeted `apply` commands; unmarked `apply` still runs a full `chezmoi apply`.
 - Apply Plan now shows all pending changes grouped by kind instead of only samples.
 - Busy indicator now includes the current task when available.
 - Common errors now include recovery hints in the notice/log.
