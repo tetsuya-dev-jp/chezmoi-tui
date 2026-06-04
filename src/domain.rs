@@ -158,48 +158,34 @@ impl Action {
     }
 
     pub fn is_dangerous(self) -> bool {
-        matches!(self, Action::Destroy | Action::Purge)
+        crate::action_policy::policy_for(self).dangerous
     }
 
     pub fn requires_confirmation(self) -> bool {
-        matches!(
-            self,
-            Action::Apply
-                | Action::Update
-                | Action::MergeAll
-                | Action::Forget
-                | Action::Chattr
-                | Action::Destroy
-                | Action::Purge
+        !matches!(
+            crate::action_policy::policy_for(self).confirmation,
+            crate::action_policy::ConfirmationPolicy::None
         )
     }
 
     pub fn confirm_phrase(self) -> Option<&'static str> {
-        match self {
-            Action::Destroy => Some("DESTROY"),
-            Action::Purge => Some("PURGE"),
+        match crate::action_policy::policy_for(self).confirmation {
+            crate::action_policy::ConfirmationPolicy::Strict(phrase) => Some(phrase),
             _ => None,
         }
     }
 
     pub fn needs_target(self) -> bool {
-        matches!(
-            self,
-            Action::ReAdd
-                | Action::Merge
-                | Action::Add
-                | Action::Ignore
-                | Action::Edit
-                | Action::Forget
-                | Action::Chattr
-                | Action::Destroy
+        !matches!(
+            crate::action_policy::policy_for(self).target,
+            crate::action_policy::TargetPolicy::None | crate::action_policy::TargetPolicy::Optional
         )
     }
 
     pub fn requires_exact_managed_target(self) -> bool {
         matches!(
-            self,
-            Action::Edit | Action::Forget | Action::Chattr | Action::Destroy
+            crate::action_policy::policy_for(self).target,
+            crate::action_policy::TargetPolicy::ExactManaged
         )
     }
 }
@@ -213,7 +199,10 @@ pub struct ActionRequest {
 
 impl ActionRequest {
     pub fn requires_strict_confirmation(&self) -> bool {
-        matches!(self.action, Action::Destroy | Action::Purge)
+        matches!(
+            crate::action_policy::policy_for(self.action).confirmation,
+            crate::action_policy::ConfirmationPolicy::Strict(_)
+        )
     }
 
     pub fn confirmation_phrase(&self) -> Option<String> {

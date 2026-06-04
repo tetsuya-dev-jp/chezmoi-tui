@@ -1071,34 +1071,61 @@ impl App {
     }
 
     pub fn action_disabled_reason(&self, action: Action) -> Option<String> {
-        if action == Action::ReAdd && !self.readd_selection_is_eligible() {
+        use crate::action_policy::{TargetPolicy, policy_for};
+
+        let policy = policy_for(action);
+
+        if matches!(policy.target, TargetPolicy::ModifiedStatusFile)
+            && !self.readd_selection_is_eligible()
+        {
             return Some("only for modified status files".to_string());
         }
-        if !Self::action_visible_in_view(self.view, action) {
+
+        if !policy.visible_in.contains(&self.view) {
             return Some(format!("not available in {} view", self.view.title()));
         }
-        if action.needs_target() && self.selected_action_targets_absolute().is_empty() {
-            return Some("requires a selected target".to_string());
+
+        let targets = self.selected_action_targets_absolute();
+
+        match policy.target {
+            TargetPolicy::None | TargetPolicy::Optional => {}
+            TargetPolicy::Required => {
+                if targets.is_empty() {
+                    return Some("requires a selected target".to_string());
+                }
+            }
+            TargetPolicy::ExactManaged => {
+                if targets.is_empty() {
+                    return Some("requires a selected target".to_string());
+                }
+                if targets
+                    .iter()
+                    .any(|path| !self.is_absolute_path_managed(path))
+                {
+                    return Some(format!(
+                        "{} is only for exact managed entries",
+                        action.label()
+                    ));
+                }
+            }
+            TargetPolicy::ModifiedStatusFile => {
+                // checked above before static visibility
+            }
+            TargetPolicy::ExistingNonDirectory => {
+                if targets.is_empty() {
+                    return Some("requires a selected target".to_string());
+                }
+                if targets.iter().any(|path| path.is_dir()) {
+                    return Some("directory add is disabled; expand and select files".to_string());
+                }
+            }
+            TargetPolicy::IgnoreEligible => {
+                if targets.is_empty() {
+                    return Some("requires a selected target".to_string());
+                }
+            }
         }
-        if action.requires_exact_managed_target()
-            && self
-                .selected_action_targets_absolute()
-                .iter()
-                .any(|path| !self.is_absolute_path_managed(path))
-        {
-            return Some(format!(
-                "{} is only for exact managed entries",
-                action.label()
-            ));
-        }
-        if action == Action::Add
-            && self
-                .selected_action_targets_absolute()
-                .iter()
-                .any(|path| path.is_dir())
-        {
-            return Some("directory add is disabled; expand and select files".to_string());
-        }
+
         None
     }
 
@@ -1202,77 +1229,9 @@ impl App {
     }
 
     fn action_visible_in_view(view: ListView, action: Action) -> bool {
-        match view {
-            ListView::Status => matches!(
-                action,
-                Action::Apply
-                    | Action::Doctor
-                    | Action::Data
-                    | Action::OpenSourceDir
-                    | Action::ExternalDiff
-                    | Action::DebugContext
-                    | Action::Update
-                    | Action::EditConfig
-                    | Action::EditConfigTemplate
-                    | Action::EditIgnore
-                    | Action::Merge
-                    | Action::MergeAll
-                    | Action::Edit
-                    | Action::Forget
-                    | Action::Chattr
-                    | Action::Purge
-            ),
-            ListView::Managed => matches!(
-                action,
-                Action::Apply
-                    | Action::Doctor
-                    | Action::Data
-                    | Action::OpenSourceDir
-                    | Action::ExternalDiff
-                    | Action::DebugContext
-                    | Action::Update
-                    | Action::EditConfig
-                    | Action::EditConfigTemplate
-                    | Action::EditIgnore
-                    | Action::Edit
-                    | Action::Forget
-                    | Action::Chattr
-                    | Action::Destroy
-                    | Action::Purge
-            ),
-            ListView::Unmanaged => {
-                matches!(
-                    action,
-                    Action::Add
-                        | Action::Ignore
-                        | Action::Apply
-                        | Action::Doctor
-                        | Action::Data
-                        | Action::OpenSourceDir
-                        | Action::ExternalDiff
-                        | Action::DebugContext
-                        | Action::Update
-                        | Action::EditConfig
-                        | Action::EditConfigTemplate
-                        | Action::EditIgnore
-                        | Action::Purge
-                )
-            }
-            ListView::Source => matches!(
-                action,
-                Action::Apply
-                    | Action::Doctor
-                    | Action::Data
-                    | Action::OpenSourceDir
-                    | Action::ExternalDiff
-                    | Action::DebugContext
-                    | Action::Update
-                    | Action::EditConfig
-                    | Action::EditConfigTemplate
-                    | Action::EditIgnore
-                    | Action::Purge
-            ),
-        }
+        crate::action_policy::policy_for(action)
+            .visible_in
+            .contains(&view)
     }
 
     fn action_filter_match_rank(label: &str, query: &str) -> Option<u8> {
