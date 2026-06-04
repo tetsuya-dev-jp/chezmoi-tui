@@ -125,6 +125,15 @@ pub(crate) fn dispatch_action_request(
     task_tx: &UnboundedSender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
+    if let Some(message) =
+        validate_action_requests(app, request.action, std::slice::from_ref(&request))
+    {
+        app.log(message.clone());
+        app.set_error_notice(message);
+        app.clear_batch();
+        return Ok(());
+    }
+
     if request.action == Action::Chattr && request.chattr_attrs.is_none() {
         app.open_input(InputKind::ChattrAttrs, request);
         return Ok(());
@@ -291,12 +300,15 @@ pub(crate) fn validate_action_requests(
         }
     }
 
-    if action == Action::Edit
+    if action.requires_exact_managed_target()
         && targets
             .iter()
             .any(|path| !app.is_absolute_path_managed(path))
     {
-        return Some("edit is available only for managed files".to_string());
+        return Some(format!(
+            "{} is available only for exact managed entries",
+            action.label()
+        ));
     }
 
     None
@@ -801,5 +813,99 @@ mod tests {
                 std::ffi::OsString::from("/tmp/x"),
             ]
         );
+    }
+
+    #[test]
+    fn validate_action_requests_rejects_destroy_for_virtual_managed_directory() {
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = std::env::temp_dir();
+        app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
+
+        let request = ActionRequest {
+            action: Action::Destroy,
+            target: Some(app.home_dir.join(".config")),
+            chattr_attrs: None,
+        };
+
+        let message = validate_action_requests(&app, Action::Destroy, &[request]);
+
+        assert_eq!(
+            message.as_deref(),
+            Some("destroy is available only for exact managed entries")
+        );
+    }
+
+    #[test]
+    fn validate_action_requests_allows_destroy_for_exact_managed_file() {
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = std::env::temp_dir();
+        app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
+
+        let request = ActionRequest {
+            action: Action::Destroy,
+            target: Some(app.home_dir.join(".config/nvim/init.lua")),
+            chattr_attrs: None,
+        };
+
+        let message = validate_action_requests(&app, Action::Destroy, &[request]);
+
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn validate_action_requests_rejects_forget_for_virtual_managed_directory() {
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = std::env::temp_dir();
+        app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
+
+        let request = ActionRequest {
+            action: Action::Forget,
+            target: Some(app.home_dir.join(".config/nvim")),
+            chattr_attrs: None,
+        };
+
+        let message = validate_action_requests(&app, Action::Forget, &[request]);
+
+        assert_eq!(
+            message.as_deref(),
+            Some("forget is available only for exact managed entries")
+        );
+    }
+
+    #[test]
+    fn validate_action_requests_rejects_chattr_for_virtual_managed_directory() {
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = std::env::temp_dir();
+        app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
+
+        let request = ActionRequest {
+            action: Action::Chattr,
+            target: Some(app.home_dir.join(".config/nvim")),
+            chattr_attrs: Some("private".to_string()),
+        };
+
+        let message = validate_action_requests(&app, Action::Chattr, &[request]);
+
+        assert_eq!(
+            message.as_deref(),
+            Some("chattr is available only for exact managed entries")
+        );
+    }
+
+    #[test]
+    fn validate_action_requests_allows_destroy_for_exact_managed_directory() {
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = std::env::temp_dir();
+        app.managed_entries = vec![PathBuf::from(".config")];
+
+        let request = ActionRequest {
+            action: Action::Destroy,
+            target: Some(app.home_dir.join(".config")),
+            chattr_attrs: None,
+        };
+
+        let message = validate_action_requests(&app, Action::Destroy, &[request]);
+
+        assert!(message.is_none());
     }
 }
