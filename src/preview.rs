@@ -198,27 +198,24 @@ pub(crate) fn maybe_enqueue_auto_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn preview_rejects_binary_files() {
-        let file =
-            std::env::temp_dir().join(format!("chezmoi_tui_preview_bin_{}", std::process::id()));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("preview_bin");
         std::fs::write(&file, [0, 159, 146, 150]).expect("write binary");
         let got = load_file_preview(&file).expect("preview");
         assert!(got.contains("binary file"));
-        let _ = std::fs::remove_file(file);
     }
 
     #[test]
     fn preview_truncates_large_text() {
-        let file =
-            std::env::temp_dir().join(format!("chezmoi_tui_preview_txt_{}", std::process::id()));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("preview_txt");
         let payload = "a".repeat(PREVIEW_MAX_BYTES + 128);
         std::fs::write(&file, payload).expect("write text");
         let got = load_file_preview(&file).expect("preview");
         assert!(got.contains("preview truncated"));
-        let _ = std::fs::remove_file(file);
     }
 
     #[cfg(unix)]
@@ -226,14 +223,8 @@ mod tests {
     fn preview_reports_directory_symlink() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_preview_symlink_dir_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
         let real_dir = root.join("real");
         std::fs::create_dir_all(&real_dir).expect("create real dir");
         std::fs::write(real_dir.join("inside.txt"), "inside").expect("write file");
@@ -242,7 +233,6 @@ mod tests {
 
         let got = load_file_preview(&link).expect("preview");
         assert!(got.contains("directory symlink"));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[cfg(unix)]
@@ -250,20 +240,13 @@ mod tests {
     fn preview_reports_broken_symlink() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_preview_broken_symlink_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("create root");
         let link = root.join("broken");
         symlink(root.join("missing.txt"), &link).expect("create broken symlink");
 
         let got = load_file_preview(&link).expect("preview");
         assert!(got.contains("broken symlink"));
-        let _ = std::fs::remove_dir_all(root);
     }
 }

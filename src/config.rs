@@ -209,14 +209,8 @@ mod tests {
 
     #[test]
     fn file_config_loads_ui_safety_and_tools() {
-        let path = std::env::temp_dir().join(format!(
-            "chezmoi_tui_config_{}_{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp_f = tempfile::tempdir().expect("tempdir");
+        let path = temp_f.path().join("path_test");
         std::fs::write(
             &path,
             r#"
@@ -270,14 +264,8 @@ external_diff = "delta"
 
     #[test]
     fn cli_overrides_file_config() {
-        let path = std::env::temp_dir().join(format!(
-            "chezmoi_tui_config_override_{}_{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp_f = tempfile::tempdir().expect("tempdir");
+        let path = temp_f.path().join("path_test");
         std::fs::write(
             &path,
             "[ui]\ndefault_view = \"source\"\nauto_preview = true\n",
@@ -303,14 +291,8 @@ external_diff = "delta"
 
     #[test]
     fn invalid_default_view_is_an_error() {
-        let path = std::env::temp_dir().join(format!(
-            "chezmoi_tui_config_invalid_{}_{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp_f = tempfile::tempdir().expect("tempdir");
+        let path = temp_f.path().join("path_test");
         std::fs::write(&path, "[ui]\ndefault_view = \"bad\"\n").expect("write config");
 
         let err = AppConfig::from_cli(CliArgs {

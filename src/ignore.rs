@@ -226,8 +226,6 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use crate::domain::{Action, ActionRequest};
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn build_ignore_pattern_uses_home_relative_path_when_target_is_under_home() {
@@ -305,7 +303,8 @@ mod tests {
 
     #[test]
     fn run_internal_ignore_action_uses_configured_destination_base() {
-        let root = temp_root("chezmoi_tui_ignore_dest");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
         let destination = root.join("home");
         let source = root.join("source");
         let target = destination.join("project/.cache");
@@ -329,12 +328,12 @@ mod tests {
 
         let ignore = std::fs::read_to_string(source.join(".chezmoiignore")).expect("read ignore");
         assert_eq!(ignore, "project/.cache/**\n");
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn run_internal_ignore_action_rejects_destination_relative_mode_outside_destination() {
-        let root = temp_root("chezmoi_tui_ignore_outside");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
         let destination = root.join("home");
         let source = root.join("source");
         let target = root.join("outside/.cache");
@@ -358,12 +357,12 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains(&target.display().to_string()));
         assert!(message.contains(&destination.display().to_string()));
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn run_internal_ignore_action_allows_global_name_outside_destination() {
-        let root = temp_root("chezmoi_tui_ignore_global_outside");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
         let destination = root.join("home");
         let source = root.join("source");
         let target = root.join("outside/.cache");
@@ -387,19 +386,12 @@ mod tests {
 
         let ignore = std::fs::read_to_string(source.join(".chezmoiignore")).expect("read ignore");
         assert_eq!(ignore, "**/.cache/**\n");
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn append_unique_line_appends_once_and_avoids_duplicates() {
-        let file = std::env::temp_dir().join(format!(
-            "chezmoi_tui_ignore_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp_f = tempfile::tempdir().expect("tempdir");
+        let file = temp_f.path().join("file_test");
         std::fs::write(&file, "a").expect("write seed");
 
         let first = append_unique_line(&file, "b").expect("append first");
@@ -411,17 +403,5 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).expect("read file"), "a\nb\n");
 
         let _ = std::fs::remove_file(file);
-    }
-
-    fn temp_root(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "{}_{}_{}",
-            prefix,
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ))
     }
 }

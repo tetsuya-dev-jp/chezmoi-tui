@@ -616,7 +616,6 @@ mod tests {
     use crate::config::AppConfig;
     use crate::domain::ChangeKind;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::mpsc;
 
     #[test]
@@ -658,7 +657,8 @@ mod tests {
     #[test]
     fn validate_action_requests_rejects_directory_add() {
         let app = App::new(AppConfig::default());
-        let dir = std::env::temp_dir().join(format!("chezmoi_tui_add_dir_{}", std::process::id()));
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let dir = temp_dir.path().to_path_buf();
         std::fs::create_dir_all(&dir).expect("create dir");
         let requests = vec![ActionRequest {
             action: Action::Add,
@@ -667,20 +667,12 @@ mod tests {
         }];
         let message = validate_action_requests(&app, Action::Add, &requests);
         assert!(message.is_some());
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn build_action_requests_creates_targeted_readd_requests_for_marked_entries() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_readd_requests_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         std::fs::write(temp_root.join(".a"), "a").expect("write a");
         std::fs::write(temp_root.join(".b"), "b").expect("write b");
 
@@ -707,21 +699,12 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].target.as_ref(), Some(&temp_root.join(".a")));
         assert_eq!(requests[1].target.as_ref(), Some(&temp_root.join(".b")));
-
-        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn build_action_requests_creates_targeted_apply_requests_for_marked_status_entries() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_apply_requests_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         std::fs::write(temp_root.join(".a"), "a").expect("write a");
         std::fs::write(temp_root.join(".b"), "b").expect("write b");
 
@@ -748,8 +731,6 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].target.as_ref(), Some(&temp_root.join(".a")));
         assert_eq!(requests[1].target.as_ref(), Some(&temp_root.join(".b")));
-
-        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -780,15 +761,8 @@ mod tests {
 
     #[test]
     fn validate_action_requests_rejects_readd_for_non_modified_status_entries() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_readd_invalid_status_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         std::fs::write(temp_root.join(".gitconfig"), "[user]").expect("write file");
 
         let mut app = App::new(AppConfig::default());
@@ -807,20 +781,12 @@ mod tests {
             message.as_deref(),
             Some("re-add is available only for modified files in status view")
         );
-
-        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn validate_action_requests_rejects_readd_for_directory_targets() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_readd_invalid_dir_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let managed_dir = temp_root.join(".config");
         std::fs::create_dir_all(&managed_dir).expect("create dir");
 
@@ -840,22 +806,14 @@ mod tests {
             message.as_deref(),
             Some("re-add is available only for files")
         );
-
-        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn ignore_action_error_is_logged_without_returning_error() {
         let mut app = App::new(AppConfig::default());
         let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
-        let missing_target = std::env::temp_dir().join(format!(
-            "chezmoi_tui_missing_ignore_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp_mt = tempfile::tempdir().expect("tempdir");
+        let missing_target = temp_mt.path().join("missing_file");
         let request = ActionRequest {
             action: Action::Ignore,
             target: Some(missing_target),
@@ -907,7 +865,8 @@ mod tests {
     #[test]
     fn validate_action_requests_rejects_destroy_for_virtual_managed_directory() {
         let mut app = App::new(AppConfig::default());
-        app.home_dir = std::env::temp_dir();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        app.home_dir = temp_home.path().to_path_buf();
         app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
 
         let request = ActionRequest {
@@ -927,7 +886,8 @@ mod tests {
     #[test]
     fn validate_action_requests_allows_destroy_for_exact_managed_file() {
         let mut app = App::new(AppConfig::default());
-        app.home_dir = std::env::temp_dir();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        app.home_dir = temp_home.path().to_path_buf();
         app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
 
         let request = ActionRequest {
@@ -944,7 +904,8 @@ mod tests {
     #[test]
     fn validate_action_requests_rejects_forget_for_virtual_managed_directory() {
         let mut app = App::new(AppConfig::default());
-        app.home_dir = std::env::temp_dir();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        app.home_dir = temp_home.path().to_path_buf();
         app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
 
         let request = ActionRequest {
@@ -964,7 +925,8 @@ mod tests {
     #[test]
     fn validate_action_requests_rejects_chattr_for_virtual_managed_directory() {
         let mut app = App::new(AppConfig::default());
-        app.home_dir = std::env::temp_dir();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        app.home_dir = temp_home.path().to_path_buf();
         app.managed_entries = vec![PathBuf::from(".config/nvim/init.lua")];
 
         let request = ActionRequest {
@@ -984,7 +946,8 @@ mod tests {
     #[test]
     fn validate_action_requests_allows_destroy_for_exact_managed_directory() {
         let mut app = App::new(AppConfig::default());
-        app.home_dir = std::env::temp_dir();
+        let temp_home = tempfile::tempdir().expect("tempdir");
+        app.home_dir = temp_home.path().to_path_buf();
         app.managed_entries = vec![PathBuf::from(".config")];
 
         let request = ActionRequest {
