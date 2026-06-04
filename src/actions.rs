@@ -314,6 +314,57 @@ pub(crate) fn validate_action_requests(
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolInvocation {
+    program: std::ffi::OsString,
+    args: Vec<std::ffi::OsString>,
+}
+
+fn parse_tool_invocation(raw: &str, field_name: &str) -> Result<ToolInvocation> {
+    let parts: Vec<&str> = raw.split_whitespace().collect();
+
+    if parts.is_empty() {
+        anyhow::bail!("{field_name} must not be empty");
+    }
+
+    Ok(ToolInvocation {
+        program: parts[0].into(),
+        args: parts[1..].iter().map(|part| (*part).into()).collect(),
+    })
+}
+
+fn resolve_editor_invocation_from(
+    configured: Option<&str>,
+    visual: Option<&str>,
+    editor: Option<&str>,
+) -> Result<ToolInvocation> {
+    if let Some(cfg) = configured {
+        return parse_tool_invocation(cfg, "tools.editor");
+    }
+
+    if let Some(v) = visual
+        && !v.trim().is_empty()
+    {
+        return parse_tool_invocation(v, "VISUAL");
+    }
+
+    if let Some(e) = editor
+        && !e.trim().is_empty()
+    {
+        return parse_tool_invocation(e, "EDITOR");
+    }
+
+    parse_tool_invocation("vi", "fallback editor")
+}
+
+fn resolve_editor_invocation(config: &AppConfig) -> Result<ToolInvocation> {
+    resolve_editor_invocation_from(
+        config.editor.as_deref(),
+        std::env::var("VISUAL").ok().as_deref(),
+        std::env::var("EDITOR").ok().as_deref(),
+    )
+}
+
 fn run_chezmoi_foreground(request: &ActionRequest, config: &AppConfig) -> Result<(i32, u64)> {
     let args = action_to_args(request)?;
     let destination_dir =
@@ -324,6 +375,16 @@ fn run_chezmoi_foreground(request: &ActionRequest, config: &AppConfig) -> Result
     if let Some(source_dir) = &config.source_dir {
         command.arg("--source").arg(source_dir);
     }
+
+    if matches!(
+        request.action,
+        Action::Edit | Action::EditConfig | Action::EditConfigTemplate
+    ) && let Some(editor) = config.editor.as_deref()
+    {
+        command.env("EDITOR", editor);
+        command.env("VISUAL", editor);
+    }
+
     let status = command
         .args(args)
         .status()
@@ -464,14 +525,20 @@ fn run_edit_ignore_foreground(config: &AppConfig) -> Result<(i32, u64)> {
         .open(&ignore_path)
         .with_context(|| format!("failed to open {}", ignore_path.display()))?;
 
+    let editor = resolve_editor_invocation(config)?;
+
     let started = Instant::now();
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg("${VISUAL:-${EDITOR:-vi}} \"$1\"")
-        .arg("sh")
+    let status = Command::new(&editor.program)
+        .args(&editor.args)
         .arg(&ignore_path)
         .status()
-        .with_context(|| format!("failed to launch editor for {}", ignore_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to launch editor {} for {}",
+                editor.program.to_string_lossy(),
+                ignore_path.display()
+            )
+        })?;
     let elapsed = elapsed_millis_u64(started);
 
     Ok((status.code().unwrap_or(-1), elapsed))
@@ -907,5 +974,34 @@ mod tests {
         let message = validate_action_requests(&app, Action::Destroy, &[request]);
 
         assert!(message.is_none());
+    }
+
+    #[test]
+    fn resolve_editor_prefers_configured_editor() {
+        let editor = resolve_editor_invocation_from(Some("nvim"), Some("code --wait"), Some("vim"))
+            .expect("resolve editor");
+        assert_eq!(editor.program, std::ffi::OsString::from("nvim"));
+    }
+
+    #[test]
+    fn resolve_editor_falls_back_to_visual_then_editor_then_vi() {
+        let editor = resolve_editor_invocation_from(None, Some("code --wait"), Some("vim"))
+            .expect("resolve editor");
+        assert_eq!(editor.program, std::ffi::OsString::from("code"));
+        assert_eq!(editor.args, vec![std::ffi::OsString::from("--wait")]);
+
+        let editor =
+            resolve_editor_invocation_from(None, None, Some("emacs")).expect("resolve editor");
+        assert_eq!(editor.program, std::ffi::OsString::from("emacs"));
+
+        let editor = resolve_editor_invocation_from(None, None, None).expect("resolve editor");
+        assert_eq!(editor.program, std::ffi::OsString::from("vi"));
+    }
+
+    #[test]
+    fn resolve_editor_skips_empty_visual_and_editor() {
+        let editor =
+            resolve_editor_invocation_from(None, Some("   "), Some("vim")).expect("resolve editor");
+        assert_eq!(editor.program, std::ffi::OsString::from("vim"));
     }
 }
