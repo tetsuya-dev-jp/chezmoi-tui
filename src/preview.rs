@@ -67,10 +67,7 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
     Ok(text)
 }
 
-fn maybe_enqueue_unmanaged_preview(
-    app: &mut App,
-    task_tx: &Sender<BackendTask>,
-) -> Result<()> {
+fn maybe_enqueue_unmanaged_preview(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
     if app.view != ListView::Unmanaged {
         return Ok(());
     }
@@ -100,10 +97,7 @@ fn maybe_enqueue_unmanaged_preview(
     )
 }
 
-fn maybe_enqueue_managed_preview(
-    app: &mut App,
-    task_tx: &Sender<BackendTask>,
-) -> Result<()> {
+fn maybe_enqueue_managed_preview(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
     if app.view != ListView::Managed {
         return Ok(());
     }
@@ -133,10 +127,7 @@ fn maybe_enqueue_managed_preview(
     )
 }
 
-fn maybe_enqueue_source_preview(
-    app: &mut App,
-    task_tx: &Sender<BackendTask>,
-) -> Result<()> {
+fn maybe_enqueue_source_preview(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
     if app.view != ListView::Source {
         return Ok(());
     }
