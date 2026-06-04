@@ -10,7 +10,7 @@ use ratatui::backend::CrosstermBackend;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -333,40 +333,89 @@ fn run_open_source_dir_foreground(config: &AppConfig) -> Result<(i32, u64)> {
     Ok((status.code().unwrap_or(-1), elapsed))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolInvocation {
+    program: std::ffi::OsString,
+    args: Vec<std::ffi::OsString>,
+}
+
+fn parse_tool_invocation(raw: &str, field_name: &str) -> Result<ToolInvocation> {
+    let parts: Vec<&str> = raw.split_whitespace().collect();
+
+    if parts.is_empty() {
+        anyhow::bail!("{field_name} must not be empty");
+    }
+
+    Ok(ToolInvocation {
+        program: parts[0].into(),
+        args: parts[1..].iter().map(|part| (*part).into()).collect(),
+    })
+}
+
 fn run_external_diff_foreground(config: &AppConfig) -> Result<(i32, u64)> {
-    let tool = config
+    let tool_raw = config
         .external_diff
         .clone()
         .or_else(|| std::env::var("CHEZMOI_TUI_EXTERNAL_DIFF").ok())
         .unwrap_or_else(|| "delta".to_string());
+
+    let tool = parse_tool_invocation(&tool_raw, "tools.external_diff")?;
+
     let destination_dir = config
         .destination_dir
         .clone()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| config.working_dir.clone());
-    let mut command = format!(
-        "chezmoi --destination {}",
-        shell_quote(&destination_dir.display().to_string())
-    );
-    if let Some(source_dir) = &config.source_dir {
-        command.push_str(" --source ");
-        command.push_str(&shell_quote(&source_dir.display().to_string()));
-    }
-    command.push_str(" diff --no-pager --use-builtin-diff --color=true | ");
-    command.push_str(&tool);
 
     let started = Instant::now();
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .status()
-        .context("failed to launch external diff command")?;
-    let elapsed = elapsed_millis_u64(started);
-    Ok((status.code().unwrap_or(-1), elapsed))
-}
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    let mut diff_command = Command::new("chezmoi");
+    diff_command.arg("--destination").arg(destination_dir);
+
+    if let Some(source_dir) = &config.source_dir {
+        diff_command.arg("--source").arg(source_dir);
+    }
+
+    diff_command
+        .arg("diff")
+        .arg("--no-pager")
+        .arg("--use-builtin-diff")
+        .arg("--color=true")
+        .stdout(Stdio::piped());
+
+    let mut diff_child = diff_command
+        .spawn()
+        .context("failed to start chezmoi diff command")?;
+
+    let diff_stdout = diff_child
+        .stdout
+        .take()
+        .context("failed to capture chezmoi diff stdout")?;
+
+    let tool_status = Command::new(&tool.program)
+        .args(&tool.args)
+        .stdin(Stdio::from(diff_stdout))
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to launch external diff tool {}",
+                tool.program.to_string_lossy()
+            )
+        })?;
+
+    let diff_status = diff_child
+        .wait()
+        .context("failed to wait for chezmoi diff command")?;
+
+    let elapsed = elapsed_millis_u64(started);
+
+    let code = if !tool_status.success() {
+        tool_status.code().unwrap_or(-1)
+    } else {
+        diff_status.code().unwrap_or(-1)
+    };
+
+    Ok((code, elapsed))
 }
 
 fn resolve_source_dir_for_foreground(config: &AppConfig) -> Result<std::path::PathBuf> {
@@ -721,6 +770,36 @@ mod tests {
                 .any(|line| line.contains("ignore action error")),
             "expected ignore error log, got: {:?}",
             app.logs
+        );
+    }
+
+    #[test]
+    fn parse_tool_invocation_splits_program_and_args() {
+        let tool = parse_tool_invocation("delta --paging=always", "tools.external_diff")
+            .expect("parse tool");
+        assert_eq!(tool.program, std::ffi::OsString::from("delta"));
+        assert_eq!(tool.args, vec![std::ffi::OsString::from("--paging=always")]);
+    }
+
+    #[test]
+    fn parse_tool_invocation_rejects_empty_value() {
+        let err = parse_tool_invocation("   ", "tools.external_diff")
+            .expect_err("empty tool should fail");
+        assert!(err.to_string().contains("tools.external_diff"));
+    }
+
+    #[test]
+    fn parse_tool_invocation_does_not_interpret_shell_metacharacters() {
+        let tool = parse_tool_invocation("delta; rm -rf /tmp/x", "tools.external_diff")
+            .expect("parse tool");
+        assert_eq!(tool.program, std::ffi::OsString::from("delta;"));
+        assert_eq!(
+            tool.args,
+            vec![
+                std::ffi::OsString::from("rm"),
+                std::ffi::OsString::from("-rf"),
+                std::ffi::OsString::from("/tmp/x"),
+            ]
         );
     }
 }
