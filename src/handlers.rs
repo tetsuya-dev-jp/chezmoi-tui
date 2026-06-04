@@ -60,13 +60,21 @@ pub(crate) fn handle_backend_event(
                 .as_ref()
                 .map_or_else(|| "(none)".to_string(), |p| p.display().to_string());
             app.log(format!(
-                "action {} {} exit={} duration={}ms",
+                "action {} {} exit={} duration={}ms timed_out={} output_limited={} stdout_truncated={} stderr_truncated={}",
                 request.action.label(),
                 target,
                 result.exit_code,
-                result.duration_ms
+                result.duration_ms,
+                result.timed_out,
+                result.output_limited,
+                result.stdout_truncated,
+                result.stderr_truncated,
             ));
-            if result.exit_code == 0 {
+            if result.timed_out {
+                app.set_error_notice(format!("{} timed out", request.action.label()));
+            } else if result.output_limited {
+                app.set_error_notice(format!("{} output limit exceeded", request.action.label()));
+            } else if result.exit_code == 0 {
                 app.set_success_notice(format!(
                     "{} completed for {}",
                     request.action.label(),
@@ -1175,6 +1183,10 @@ mod tests {
                     stdout: "ok\n".to_string(),
                     stderr: String::new(),
                     duration_ms: 10,
+                    timed_out: false,
+                    output_limited: false,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
                 },
             },
         )
@@ -1204,6 +1216,10 @@ mod tests {
                     stdout: String::new(),
                     stderr: "failed".to_string(),
                     duration_ms: 10,
+                    timed_out: false,
+                    output_limited: false,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
                 },
             },
         )
@@ -1503,6 +1519,10 @@ mod tests {
                     stdout: String::new(),
                     stderr: String::new(),
                     duration_ms: 1,
+                    timed_out: false,
+                    output_limited: false,
+                    stdout_truncated: false,
+                    stderr_truncated: false,
                 },
             },
         )

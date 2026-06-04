@@ -235,6 +235,10 @@ pub struct CommandResult {
     pub stdout: String,
     pub stderr: String,
     pub duration_ms: u64,
+    pub timed_out: bool,
+    pub output_limited: bool,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
