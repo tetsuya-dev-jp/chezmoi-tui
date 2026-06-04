@@ -1,4 +1,4 @@
-use crate::app::{App, BackendTask, InputKind, NoticeTone};
+use crate::app::{App, ApplyPlanMode, BackendTask, InputKind, NoticeTone};
 use crate::config::AppConfig;
 use crate::domain::{Action, ActionRequest, ListView};
 use crate::ignore::{chezmoi_ignore_path_with_source, run_internal_ignore_action};
@@ -35,6 +35,10 @@ fn backend_task_label(task: &BackendTask) -> String {
             |path| format!("diff {}", path.display()),
         ),
         BackendTask::LoadPreview { target, .. } => format!("preview {}", target.display()),
+        BackendTask::PrepareApplyPlan { mode, .. } => match mode {
+            ApplyPlanMode::OpenPlan => "prepare apply plan".to_string(),
+            ApplyPlanMode::ValidateBeforeExecute => "validate apply plan".to_string(),
+        },
         BackendTask::RunAction { request } => format!(
             "{} {}",
             request.action.label(),
@@ -139,7 +143,15 @@ pub(crate) fn dispatch_action_request(
         return Ok(());
     }
     if request.action == Action::Apply && app.config.show_apply_plan && !app.batch_in_progress() {
-        app.open_apply_plan(request);
+        send_task(
+            app,
+            task_tx,
+            BackendTask::PrepareApplyPlan {
+                request,
+                expected_snapshot: None,
+                mode: ApplyPlanMode::OpenPlan,
+            },
+        )?;
         return Ok(());
     }
     if request.action.requires_confirmation() && !app.batch_confirmed() {

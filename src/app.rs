@@ -74,6 +74,26 @@ impl ApplyPlan {
             + self.run.len()
             + self.unknown.len()
     }
+
+    pub fn sort_groups(&mut self) {
+        self.added.sort();
+        self.modified.sort();
+        self.deleted.sort();
+        self.run.sort();
+        self.unknown.sort();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyPlanMode {
+    OpenPlan,
+    ValidateBeforeExecute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyPlanSnapshot {
+    pub plan: ApplyPlan,
+    pub diff_fingerprint: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +189,7 @@ pub enum ModalState {
     },
     ApplyPlan {
         request: ActionRequest,
-        plan: ApplyPlan,
+        snapshot: ApplyPlanSnapshot,
         scroll: usize,
     },
     Input {
@@ -194,6 +214,11 @@ pub enum BackendTask {
     },
     RunAction {
         request: ActionRequest,
+    },
+    PrepareApplyPlan {
+        request: ActionRequest,
+        expected_snapshot: Option<ApplyPlanSnapshot>,
+        mode: ApplyPlanMode,
     },
 }
 
@@ -220,6 +245,13 @@ pub enum BackendEvent {
     ActionFinished {
         request: ActionRequest,
         result: CommandResult,
+    },
+    ApplyPlanPrepared {
+        request: ActionRequest,
+        status: Vec<StatusEntry>,
+        diff_fingerprint: u64,
+        expected_snapshot: Option<ApplyPlanSnapshot>,
+        mode: ApplyPlanMode,
     },
     Error {
         context: String,
@@ -1375,9 +1407,13 @@ impl App {
         }
     }
 
-    fn build_apply_plan_for_target(&self, target: Option<&Path>) -> ApplyPlan {
+    pub(crate) fn build_apply_plan_from_status(
+        &self,
+        status: &[StatusEntry],
+        target: Option<&Path>,
+    ) -> ApplyPlan {
         let mut plan = ApplyPlan::default();
-        for entry in &self.status_entries {
+        for entry in status {
             if let Some(target) = target
                 && !self.status_entry_matches_apply_target(entry.path.as_path(), target)
             {
@@ -1393,7 +1429,25 @@ impl App {
                 ChangeKind::None => {}
             }
         }
+        plan.sort_groups();
         plan
+    }
+
+    #[allow(dead_code)]
+    fn build_apply_plan_for_target(&self, target: Option<&Path>) -> ApplyPlan {
+        self.build_apply_plan_from_status(&self.status_entries, target)
+    }
+
+    pub(crate) fn build_apply_plan_snapshot_from_status(
+        &self,
+        status: &[StatusEntry],
+        target: Option<&Path>,
+        diff_fingerprint: u64,
+    ) -> ApplyPlanSnapshot {
+        ApplyPlanSnapshot {
+            plan: self.build_apply_plan_from_status(status, target),
+            diff_fingerprint,
+        }
     }
 
     fn status_entry_matches_apply_target(&self, entry_path: &Path, target: &Path) -> bool {
@@ -1401,11 +1455,28 @@ impl App {
         target == entry_path || target == absolute || absolute.starts_with(target)
     }
 
+    #[allow(dead_code)]
     pub fn open_apply_plan(&mut self, request: ActionRequest) {
         let plan = self.build_apply_plan_for_target(request.target.as_deref());
+        let snapshot = ApplyPlanSnapshot {
+            plan,
+            diff_fingerprint: 0,
+        };
         self.modal = ModalState::ApplyPlan {
             request,
-            plan,
+            snapshot,
+            scroll: 0,
+        };
+    }
+
+    pub fn open_apply_plan_with_snapshot(
+        &mut self,
+        request: ActionRequest,
+        snapshot: ApplyPlanSnapshot,
+    ) {
+        self.modal = ModalState::ApplyPlan {
+            request,
+            snapshot,
             scroll: 0,
         };
     }
@@ -3261,14 +3332,14 @@ mod tests {
             chattr_attrs: None,
         });
 
-        let ModalState::ApplyPlan { plan, .. } = &app.modal else {
+        let ModalState::ApplyPlan { snapshot, .. } = &app.modal else {
             panic!("expected apply plan modal");
         };
-        assert_eq!(plan.total(), 4);
-        assert_eq!(plan.added, vec![PathBuf::from("added")]);
-        assert_eq!(plan.modified, vec![PathBuf::from("modified")]);
-        assert_eq!(plan.deleted, vec![PathBuf::from("deleted")]);
-        assert_eq!(plan.run, vec![PathBuf::from("script")]);
+        assert_eq!(snapshot.plan.total(), 4);
+        assert_eq!(snapshot.plan.added, vec![PathBuf::from("added")]);
+        assert_eq!(snapshot.plan.modified, vec![PathBuf::from("modified")]);
+        assert_eq!(snapshot.plan.deleted, vec![PathBuf::from("deleted")]);
+        assert_eq!(snapshot.plan.run, vec![PathBuf::from("script")]);
     }
 
     #[test]
@@ -3304,11 +3375,11 @@ mod tests {
             chattr_attrs: None,
         });
 
-        let ModalState::ApplyPlan { plan, .. } = &app.modal else {
+        let ModalState::ApplyPlan { snapshot, .. } = &app.modal else {
             panic!("expected apply plan modal");
         };
-        assert_eq!(plan.total(), 1);
-        assert_eq!(plan.modified, vec![PathBuf::from(".a")]);
+        assert_eq!(snapshot.plan.total(), 1);
+        assert_eq!(snapshot.plan.modified, vec![PathBuf::from(".a")]);
 
         let _ = std::fs::remove_dir_all(temp_root);
     }
