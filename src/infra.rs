@@ -3,9 +3,11 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub trait ChezmoiClient: Send + Sync {
     fn status(&self) -> Result<Vec<StatusEntry>>;
@@ -68,38 +70,30 @@ impl ShellChezmoiClient {
         }
         cmd.args(&args);
 
-        tracing::debug!(
-            binary = %self.binary,
-            destination = %destination_dir.display(),
-            source = self.source_dir.as_ref().map(|path| path.display().to_string()),
-            args = ?args,
-            "running chezmoi command"
-        );
-        let started = Instant::now();
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to execute {} {:?}", self.binary, args))?;
-        let duration_ms = elapsed_millis_u64(started);
-
-        let exit_code = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let result = run_command_with_limits(
+            cmd,
+            &args,
+            CommandLimits {
+                timeout: DEFAULT_COMMAND_TIMEOUT,
+                max_stdout_bytes: DEFAULT_MAX_STDOUT_BYTES,
+                max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,
+            },
+        )?;
 
         tracing::info!(
             binary = %self.binary,
             args = ?args,
-            exit_code,
-            duration_ms,
-            stderr = %squash_for_log(&stderr),
+            exit_code = result.exit_code,
+            duration_ms = result.duration_ms,
+            timed_out = result.timed_out,
+            output_limited = result.output_limited,
+            stdout_truncated = result.stdout_truncated,
+            stderr_truncated = result.stderr_truncated,
+            stderr = %squash_for_log(&result.stderr),
             "chezmoi command finished"
         );
 
-        Ok(CommandResult {
-            exit_code,
-            stdout,
-            stderr,
-            duration_ms,
-        })
+        Ok(result)
     }
 
     fn destination_for_target(&self, target: Option<&Path>) -> &Path {
@@ -119,20 +113,186 @@ impl ShellChezmoiClient {
     }
 }
 
+const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_MAX_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_MAX_STDERR_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+struct CommandLimits {
+    timeout: Duration,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
+}
+
+struct LimitedText {
+    text: String,
+    truncated: bool,
+}
+
+fn append_marker(text: &mut String, marker: &str) {
+    if !text.ends_with('\n') && !text.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(marker);
+    text.push('\n');
+}
+
+fn read_temp_file_limited(mut file: File, max_bytes: usize) -> Result<LimitedText> {
+    file.seek(SeekFrom::Start(0))?;
+
+    let mut limited = file.take((max_bytes + 1) as u64);
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes)?;
+
+    let truncated = bytes.len() > max_bytes;
+    if truncated {
+        bytes.truncate(max_bytes);
+    }
+
+    let mut text = String::from_utf8_lossy(&bytes).to_string();
+
+    if truncated {
+        text.push_str(&format!(
+            "\n--- output truncated at {} bytes ---\n",
+            max_bytes
+        ));
+    }
+
+    Ok(LimitedText { text, truncated })
+}
+
+fn run_command_with_limits(
+    mut cmd: Command,
+    args_for_log: &[OsString],
+    limits: CommandLimits,
+) -> Result<CommandResult> {
+    let stdout_file = tempfile::tempfile().with_context(|| "failed to create stdout temp file")?;
+    let stderr_file = tempfile::tempfile().with_context(|| "failed to create stderr temp file")?;
+
+    let stdout_for_child = stdout_file
+        .try_clone()
+        .with_context(|| "failed to clone stdout temp file")?;
+    let stderr_for_child = stderr_file
+        .try_clone()
+        .with_context(|| "failed to clone stderr temp file")?;
+
+    let started = Instant::now();
+
+    let mut child = cmd
+        .stdout(Stdio::from(stdout_for_child))
+        .stderr(Stdio::from(stderr_for_child))
+        .spawn()
+        .with_context(|| format!("failed to spawn command {:?}", args_for_log))?;
+
+    let deadline = started + limits.timeout;
+    let mut timed_out = false;
+    let mut output_limited = false;
+
+    loop {
+        let stdout_len = stdout_file.metadata()?.len();
+        let stderr_len = stderr_file.metadata()?.len();
+        if stdout_len > limits.max_stdout_bytes as u64
+            || stderr_len > limits.max_stderr_bytes as u64
+        {
+            output_limited = true;
+            let _ = child.kill();
+            let status = child
+                .wait()
+                .with_context(|| "failed to wait after output limit kill")?;
+            let duration_ms = elapsed_millis_u64(started);
+
+            let stdout_read = read_temp_file_limited(stdout_file, limits.max_stdout_bytes)?;
+            let mut stderr_read = read_temp_file_limited(stderr_file, limits.max_stderr_bytes)?;
+            append_marker(
+                &mut stderr_read.text,
+                "--- command output limit exceeded and was killed ---",
+            );
+
+            return Ok(CommandResult {
+                exit_code: status.code().unwrap_or(-1),
+                stdout: stdout_read.text,
+                stderr: stderr_read.text,
+                duration_ms,
+                timed_out,
+                output_limited,
+                stdout_truncated: stdout_read.truncated,
+                stderr_truncated: stderr_read.truncated,
+            });
+        }
+
+        if let Some(status) = child.try_wait().with_context(|| "failed to poll child")? {
+            let duration_ms = elapsed_millis_u64(started);
+            let exit_code = status.code().unwrap_or(-1);
+
+            let stdout_read = read_temp_file_limited(stdout_file, limits.max_stdout_bytes)?;
+            let stderr_read = read_temp_file_limited(stderr_file, limits.max_stderr_bytes)?;
+
+            return Ok(CommandResult {
+                exit_code,
+                stdout: stdout_read.text,
+                stderr: stderr_read.text,
+                duration_ms,
+                timed_out,
+                output_limited,
+                stdout_truncated: stdout_read.truncated,
+                stderr_truncated: stderr_read.truncated,
+            });
+        }
+
+        if Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            let status = child
+                .wait()
+                .with_context(|| "failed to wait after killing child")?;
+            let duration_ms = elapsed_millis_u64(started);
+
+            let stdout_read = read_temp_file_limited(stdout_file, limits.max_stdout_bytes)?;
+            let mut stderr_read = read_temp_file_limited(stderr_file, limits.max_stderr_bytes)?;
+            append_marker(
+                &mut stderr_read.text,
+                "--- command timed out and was killed ---",
+            );
+
+            return Ok(CommandResult {
+                exit_code: status.code().unwrap_or(-1),
+                stdout: stdout_read.text,
+                stderr: stderr_read.text,
+                duration_ms,
+                timed_out,
+                output_limited,
+                stdout_truncated: stdout_read.truncated,
+                stderr_truncated: stderr_read.truncated,
+            });
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn ensure_complete_success(result: &CommandResult, command: &str) -> Result<()> {
+    if result.timed_out {
+        bail!("{command} timed out");
+    }
+    if result.output_limited || result.stdout_truncated || result.stderr_truncated {
+        bail!("{command} output was truncated or limited");
+    }
+    if result.exit_code != 0 {
+        bail!("{command} failed: {}", result.stderr.trim());
+    }
+    Ok(())
+}
+
 impl ChezmoiClient for ShellChezmoiClient {
     fn status(&self) -> Result<Vec<StatusEntry>> {
         let result = self.run_raw(["status"], &self.home_dir)?;
-        if result.exit_code != 0 {
-            bail!("chezmoi status failed: {}", result.stderr.trim());
-        }
+        ensure_complete_success(&result, "chezmoi status")?;
         parse_status_output(&result.stdout)
     }
 
     fn managed(&self) -> Result<Vec<PathBuf>> {
         let result = self.run_raw(["managed", "--format", "json"], &self.home_dir)?;
-        if result.exit_code != 0 {
-            bail!("chezmoi managed failed: {}", result.stderr.trim());
-        }
+        ensure_complete_success(&result, "chezmoi managed")?;
         Ok(parse_managed_output(&result.stdout))
     }
 
@@ -199,9 +359,7 @@ impl ShellChezmoiClient {
         }
 
         let result = self.run_raw(["source-path"], &self.home_dir)?;
-        if result.exit_code != 0 {
-            bail!("chezmoi source-path failed: {}", result.stderr.trim());
-        }
+        ensure_complete_success(&result, "chezmoi source-path")?;
         let source_dir = result.stdout.trim();
         if source_dir.is_empty() {
             bail!("chezmoi source-path returned empty output");
@@ -801,5 +959,109 @@ printf ' A .zshrc\n'
 
         let got = client.destination_for_target(Some(Path::new("/tmp/home/.zshrc")));
         assert_eq!(got, Path::new("/tmp/home"));
+    }
+
+    #[test]
+    fn read_temp_file_limited_truncates_large_output() {
+        let mut file = tempfile::tempfile().expect("temp file");
+        std::io::Write::write_all(&mut file, "a".repeat(100).as_bytes()).expect("write");
+        let result = read_temp_file_limited(file, 10).expect("read limited");
+
+        assert!(result.truncated);
+        assert!(result.text.contains("output truncated"));
+    }
+
+    #[test]
+    fn run_command_with_limits_captures_stdout() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf hello");
+
+        let result = run_command_with_limits(
+            cmd,
+            &[OsString::from("stdout-test")],
+            CommandLimits {
+                timeout: Duration::from_secs(1),
+                max_stdout_bytes: 1024,
+                max_stderr_bytes: 1024,
+            },
+        )
+        .expect("run command");
+
+        assert_eq!(result.stdout, "hello");
+        assert!(!result.timed_out);
+        assert!(!result.output_limited);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_limits_kills_timed_out_command() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 5");
+
+        let result = run_command_with_limits(
+            cmd,
+            &[OsString::from("sleep-test")],
+            CommandLimits {
+                timeout: Duration::from_millis(100),
+                max_stdout_bytes: 1024,
+                max_stderr_bytes: 1024,
+            },
+        )
+        .expect("run command");
+
+        assert!(result.timed_out);
+        assert!(!result.stderr.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_with_limits_kills_output_limited_command() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("yes x");
+
+        let result = run_command_with_limits(
+            cmd,
+            &[OsString::from("output-limit-test")],
+            CommandLimits {
+                timeout: Duration::from_secs(5),
+                max_stdout_bytes: 1024,
+                max_stderr_bytes: 1024,
+            },
+        )
+        .expect("run command");
+
+        assert!(result.output_limited);
+        assert!(result.stdout_truncated);
+        assert!(result.stderr.contains("output limit exceeded"));
+    }
+
+    #[test]
+    fn ensure_complete_success_rejects_truncated_output() {
+        let result = CommandResult {
+            exit_code: 0,
+            stdout: "ok".to_string(),
+            stderr: String::new(),
+            duration_ms: 10,
+            timed_out: false,
+            output_limited: true,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        assert!(ensure_complete_success(&result, "test").is_err());
+    }
+
+    #[test]
+    fn ensure_complete_success_rejects_timed_out() {
+        let result = CommandResult {
+            exit_code: -1,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 120000,
+            timed_out: true,
+            output_limited: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        assert!(ensure_complete_success(&result, "test").is_err());
     }
 }
