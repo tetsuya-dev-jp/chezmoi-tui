@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::path::Path;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 const PREVIEW_MAX_BYTES: usize = 64 * 1024;
 const PREVIEW_BINARY_SAMPLE_BYTES: usize = 4096;
@@ -69,7 +69,7 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
 
 fn maybe_enqueue_unmanaged_preview(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     if app.view != ListView::Unmanaged {
         return Ok(());
@@ -102,7 +102,7 @@ fn maybe_enqueue_unmanaged_preview(
 
 fn maybe_enqueue_managed_preview(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     if app.view != ListView::Managed {
         return Ok(());
@@ -135,7 +135,7 @@ fn maybe_enqueue_managed_preview(
 
 fn maybe_enqueue_source_preview(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     if app.view != ListView::Source {
         return Ok(());
@@ -166,7 +166,7 @@ fn maybe_enqueue_source_preview(
     )
 }
 
-fn maybe_enqueue_status_diff(app: &mut App, task_tx: &UnboundedSender<BackendTask>) -> Result<()> {
+fn maybe_enqueue_status_diff(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
     if app.view != ListView::Status {
         return Ok(());
     }
@@ -191,7 +191,7 @@ fn maybe_enqueue_status_diff(app: &mut App, task_tx: &UnboundedSender<BackendTas
 
 pub(crate) fn maybe_enqueue_auto_detail(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     if !app.config.auto_preview {
         return Ok(());

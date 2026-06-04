@@ -11,11 +11,11 @@ use crate::ignore::IgnorePatternMode;
 use crate::preview::maybe_enqueue_auto_detail;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 pub(crate) fn handle_backend_event(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     event: BackendEvent,
 ) -> Result<()> {
     match event {
@@ -216,7 +216,7 @@ fn recovery_hint(message: &str) -> Option<&'static str> {
 pub(crate) fn handle_key_event(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
         app.should_quit = true;
@@ -242,7 +242,7 @@ pub(crate) fn handle_key_event(
 
 fn continue_apply_after_plan_validation(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
     if request.action.requires_confirmation() && !app.batch_confirmed() {
@@ -256,7 +256,7 @@ fn continue_apply_after_plan_validation(
 fn handle_key_without_modal(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     let mut selection_changed = false;
 
@@ -478,7 +478,7 @@ fn handle_key_without_modal(
 fn handle_list_filter_key(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     let mut immediate_filter: Option<String> = None;
     let mut finalize = false;
@@ -538,11 +538,7 @@ fn handle_list_filter_key(
     Ok(())
 }
 
-fn handle_ignore_key(
-    app: &mut App,
-    key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
-) -> Result<()> {
+fn handle_ignore_key(app: &mut App, key: KeyEvent, task_tx: &Sender<BackendTask>) -> Result<()> {
     let mut start_requests: Option<Vec<ActionRequest>> = None;
 
     {
@@ -615,7 +611,7 @@ fn add_options_attrs(
 fn handle_add_options_key(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     let mut start_requests: Option<Vec<ActionRequest>> = None;
 
@@ -677,7 +673,7 @@ fn handle_add_options_key(
 fn handle_action_menu_key(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     let mut selected_action: Option<Action> = None;
     let mut no_action_match = false;
@@ -803,7 +799,7 @@ fn action_requests_require_preflight(requests: &[ActionRequest]) -> bool {
 
 fn start_action_requests_or_preflight(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     requests: Vec<ActionRequest>,
 ) -> Result<()> {
     if requests.is_empty() {
@@ -820,7 +816,7 @@ fn start_action_requests_or_preflight(
 
 fn start_action_requests_now(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     requests: Vec<ActionRequest>,
 ) -> Result<()> {
     let count = requests.len();
@@ -844,7 +840,7 @@ fn start_action_requests_now(
 fn handle_action_preflight_key(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     let requests = match &app.modal {
         ModalState::ActionPreflight { requests, .. } => requests.clone(),
@@ -935,7 +931,7 @@ fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<()> {
 fn handle_apply_plan_key(
     app: &mut App,
     key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     let (request, expected_snapshot) = match &app.modal {
         ModalState::ApplyPlan {
@@ -987,11 +983,7 @@ fn handle_apply_plan_key(
     Ok(())
 }
 
-fn handle_confirm_key(
-    app: &mut App,
-    key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
-) -> Result<()> {
+fn handle_confirm_key(app: &mut App, key: KeyEvent, task_tx: &Sender<BackendTask>) -> Result<()> {
     let mut execute_request: Option<ActionRequest> = None;
     let mut pending_log: Option<String> = None;
 
@@ -1066,11 +1058,7 @@ fn handle_confirm_key(
     Ok(())
 }
 
-fn handle_input_key(
-    app: &mut App,
-    key: KeyEvent,
-    task_tx: &UnboundedSender<BackendTask>,
-) -> Result<()> {
+fn handle_input_key(app: &mut App, key: KeyEvent, task_tx: &Sender<BackendTask>) -> Result<()> {
     let mut ready_request: Option<ActionRequest> = None;
 
     {
@@ -1136,7 +1124,7 @@ mod tests {
     #[test]
     fn busy_stays_true_until_all_in_flight_events_finish() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         app.begin_busy_task();
         app.begin_busy_task();
 
@@ -1170,7 +1158,7 @@ mod tests {
     #[test]
     fn doctor_action_output_is_shown_in_detail() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         app.begin_busy_task();
 
         handle_backend_event(
@@ -1199,7 +1187,7 @@ mod tests {
     #[test]
     fn action_failure_sets_error_notice() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         app.begin_busy_task();
 
         handle_backend_event(
@@ -1229,7 +1217,7 @@ mod tests {
     #[test]
     fn backend_error_sets_error_notice() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         app.begin_busy_task();
 
         handle_backend_event(
@@ -1251,7 +1239,7 @@ mod tests {
     #[test]
     fn question_key_opens_help_modal() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         let key = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
 
         handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
@@ -1262,7 +1250,7 @@ mod tests {
     fn list_filter_typing_applies_immediately() {
         let mut app = App::new(AppConfig::default());
         app.open_list_filter();
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_list_filter_key(
             &mut app,
@@ -1279,7 +1267,7 @@ mod tests {
     fn list_filter_enter_applies_immediately_and_closes_modal() {
         let mut app = App::new(AppConfig::default());
         app.open_list_filter();
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_list_filter_key(
             &mut app,
@@ -1303,7 +1291,7 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.apply_list_filter_immediately("git".to_string());
         app.open_list_filter();
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_list_filter_key(
             &mut app,
@@ -1326,7 +1314,7 @@ mod tests {
     fn esc_without_modal_clears_applied_list_filter() {
         let mut app = App::new(AppConfig::default());
         app.apply_list_filter_immediately("git".to_string());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_key_without_modal(
             &mut app,
@@ -1343,7 +1331,7 @@ mod tests {
     fn switching_to_managed_view_enqueues_auto_preview() {
         let mut app = App::new(AppConfig::default());
         app.managed_entries = vec![PathBuf::from(".zshrc")];
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
         let key = KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE);
 
         handle_key_without_modal(&mut app, key, &task_tx).expect("handle key");
@@ -1359,7 +1347,7 @@ mod tests {
     #[test]
     fn stale_preview_event_does_not_overwrite_latest_detail() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         let stale_request_id = app.begin_detail_request();
         let latest_request_id = app.begin_detail_request();
 
@@ -1393,7 +1381,7 @@ mod tests {
     #[test]
     fn stale_diff_event_does_not_overwrite_latest_detail() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         let stale_request_id = app.begin_detail_request();
         let latest_request_id = app.begin_detail_request();
 
@@ -1431,7 +1419,7 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.unmanaged_entries = vec![PathBuf::from("new.txt")];
         app.switch_view(ListView::Unmanaged);
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
         app.open_action_menu();
         app.modal = ModalState::ActionMenu {
             selected: 0,
@@ -1451,7 +1439,7 @@ mod tests {
     #[test]
     fn add_options_apply_attrs_to_requests() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
         app.open_add_options_menu(vec![ActionRequest {
             action: Action::Add,
             target: Some(PathBuf::from("/tmp/new.txt")),
@@ -1499,7 +1487,7 @@ mod tests {
     #[test]
     fn successful_add_with_attrs_dispatches_chattr() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_backend_event(
             &mut app,
@@ -1536,7 +1524,7 @@ mod tests {
     #[test]
     fn apply_opens_plan_before_confirmation() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
 
         dispatch_action_request(
             &mut app,
@@ -1567,7 +1555,7 @@ mod tests {
     #[test]
     fn apply_plan_enter_opens_validation_task() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
         app.open_apply_plan(ActionRequest {
             action: Action::Apply,
             target: None,
@@ -1598,7 +1586,7 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.home_dir = PathBuf::from("/tmp");
         app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
         let first = ActionRequest {
             action: Action::Forget,
             target: Some(PathBuf::from("/tmp/a")),
@@ -1652,7 +1640,7 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.home_dir = PathBuf::from("/tmp");
         app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
         let first = ActionRequest {
             action: Action::Destroy,
             target: Some(PathBuf::from("/tmp/a")),
@@ -1725,7 +1713,7 @@ mod tests {
             step: ConfirmStep::Primary,
             typed: String::new(),
         };
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_confirm_key(
             &mut app,
@@ -1755,7 +1743,7 @@ mod tests {
             step: ConfirmStep::DangerPhrase,
             typed: "DESTROY".to_string(),
         };
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_confirm_key(
             &mut app,
@@ -1780,7 +1768,7 @@ mod tests {
             step: ConfirmStep::DangerPhrase,
             typed: "DESTROY /tmp/target.txt".to_string(),
         };
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_confirm_key(
             &mut app,
@@ -1805,7 +1793,7 @@ mod tests {
     #[test]
     fn apply_plan_prepared_opens_modal_from_fresh_status() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         handle_backend_event(
             &mut app,
@@ -1839,7 +1827,7 @@ mod tests {
     #[test]
     fn apply_plan_changed_snapshot_reopens_modal() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         let old_snapshot = ApplyPlanSnapshot {
             plan: ApplyPlan::default(),
@@ -1881,7 +1869,7 @@ mod tests {
     #[test]
     fn apply_plan_same_snapshot_continues_to_confirmation() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, _task_rx) = mpsc::channel::<BackendTask>(8);
 
         let status = vec![StatusEntry {
             path: PathBuf::from(".zshrc"),

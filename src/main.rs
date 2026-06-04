@@ -51,6 +51,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+const BACKEND_TASK_QUEUE_CAPACITY: usize = 64;
+const BACKEND_EVENT_QUEUE_CAPACITY: usize = 64;
+
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, config: AppConfig) -> Result<()> {
     tracing::info!(?config, "initializing app");
     let mut app = App::new(config);
@@ -61,8 +64,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, config: AppCon
         app.config.source_dir.clone(),
     ));
 
-    let (task_tx, task_rx) = mpsc::unbounded_channel::<BackendTask>();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<BackendEvent>();
+    let (task_tx, task_rx) = mpsc::channel::<BackendTask>(BACKEND_TASK_QUEUE_CAPACITY);
+    let (event_tx, mut event_rx) = mpsc::channel::<BackendEvent>(BACKEND_EVENT_QUEUE_CAPACITY);
 
     tokio::spawn(worker_loop(client, task_rx, event_tx));
 

@@ -1,12 +1,12 @@
 use crate::app::{BackendEvent, BackendTask};
 use crate::infra::ChezmoiClient;
 use crate::preview::load_file_preview;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{Receiver, Sender};
 
 pub(crate) async fn worker_loop(
     client: std::sync::Arc<dyn ChezmoiClient>,
-    mut task_rx: UnboundedReceiver<BackendTask>,
-    event_tx: UnboundedSender<BackendEvent>,
+    mut task_rx: Receiver<BackendTask>,
+    event_tx: Sender<BackendEvent>,
 ) {
     while let Some(task) = task_rx.recv().await {
         tracing::debug!(task = ?task, "backend task received");
@@ -46,6 +46,7 @@ pub(crate) async fn worker_loop(
                                 source_dir: Some(source_dir),
                                 source,
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -64,6 +65,7 @@ pub(crate) async fn worker_loop(
                                 context: "refresh".to_string(),
                                 message,
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -84,6 +86,7 @@ pub(crate) async fn worker_loop(
                                 target,
                                 diff,
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -95,6 +98,7 @@ pub(crate) async fn worker_loop(
                                 context: "diff".to_string(),
                                 message: format!("diff failed: {:?}", flatten_error(other)),
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -119,6 +123,7 @@ pub(crate) async fn worker_loop(
                                 origin,
                                 content,
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -130,6 +135,7 @@ pub(crate) async fn worker_loop(
                                 context: "preview".to_string(),
                                 message: format!("preview failed: {:?}", flatten_error(other)),
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -161,6 +167,7 @@ pub(crate) async fn worker_loop(
                                 expected_snapshot,
                                 mode,
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -175,6 +182,7 @@ pub(crate) async fn worker_loop(
                                     flatten_error(other)
                                 ),
                             })
+                            .await
                             .is_err()
                         {
                             break;
@@ -190,6 +198,7 @@ pub(crate) async fn worker_loop(
                     Ok(Ok(result)) => {
                         if event_tx
                             .send(BackendEvent::ActionFinished { request, result })
+                            .await
                             .is_err()
                         {
                             break;
@@ -201,6 +210,7 @@ pub(crate) async fn worker_loop(
                                 context: "action".to_string(),
                                 message: format!("action failed: {:?}", flatten_error(other)),
                             })
+                            .await
                             .is_err()
                         {
                             break;
