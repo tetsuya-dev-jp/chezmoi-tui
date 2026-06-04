@@ -3,7 +3,8 @@ use crate::actions::{
     send_task, squash_lines, validate_action_requests,
 };
 use crate::app::{
-    App, BackendEvent, BackendTask, ConfirmStep, InputKind, ModalState, PaneFocus, SearchScope,
+    App, ApplyPlanMode, BackendEvent, BackendTask, ConfirmStep, InputKind, ModalState, PaneFocus,
+    SearchScope,
 };
 use crate::domain::{Action, ActionRequest, ListView};
 use crate::ignore::IgnorePatternMode;
@@ -130,6 +131,47 @@ pub(crate) fn handle_backend_event(
                 send_task(app, task_tx, BackendTask::RefreshAll)?;
             }
         }
+        BackendEvent::ApplyPlanPrepared {
+            request,
+            status,
+            diff_fingerprint,
+            expected_snapshot,
+            mode,
+        } => {
+            app.finish_busy_task();
+
+            let fresh_snapshot = app.build_apply_plan_snapshot_from_status(
+                &status,
+                request.target.as_deref(),
+                diff_fingerprint,
+            );
+
+            // Update status entries from the fresh data.
+            app.status_entries = status;
+            if app.view == ListView::Status {
+                app.rebuild_visible_entries();
+            }
+
+            match mode {
+                ApplyPlanMode::OpenPlan => {
+                    app.open_apply_plan_with_snapshot(request, fresh_snapshot);
+                    app.set_info_notice("apply plan refreshed");
+                }
+                ApplyPlanMode::ValidateBeforeExecute => {
+                    if let Some(expected) = expected_snapshot
+                        && expected != fresh_snapshot
+                    {
+                        app.open_apply_plan_with_snapshot(request, fresh_snapshot);
+                        app.set_error_notice(
+                            "apply plan changed; review the refreshed plan before applying",
+                        );
+                        return Ok(());
+                    }
+
+                    continue_apply_after_plan_validation(app, task_tx, request)?;
+                }
+            }
+        }
         BackendEvent::Error { context, message } => {
             app.finish_busy_task();
             let hint = recovery_hint(&message);
@@ -196,6 +238,19 @@ pub(crate) fn handle_key_event(
         ModalState::ApplyPlan { .. } => handle_apply_plan_key(app, key, task_tx),
         ModalState::Input { .. } => handle_input_key(app, key, task_tx),
     }
+}
+
+fn continue_apply_after_plan_validation(
+    app: &mut App,
+    task_tx: &UnboundedSender<BackendTask>,
+    request: ActionRequest,
+) -> Result<()> {
+    if request.action.requires_confirmation() && !app.batch_confirmed() {
+        app.open_confirm(request);
+    } else {
+        execute_action_request(app, task_tx, request)?;
+    }
+    Ok(())
 }
 
 fn handle_key_without_modal(
@@ -882,8 +937,10 @@ fn handle_apply_plan_key(
     key: KeyEvent,
     task_tx: &UnboundedSender<BackendTask>,
 ) -> Result<()> {
-    let request = match &app.modal {
-        ModalState::ApplyPlan { request, .. } => request.clone(),
+    let (request, expected_snapshot) = match &app.modal {
+        ModalState::ApplyPlan {
+            request, snapshot, ..
+        } => (request.clone(), Some(snapshot.clone())),
         _ => return Ok(()),
     };
 
@@ -891,11 +948,15 @@ fn handle_apply_plan_key(
         KeyCode::Esc => app.close_modal(),
         KeyCode::Enter => {
             app.close_modal();
-            if request.action.requires_confirmation() && !app.batch_confirmed() {
-                app.open_confirm(request);
-            } else {
-                execute_action_request(app, task_tx, request)?;
-            }
+            send_task(
+                app,
+                task_tx,
+                BackendTask::PrepareApplyPlan {
+                    request,
+                    expected_snapshot,
+                    mode: ApplyPlanMode::ValidateBeforeExecute,
+                },
+            )?;
         }
         KeyCode::Char('d') => {
             let request_id = app.begin_detail_request();
@@ -1066,7 +1127,9 @@ fn handle_input_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{ApplyPlan, ApplyPlanSnapshot, NoticeTone};
     use crate::config::AppConfig;
+    use crate::domain::{ChangeKind, StatusEntry};
     use std::path::PathBuf;
     use tokio::sync::mpsc;
 
@@ -1486,21 +1549,23 @@ mod tests {
         )
         .expect("dispatch apply");
 
+        let task = task_rx.try_recv().expect("prepare apply plan task");
         assert!(matches!(
-            app.modal,
-            ModalState::ApplyPlan {
+            task,
+            BackendTask::PrepareApplyPlan {
                 request: ActionRequest {
                     action: Action::Apply,
                     ..
                 },
-                ..
+                expected_snapshot: None,
+                mode: ApplyPlanMode::OpenPlan,
             }
         ));
-        assert!(task_rx.try_recv().is_err());
+        assert!(matches!(app.modal, ModalState::None));
     }
 
     #[test]
-    fn apply_plan_enter_opens_confirmation() {
+    fn apply_plan_enter_opens_validation_task() {
         let mut app = App::new(AppConfig::default());
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
         app.open_apply_plan(ActionRequest {
@@ -1516,17 +1581,16 @@ mod tests {
         )
         .expect("continue from apply plan");
 
+        let task = task_rx.try_recv().expect("validation task");
         assert!(matches!(
-            app.modal,
-            ModalState::Confirm {
-                request: ActionRequest {
-                    action: Action::Apply,
-                    ..
-                },
+            task,
+            BackendTask::PrepareApplyPlan {
+                expected_snapshot: Some(_),
+                mode: ApplyPlanMode::ValidateBeforeExecute,
                 ..
             }
         ));
-        assert!(task_rx.try_recv().is_err());
+        assert!(matches!(app.modal, ModalState::None));
     }
 
     #[test]
@@ -1734,6 +1798,124 @@ mod tests {
                     action: Action::Destroy,
                     ..
                 }
+            }
+        ));
+    }
+
+    #[test]
+    fn apply_plan_prepared_opens_modal_from_fresh_status() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::ApplyPlanPrepared {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    target: None,
+                    chattr_attrs: None,
+                },
+                status: vec![StatusEntry {
+                    path: PathBuf::from(".zshrc"),
+                    actual_vs_state: ChangeKind::None,
+                    actual_vs_target: ChangeKind::Modified,
+                }],
+                diff_fingerprint: 123,
+                expected_snapshot: None,
+                mode: ApplyPlanMode::OpenPlan,
+            },
+        )
+        .expect("handle event");
+
+        let ModalState::ApplyPlan { snapshot, .. } = &app.modal else {
+            panic!("expected apply plan modal");
+        };
+
+        assert_eq!(snapshot.plan.modified, vec![PathBuf::from(".zshrc")]);
+        assert_eq!(snapshot.diff_fingerprint, 123);
+    }
+
+    #[test]
+    fn apply_plan_changed_snapshot_reopens_modal() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        let old_snapshot = ApplyPlanSnapshot {
+            plan: ApplyPlan::default(),
+            diff_fingerprint: 100,
+        };
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::ApplyPlanPrepared {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    target: None,
+                    chattr_attrs: None,
+                },
+                status: vec![StatusEntry {
+                    path: PathBuf::from(".zshrc"),
+                    actual_vs_state: ChangeKind::None,
+                    actual_vs_target: ChangeKind::Modified,
+                }],
+                diff_fingerprint: 200,
+                expected_snapshot: Some(old_snapshot),
+                mode: ApplyPlanMode::ValidateBeforeExecute,
+            },
+        )
+        .expect("handle event");
+
+        // Snapshot changed (different fingerprint), so modal should reopen instead of proceed.
+        let ModalState::ApplyPlan { snapshot, .. } = &app.modal else {
+            panic!("expected apply plan modal");
+        };
+        assert_eq!(snapshot.diff_fingerprint, 200);
+
+        let notice = app.latest_notice().expect("notice");
+        assert_eq!(notice.tone, NoticeTone::Error);
+        assert!(notice.message.contains("apply plan changed"));
+    }
+
+    #[test]
+    fn apply_plan_same_snapshot_continues_to_confirmation() {
+        let mut app = App::new(AppConfig::default());
+        let (task_tx, _task_rx) = mpsc::unbounded_channel::<BackendTask>();
+
+        let status = vec![StatusEntry {
+            path: PathBuf::from(".zshrc"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        let snapshot = app.build_apply_plan_snapshot_from_status(&status, None, 100);
+
+        handle_backend_event(
+            &mut app,
+            &task_tx,
+            BackendEvent::ApplyPlanPrepared {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    target: None,
+                    chattr_attrs: None,
+                },
+                status: status.clone(),
+                diff_fingerprint: 100,
+                expected_snapshot: Some(snapshot),
+                mode: ApplyPlanMode::ValidateBeforeExecute,
+            },
+        )
+        .expect("handle event");
+
+        // Same snapshot, so should continue to confirmation.
+        assert!(matches!(
+            app.modal,
+            ModalState::Confirm {
+                request: ActionRequest {
+                    action: Action::Apply,
+                    ..
+                },
+                ..
             }
         ));
     }

@@ -1625,11 +1625,13 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         }
         ModalState::ApplyPlan {
             request,
-            plan,
+            snapshot,
             scroll,
         } => {
             let area = centered_rect(76, 64, frame.area());
             frame.render_widget(Clear, area);
+
+            let plan = &snapshot.plan;
 
             let mut lines = vec![
                 Line::from(format!("action: {}", request.action.label())),
@@ -1640,6 +1642,9 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(format!("Deleted: {}", plan.deleted.len())),
                 Line::from(format!("Run scripts: {}", plan.run.len())),
                 Line::from(format!("Unknown: {}", plan.unknown.len())),
+                Line::from(""),
+                Line::from("This plan was generated from a fresh chezmoi status and diff."),
+                Line::from("It will be validated again before apply."),
             ];
 
             if plan.total() == 0 {

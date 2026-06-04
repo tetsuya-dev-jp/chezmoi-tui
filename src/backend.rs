@@ -137,6 +137,51 @@ pub(crate) async fn worker_loop(
                     }
                 }
             }
+            BackendTask::PrepareApplyPlan {
+                request,
+                expected_snapshot,
+                mode,
+            } => {
+                let c = client.clone();
+                let target = request.target.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let status = c.status()?;
+                    let diff = c.diff(target.as_deref())?;
+                    Ok::<_, anyhow::Error>((status, diff.text))
+                })
+                .await;
+
+                match result {
+                    Ok(Ok((status, diff_text))) => {
+                        if event_tx
+                            .send(BackendEvent::ApplyPlanPrepared {
+                                request,
+                                status,
+                                diff_fingerprint: fingerprint_text(&diff_text),
+                                expected_snapshot,
+                                mode,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    other => {
+                        if event_tx
+                            .send(BackendEvent::Error {
+                                context: "apply-plan".to_string(),
+                                message: format!(
+                                    "apply plan refresh failed: {:?}",
+                                    flatten_error(other)
+                                ),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
             BackendTask::RunAction { request } => {
                 let c = client.clone();
                 let req = request.clone();
@@ -173,6 +218,14 @@ fn flatten_error<T>(res: std::result::Result<anyhow::Result<T>, tokio::task::Joi
         Ok(Err(err)) => format!("{err:#}"),
         Err(err) => format!("join error: {err}"),
     }
+}
+
+fn fingerprint_text(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]
