@@ -902,16 +902,9 @@ mod tests {
     #[test]
     fn shell_client_passes_destination_and_source_to_chezmoi() {
         use std::os::unix::fs::PermissionsExt;
-        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_fake_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
         std::fs::create_dir_all(&root).expect("create root");
         let log = root.join("args.log");
         let fake = root.join("chezmoi");
@@ -945,8 +938,6 @@ printf ' A .zshrc\n'
         assert!(args.contains("--source\n"));
         assert!(args.contains("source\n"));
         assert!(args.contains("status\n"));
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

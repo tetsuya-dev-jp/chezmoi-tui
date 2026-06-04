@@ -2538,7 +2538,7 @@ mod tests {
     use super::*;
     use crate::domain::ChangeKind;
     use std::path::Path;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn busy_task_counter_tracks_multiple_in_flight_tasks() {
@@ -2603,14 +2603,8 @@ mod tests {
 
     #[test]
     fn selected_absolute_path_uses_home_dir_for_status() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_abs_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let mut app = App::new(AppConfig::default());
         app.home_dir = temp_root.clone();
         app.status_entries = vec![StatusEntry {
@@ -2625,22 +2619,14 @@ mod tests {
 
     #[test]
     fn selected_absolute_path_uses_working_dir_for_unmanaged() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_wd_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".zshrc")];
         app.switch_view(ListView::Unmanaged);
         app.rebuild_visible_entries();
         assert_eq!(app.selected_absolute_path(), Some(temp_root.join(".zshrc")));
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -2655,14 +2641,8 @@ mod tests {
 
     #[test]
     fn unmanaged_directory_can_expand_and_show_children() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_test_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let dir = temp_root.join(".config/nvim");
         fs::create_dir_all(&dir).expect("create dir");
         fs::write(dir.join("init.lua"), "set number").expect("write file");
@@ -2685,8 +2665,6 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("nvim/"))
         );
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[cfg(unix)]
@@ -2694,14 +2672,8 @@ mod tests {
     fn unmanaged_symlink_directory_is_shown_but_not_expandable() {
         use std::os::unix::fs::symlink;
 
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_symlink_dir_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let real_dir = temp_root.join("real");
         fs::create_dir_all(&real_dir).expect("create real dir");
         fs::write(real_dir.join("inside.txt"), "inside").expect("write inner file");
@@ -2721,8 +2693,6 @@ mod tests {
                 .any(|line| line.contains("[L]") && line.contains("linkdir@/"))
         );
         assert!(!items.iter().any(|line| line.contains("inside.txt")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[cfg(unix)]
@@ -2730,15 +2700,8 @@ mod tests {
     fn unmanaged_symlink_file_shows_link_marker_and_suffix() {
         use std::os::unix::fs::symlink;
 
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_symlink_file_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp_root).expect("create root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::write(temp_root.join("real.txt"), "hello").expect("write real file");
         symlink(temp_root.join("real.txt"), temp_root.join("link.txt"))
             .expect("create symlink file");
@@ -2754,20 +2717,12 @@ mod tests {
                 .iter()
                 .any(|line| line.contains(" L ") && line.contains("link.txt@"))
         );
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_tree_excludes_managed_children() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_filter_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let dir = temp_root.join(".config");
         fs::create_dir_all(&dir).expect("create dir");
         fs::write(dir.join("managed.lua"), "managed").expect("write managed");
@@ -2784,20 +2739,12 @@ mod tests {
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("local.lua")));
         assert!(!items.iter().any(|line| line.contains("managed.lua")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_filter_ignores_managed_paths_outside_working_dir() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_scope_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let work = temp_root.join("dev/chezmoi-tui");
         fs::create_dir_all(&work).expect("create work dir");
         fs::write(work.join("local.txt"), "local").expect("write local file");
@@ -2811,20 +2758,12 @@ mod tests {
 
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("local.txt")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_filter_does_not_hide_all_when_working_dir_itself_is_managed() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_root_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let work = temp_root.join("dev/chezmoi-tui");
         fs::create_dir_all(&work).expect("create work dir");
         fs::write(work.join("Cargo.lock"), "lock").expect("write file");
@@ -2838,20 +2777,12 @@ mod tests {
 
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("Cargo.lock")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_root_placeholder_is_expanded_without_dot_prefix() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_dot_root_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join(".config")).expect("create child dir");
         fs::write(temp_root.join("alpha.txt"), "alpha").expect("write child file");
 
@@ -2864,20 +2795,12 @@ mod tests {
         assert!(items.iter().any(|line| line.contains("alpha.txt")));
         assert!(items.iter().any(|line| line.contains(".config/")));
         assert!(!items.iter().any(|line| line.contains("./")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_view_does_not_exclude_without_configured_paths() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_no_default_exclude_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join(".cache")).expect("create cache dir");
         fs::create_dir_all(temp_root.join(".codex/skills")).expect("create codex dir");
         fs::write(temp_root.join(".codex/skills/SKILL.md"), "skill").expect("write skill");
@@ -2894,20 +2817,12 @@ mod tests {
         app.apply_list_filter_immediately("skill".to_string());
         let filtered = app.current_items();
         assert!(filtered.iter().any(|line| line.contains("SKILL.md")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_filter_index_uses_breadth_first_scan_order() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_bfs_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("a/sub")).expect("create a/sub");
         fs::create_dir_all(temp_root.join("b")).expect("create b");
         fs::write(temp_root.join("a/sub/deep.txt"), "deep").expect("write deep");
@@ -2922,20 +2837,12 @@ mod tests {
         assert_eq!(indexed[0], PathBuf::from("a"));
         assert_eq!(indexed[1], PathBuf::from("b"));
         assert_eq!(indexed[2], PathBuf::from("a/sub"));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_filter_index_expands_limit_until_query_match() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_expand_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("a")).expect("create a");
         fs::create_dir_all(temp_root.join("b")).expect("create b");
         fs::create_dir_all(temp_root.join("c")).expect("create c");
@@ -2954,20 +2861,12 @@ mod tests {
                 .iter()
                 .any(|path| path.ends_with(Path::new("c/target-skill.md")))
         );
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn unmanaged_filter_index_falls_back_when_max_limit_is_reached() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_fallback_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("a")).expect("create a");
         fs::create_dir_all(temp_root.join("b")).expect("create b");
         fs::create_dir_all(temp_root.join("c")).expect("create c");
@@ -2986,20 +2885,12 @@ mod tests {
                 .iter()
                 .any(|path| path.ends_with(Path::new("c/target-skill.md")))
         );
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn list_filter_directory_name_match_does_not_expand_children_without_descendant_match() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_filter_dir_name_only_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("skills")).expect("create skills dir");
         fs::write(temp_root.join("skills/guide.md"), "guide").expect("write file");
 
@@ -3012,20 +2903,12 @@ mod tests {
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("skills/")));
         assert!(!items.iter().any(|line| line.contains("guide.md")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn list_filter_file_name_match_expands_ancestor_directories() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_filter_file_name_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("skills")).expect("create skills dir");
         fs::write(temp_root.join("skills/SKILL.md"), "skill").expect("write file");
 
@@ -3038,8 +2921,6 @@ mod tests {
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("skills/")));
         assert!(items.iter().any(|line| line.contains("SKILL.md")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3069,14 +2950,8 @@ mod tests {
 
     #[test]
     fn managed_view_keeps_directory_only_branch_without_managed_files() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_managed_empty_branch_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("dev/project/.worktrees/diff-view-ansi"))
             .expect("create dir");
 
@@ -3101,20 +2976,12 @@ mod tests {
         assert!(app.expand_selected_directory());
         let third = app.current_items();
         assert!(third.iter().any(|line| line.contains(".worktrees/")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn managed_view_keeps_directory_only_and_file_backed_branches() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_managed_keep_branch_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("dev/project/.worktrees/diff-view-ansi"))
             .expect("create empty branch");
         fs::create_dir_all(temp_root.join("dev/project/keep")).expect("create keep dir");
@@ -3145,8 +3012,6 @@ mod tests {
         let third = app.current_items();
         assert!(third.iter().any(|line| line.contains("keep/")));
         assert!(third.iter().any(|line| line.contains(".worktrees/")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3303,15 +3168,8 @@ mod tests {
 
     #[test]
     fn open_apply_plan_filters_status_entries_for_targeted_apply() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_apply_plan_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
 
         let mut app = App::new(AppConfig::default());
         app.home_dir = temp_root.clone();
@@ -3339,8 +3197,6 @@ mod tests {
         };
         assert_eq!(snapshot.plan.total(), 1);
         assert_eq!(snapshot.plan.modified, vec![PathBuf::from(".a")]);
-
-        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3531,15 +3387,8 @@ mod tests {
 
     #[test]
     fn readd_action_menu_indices_show_readd_for_modified_status_selection() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_readd_visible_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::write(temp_root.join(".zshrc"), "export ZDOTDIR=$HOME").expect("write file");
 
         let mut app = App::new(AppConfig::default());
@@ -3558,20 +3407,12 @@ mod tests {
             .collect();
 
         assert!(actions.contains(&Action::ReAdd));
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn readd_action_menu_indices_hide_readd_for_mixed_marked_status_entries() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_readd_hidden_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::write(temp_root.join(".zshrc"), "export ZDOTDIR=$HOME").expect("write file");
         fs::write(temp_root.join(".gitconfig"), "[user]").expect("write file");
 
@@ -3601,20 +3442,12 @@ mod tests {
             .collect();
 
         assert!(!actions.contains(&Action::ReAdd));
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
     fn selected_action_targets_use_marked_entries_in_visible_order() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_marked_targets_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp_root).expect("create temp root");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::write(temp_root.join("a"), "a").expect("write a");
         fs::write(temp_root.join("b"), "b").expect("write b");
 
@@ -3630,8 +3463,6 @@ mod tests {
 
         let targets = app.selected_action_targets_absolute();
         assert_eq!(targets, vec![temp_root.join("a"), temp_root.join("b")]);
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3726,14 +3557,8 @@ mod tests {
 
     #[test]
     fn list_filter_finds_unmanaged_child_without_manual_expand() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_filter_unmanaged_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         let dir = temp_root.join(".config/nvim");
         fs::create_dir_all(&dir).expect("create dir");
         fs::write(dir.join("init.lua"), "set number").expect("write file");
@@ -3748,8 +3573,6 @@ mod tests {
         assert!(items.iter().any(|line| line.contains(".config/")));
         assert!(items.iter().any(|line| line.contains("nvim/")));
         assert!(items.iter().any(|line| line.contains("init.lua")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3802,14 +3625,8 @@ mod tests {
 
     #[test]
     fn unmanaged_view_keeps_managed_ancestors_as_context_for_unmanaged_descendants() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_unmanaged_managed_ancestors_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join(".worktrees/diff-view-ansi/src"))
             .expect("create source dir");
         fs::write(
@@ -3855,8 +3672,6 @@ mod tests {
         let third = app.current_items();
         assert!(third.iter().any(|line| line.contains("src/")));
         assert!(third.iter().any(|line| line.contains("Cargo.lock")));
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
@@ -3899,14 +3714,8 @@ mod tests {
 
     #[test]
     fn source_view_is_hierarchical_and_resolves_to_source_dir() {
-        let temp_root = std::env::temp_dir().join(format!(
-            "chezmoi_tui_source_view_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("dot_config/nvim")).expect("create source dir");
         fs::write(
             temp_root.join("dot_config/nvim/init.lua"),
@@ -3936,8 +3745,6 @@ mod tests {
             app.selected_absolute_path(),
             Some(temp_root.join("dot_config/nvim/init.lua"))
         );
-
-        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]
