@@ -25,3 +25,15 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --all --locked
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: check MSRV
+        run: cargo check --all-targets --locked
+      - name: test MSRV
+        run: cargo test --all --locked
