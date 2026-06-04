@@ -2,7 +2,7 @@
 name = "chezmoi-tui"
 version = "0.2.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 license = "MIT"
 description = "A visual TUI wrapper around chezmoi"
 repository = "https://github.com/tetsuya-dev-jp/chezmoi-tui"
