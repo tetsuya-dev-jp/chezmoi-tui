@@ -12,19 +12,30 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Instant;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 pub(crate) fn send_task(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     task: BackendTask,
 ) -> Result<()> {
     let label = backend_task_label(&task);
-    task_tx
-        .send(task)
-        .map_err(|err| anyhow::anyhow!("failed to dispatch task: {err}"))?;
-    app.begin_busy_task_with_message(label);
-    Ok(())
+
+    match task_tx.try_send(task) {
+        Ok(()) => {
+            app.begin_busy_task_with_message(label);
+            Ok(())
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Full(task)) => {
+            let dropped = backend_task_label(&task);
+            app.set_error_notice(format!("backend queue is full; dropped {dropped}"));
+            app.log(format!("backend queue full; dropped task={dropped}"));
+            Ok(())
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(err)) => {
+            anyhow::bail!("backend task channel closed while dispatching {err:?}");
+        }
+    }
 }
 
 fn backend_task_label(task: &BackendTask) -> String {
@@ -53,7 +64,7 @@ fn backend_task_label(task: &BackendTask) -> String {
 pub(crate) fn run_foreground_action(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     request: &ActionRequest,
 ) -> Result<()> {
     restore_terminal(terminal)?;
@@ -126,7 +137,7 @@ fn run_action_foreground(request: &ActionRequest, config: &AppConfig) -> Result<
 
 pub(crate) fn dispatch_action_request(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
     if let Some(message) =
@@ -163,7 +174,7 @@ pub(crate) fn dispatch_action_request(
 
 pub(crate) fn execute_action_request(
     app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
+    task_tx: &Sender<BackendTask>,
     request: ActionRequest,
 ) -> Result<()> {
     if request.action == Action::DebugContext {
@@ -223,10 +234,7 @@ pub(crate) fn execute_action_request(
     Ok(())
 }
 
-pub(crate) fn maybe_continue_batch(
-    app: &mut App,
-    task_tx: &UnboundedSender<BackendTask>,
-) -> Result<()> {
+pub(crate) fn maybe_continue_batch(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
     if !app.batch_in_progress() {
         return Ok(());
     }
@@ -818,7 +826,7 @@ mod tests {
     #[test]
     fn ignore_action_error_is_logged_without_returning_error() {
         let mut app = App::new(AppConfig::default());
-        let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
+        let (task_tx, mut task_rx) = mpsc::channel::<BackendTask>(8);
         let missing_target = std::env::temp_dir().join(format!(
             "chezmoi_tui_missing_ignore_{}_{}",
             std::process::id(),
