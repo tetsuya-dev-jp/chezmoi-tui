@@ -195,6 +195,13 @@ impl Action {
                 | Action::Destroy
         )
     }
+
+    pub fn requires_exact_managed_target(self) -> bool {
+        matches!(
+            self,
+            Action::Edit | Action::Forget | Action::Chattr | Action::Destroy
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1532,6 +1532,8 @@ mod tests {
     #[test]
     fn batch_confirmation_is_reused_for_remaining_items() {
         let mut app = App::new(AppConfig::default());
+        app.home_dir = PathBuf::from("/tmp");
+        app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
         let first = ActionRequest {
             action: Action::Forget,
@@ -1584,6 +1586,8 @@ mod tests {
     #[test]
     fn dangerous_batch_confirmation_is_not_reused_for_next_target() {
         let mut app = App::new(AppConfig::default());
+        app.home_dir = PathBuf::from("/tmp");
+        app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
         let (task_tx, mut task_rx) = mpsc::unbounded_channel::<BackendTask>();
         let first = ActionRequest {
             action: Action::Destroy,

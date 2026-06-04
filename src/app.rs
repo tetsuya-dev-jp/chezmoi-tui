@@ -1048,13 +1048,16 @@ impl App {
         if action.needs_target() && self.selected_action_targets_absolute().is_empty() {
             return Some("requires a selected target".to_string());
         }
-        if action == Action::Edit
+        if action.requires_exact_managed_target()
             && self
                 .selected_action_targets_absolute()
                 .iter()
                 .any(|path| !self.is_absolute_path_managed(path))
         {
-            return Some("edit is only for managed files".to_string());
+            return Some(format!(
+                "{} is only for exact managed entries",
+                action.label()
+            ));
         }
         if action == Action::Add
             && self
