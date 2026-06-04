@@ -290,6 +290,27 @@ pub(crate) fn validate_action_requests(
     action: Action,
     requests: &[ActionRequest],
 ) -> Option<String> {
+    use crate::action_policy::{TargetPolicy, policy_for};
+
+    let policy = policy_for(action);
+
+    if matches!(policy.target, TargetPolicy::ModifiedStatusFile) {
+        if requests.is_empty() {
+            return Some(format!("{} requires a target file", action.label()));
+        }
+        let targets: Vec<&Path> = requests
+            .iter()
+            .filter_map(|req| req.target.as_deref())
+            .collect();
+        if targets.iter().any(|path| path.is_dir()) {
+            return Some("re-add is available only for files".to_string());
+        }
+        if !app.readd_selection_is_eligible() {
+            return Some("re-add is available only for modified files in status view".to_string());
+        }
+        return None;
+    }
+
     if requests.is_empty() {
         return Some(format!("{} requires a target file", action.label()));
     }
@@ -299,32 +320,36 @@ pub(crate) fn validate_action_requests(
         .filter_map(|req| req.target.as_deref())
         .collect();
 
-    if action == Action::Add && targets.iter().any(|path| path.is_dir()) {
-        return Some(
-            "Adding a whole directory is disabled. Expand it and select only required files."
-                .to_string(),
-        );
-    }
-
-    if action == Action::ReAdd {
-        if targets.iter().any(|path| path.is_dir()) {
-            return Some("re-add is available only for files".to_string());
+    match policy.target {
+        TargetPolicy::None | TargetPolicy::Optional => {}
+        TargetPolicy::Required => {
+            if targets.is_empty() {
+                return Some(format!("{} requires a target file", action.label()));
+            }
         }
-
-        if !app.readd_selection_is_eligible() {
-            return Some("re-add is available only for modified files in status view".to_string());
+        TargetPolicy::ExactManaged => {
+            if targets
+                .iter()
+                .any(|path| !app.is_absolute_path_managed(path))
+            {
+                return Some(format!(
+                    "{} is available only for exact managed entries",
+                    action.label()
+                ));
+            }
         }
-    }
-
-    if action.requires_exact_managed_target()
-        && targets
-            .iter()
-            .any(|path| !app.is_absolute_path_managed(path))
-    {
-        return Some(format!(
-            "{} is available only for exact managed entries",
-            action.label()
-        ));
+        TargetPolicy::ExistingNonDirectory => {
+            if targets.iter().any(|path| path.is_dir()) {
+                return Some(
+                    "Adding a whole directory is disabled. Expand it and select only required files."
+                        .to_string(),
+                );
+            }
+        }
+        TargetPolicy::IgnoreEligible => {}
+        TargetPolicy::ModifiedStatusFile => {
+            // handled above
+        }
     }
 
     None
