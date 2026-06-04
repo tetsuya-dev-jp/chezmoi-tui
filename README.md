@@ -238,6 +238,14 @@ editor = "nvim"
 external_diff = "delta"
 ```
 
+`tools.editor` is used for foreground edit flows such as `edit`,
+`edit-config`, `edit-config-template`, and `edit-ignore`.
+For `edit`, `edit-config`, and `edit-config-template`, the value is passed to
+chezmoi through `EDITOR` and `VISUAL`. For `edit-ignore`, chezmoi-tui launches
+that editor directly by splitting the value into program and arguments.
+When omitted, chezmoi-tui falls back to `VISUAL`, then `EDITOR`, then `vi`
+for internal edit flows.
+
 CLI flags override config file values. Use `--config <path>` to load a specific config file or `--no-config` to disable config loading.
 
 ## Features
