@@ -12,21 +12,18 @@ use std::sync::Once;
 
 static PANIC_HOOK: Once = Once::new();
 
-pub(crate) struct TerminalGuard {
+pub struct TerminalGuard {
     active: bool,
 }
 
 impl TerminalGuard {
-    pub(crate) fn enter() -> Result<Self> {
+    pub fn enter() -> Result<Self> {
         install_panic_restore_hook();
         setup_terminal()?;
         Ok(Self { active: true })
     }
 
-    pub(crate) fn restore(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    ) -> Result<()> {
+    pub fn restore(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         restore_terminal(terminal)?;
         self.active = false;
         Ok(())
@@ -51,15 +48,13 @@ fn install_panic_restore_hook() {
     });
 }
 
-pub(crate) fn setup_terminal() -> Result<()> {
+pub fn setup_terminal() -> Result<()> {
     enable_raw_mode().context("failed to enable raw mode")?;
     execute!(io::stdout(), EnterAlternateScreen).context("failed to enter alternate screen")?;
     Ok(())
 }
 
-pub(crate) fn restore_terminal(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> Result<()> {
+pub fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     disable_raw_mode().context("failed to disable raw mode")?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, Show)
         .context("failed to leave alternate screen")?;

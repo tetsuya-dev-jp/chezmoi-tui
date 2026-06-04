@@ -321,7 +321,7 @@ pub struct App {
     pub should_quit: bool,
     detail_request_seq: u64,
     latest_detail_request_id: Option<u64>,
-    pub(crate) home_dir: PathBuf,
+    pub home_dir: PathBuf,
     working_dir: PathBuf,
     expanded_dirs: BTreeSet<PathBuf>,
     marked_entries: BTreeSet<PathBuf>,

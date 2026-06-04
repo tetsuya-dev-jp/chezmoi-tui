@@ -5,7 +5,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 
-pub(crate) fn init(log_file: Option<&Path>) -> Result<()> {
+pub fn init(log_file: Option<&Path>) -> Result<()> {
     let Some(log_file) = log_file else {
         return Ok(());
     };

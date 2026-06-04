@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Parser)]
 #[command(author, version, about)]
-pub(crate) struct CliArgs {
+pub struct CliArgs {
     /// Override chezmoi destination directory
     #[arg(long)]
     pub destination: Option<PathBuf>,
@@ -35,7 +35,7 @@ pub(crate) struct CliArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum CliView {
+pub enum CliView {
     Status,
     Managed,
     Unmanaged,

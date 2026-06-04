@@ -14,11 +14,7 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 use tokio::sync::mpsc::Sender;
 
-pub(crate) fn send_task(
-    app: &mut App,
-    task_tx: &Sender<BackendTask>,
-    task: BackendTask,
-) -> Result<()> {
+pub fn send_task(app: &mut App, task_tx: &Sender<BackendTask>, task: BackendTask) -> Result<()> {
     let label = backend_task_label(&task);
 
     match task_tx.try_send(task) {
@@ -61,7 +57,7 @@ fn backend_task_label(task: &BackendTask) -> String {
     }
 }
 
-pub(crate) fn run_foreground_action(
+pub fn run_foreground_action(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     task_tx: &Sender<BackendTask>,

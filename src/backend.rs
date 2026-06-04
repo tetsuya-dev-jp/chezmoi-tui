@@ -3,7 +3,7 @@ use crate::infra::ChezmoiClient;
 use crate::preview::load_file_preview;
 use tokio::sync::mpsc::{Receiver, Sender};
 
-pub(crate) async fn worker_loop(
+pub async fn worker_loop(
     client: std::sync::Arc<dyn ChezmoiClient>,
     mut task_rx: Receiver<BackendTask>,
     event_tx: Sender<BackendEvent>,
