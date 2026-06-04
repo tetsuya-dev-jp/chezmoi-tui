@@ -21,6 +21,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
       - name: Verify tag matches Cargo.toml version
         run: |
           crate_version="$(cargo pkgid | sed 's/.*#//')"
@@ -30,6 +33,21 @@ jobs:
             echo "Tag version ($tag_version) does not match crate version ($crate_version)"
             exit 1
           fi
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: check
+        run: cargo check --all-targets --locked
+
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: test
+        run: cargo test --all --locked
+
+      - name: publish dry-run
+        run: cargo publish --dry-run --locked
 
       - name: Authenticate to crates.io (Trusted Publishing)
         id: auth
