@@ -406,25 +406,6 @@ fn run_open_source_dir_foreground(config: &AppConfig) -> Result<(i32, u64)> {
     Ok((status.code().unwrap_or(-1), elapsed))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ToolInvocation {
-    program: std::ffi::OsString,
-    args: Vec<std::ffi::OsString>,
-}
-
-fn parse_tool_invocation(raw: &str, field_name: &str) -> Result<ToolInvocation> {
-    let parts: Vec<&str> = raw.split_whitespace().collect();
-
-    if parts.is_empty() {
-        anyhow::bail!("{field_name} must not be empty");
-    }
-
-    Ok(ToolInvocation {
-        program: parts[0].into(),
-        args: parts[1..].iter().map(|part| (*part).into()).collect(),
-    })
-}
-
 fn run_external_diff_foreground(config: &AppConfig) -> Result<(i32, u64)> {
     let tool_raw = config
         .external_diff
