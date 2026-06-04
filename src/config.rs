@@ -83,7 +83,7 @@ struct ToolsConfig {
 }
 
 impl AppConfig {
-    pub(crate) fn from_cli(args: CliArgs) -> Result<Self> {
+    pub fn from_cli(args: CliArgs) -> Result<Self> {
         let mut config = Self::default();
 
         if !args.no_config

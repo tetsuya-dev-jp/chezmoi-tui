@@ -13,7 +13,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::Sender;
 
-pub(crate) fn handle_backend_event(
+pub fn handle_backend_event(
     app: &mut App,
     task_tx: &Sender<BackendTask>,
     event: BackendEvent,
@@ -221,11 +221,7 @@ fn recovery_hint(message: &str) -> Option<&'static str> {
     None
 }
 
-pub(crate) fn handle_key_event(
-    app: &mut App,
-    key: KeyEvent,
-    task_tx: &Sender<BackendTask>,
-) -> Result<()> {
+pub fn handle_key_event(app: &mut App, key: KeyEvent, task_tx: &Sender<BackendTask>) -> Result<()> {
     if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
         app.should_quit = true;
         return Ok(());
