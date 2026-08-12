@@ -173,6 +173,7 @@ dependencies = [
  "dirs",
  "pretty_assertions",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

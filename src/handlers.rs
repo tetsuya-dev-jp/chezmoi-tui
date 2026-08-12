@@ -25,11 +25,28 @@ pub fn handle_backend_event(
             unmanaged,
             source_dir,
             source,
+            ignore_patterns,
         } => {
             app.finish_busy_task();
             app.apply_refresh_entries(status, managed, unmanaged, source_dir, source);
+            let ignore_error = match ignore_patterns {
+                Ok(patterns) => {
+                    app.set_ignore_patterns(patterns);
+                    None
+                }
+                Err(message) => {
+                    app.clear_ignore_patterns();
+                    Some(message)
+                }
+            };
             app.rebuild_visible_entries();
-            app.set_info_notice("refresh completed");
+            match ignore_error {
+                None => app.set_info_notice("refresh completed"),
+                Some(message) => app.set_error_notice(format!(
+                    "refresh completed, but .chezmoiignore could not be read: \
+                     the unmanaged tree may show ignored files ({message})"
+                )),
+            }
             maybe_enqueue_auto_detail(app, task_tx)?;
         }
         BackendEvent::DiffLoaded {

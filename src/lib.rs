@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod domain;
 pub mod handlers;
 pub mod ignore;
+pub mod ignored_scan;
 pub mod infra;
 pub mod preview;
 pub mod terminal;
