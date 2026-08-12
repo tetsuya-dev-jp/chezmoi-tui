@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -13,6 +13,8 @@ pub trait ChezmoiClient: Send + Sync {
     fn status(&self) -> Result<Vec<StatusEntry>>;
     fn managed(&self) -> Result<Vec<PathBuf>>;
     fn unmanaged(&self) -> Result<Vec<PathBuf>>;
+    /// Rendered `.chezmoiignore` lines (the file may be a template).
+    fn ignore_patterns(&self) -> Result<Vec<String>>;
     fn source(&self) -> Result<(PathBuf, Vec<PathBuf>)>;
     fn diff(&self, target: Option<&Path>) -> Result<DiffText>;
     fn run(&self, request: &ActionRequest) -> Result<CommandResult>;
@@ -324,6 +326,22 @@ impl ChezmoiClient for ShellChezmoiClient {
         }
     }
 
+    fn ignore_patterns(&self) -> Result<Vec<String>> {
+        let source_dir = self.source_dir()?;
+        let ignore_file = source_dir.join(".chezmoiignore");
+        let template = match std::fs::read_to_string(&ignore_file) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to read {}", ignore_file.display()));
+            }
+        };
+
+        let rendered = self.execute_template(&template)?;
+        Ok(rendered.lines().map(str::to_owned).collect())
+    }
+
     fn source(&self) -> Result<(PathBuf, Vec<PathBuf>)> {
         let source_dir = self.source_dir()?;
         let paths = list_source_paths(&source_dir)?;
@@ -365,6 +383,41 @@ impl ShellChezmoiClient {
             bail!("chezmoi source-path returned empty output");
         }
         Ok(PathBuf::from(source_dir))
+    }
+
+    /// Render a chezmoi template (e.g. the contents of `.chezmoiignore`) by
+    /// piping it through `chezmoi execute-template` on stdin.
+    fn execute_template(&self, template: &str) -> Result<String> {
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("--destination").arg(&self.home_dir);
+        if let Some(source_dir) = &self.source_dir {
+            cmd.arg("--source").arg(source_dir);
+        }
+        cmd.arg("execute-template")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .context("failed to spawn chezmoi execute-template")?;
+        child
+            .stdin
+            .take()
+            .context("failed to open chezmoi execute-template stdin")?
+            .write_all(template.as_bytes())
+            .context("failed to write template to chezmoi execute-template")?;
+
+        let output = child
+            .wait_with_output()
+            .context("failed to run chezmoi execute-template")?;
+        if !output.status.success() {
+            bail!(
+                "chezmoi execute-template failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn expand_working_root_entries_from_home(&self, scoped: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
