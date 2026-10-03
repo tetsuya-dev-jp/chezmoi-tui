@@ -20,8 +20,26 @@ pub async fn worker_loop(
                 let unmanaged_task = tokio::task::spawn_blocking(move || c3.unmanaged());
                 let c4 = client.clone();
                 let source_task = tokio::task::spawn_blocking(move || c4.source());
-                let (status, managed, unmanaged, source) =
-                    tokio::join!(status_task, managed_task, unmanaged_task, source_task);
+                let c5 = client.clone();
+                let ignore_task = tokio::task::spawn_blocking(move || c5.ignore_patterns());
+                let (status, managed, unmanaged, source, ignore) = tokio::join!(
+                    status_task,
+                    managed_task,
+                    unmanaged_task,
+                    source_task,
+                    ignore_task
+                );
+
+                // The ignore patterns are deliberately not part of the
+                // all-or-nothing match below: they only gate filtering, so a
+                // failure degrades the Unmanaged view instead of failing the
+                // whole refresh. The error is carried to the UI so the user
+                // learns that ignore filtering is off.
+                let ignore_patterns = match ignore {
+                    Ok(Ok(patterns)) => Ok(patterns),
+                    Ok(Err(err)) => Err(format!("{err:#}")),
+                    Err(err) => Err(format!("join error: {err}")),
+                };
 
                 match (status, managed, unmanaged, source) {
                     (
@@ -45,6 +63,7 @@ pub async fn worker_loop(
                                 unmanaged,
                                 source_dir: Some(source_dir),
                                 source,
+                                ignore_patterns,
                             })
                             .await
                             .is_err()

@@ -97,6 +97,18 @@ chezmoi-tui --no-auto-preview
 
 The footer shows the active view base path, for example `dest=/home/user`, `cwd=/work/project`, or `source=~/.local/share/chezmoi`.
 
+### Unmanaged ignore filtering
+
+The Unmanaged view re-applies rendered `.chezmoiignore` rules when expanding directories and building the list-filter index, so ignored descendants are not offered for preview or file actions.
+Rules are destination-relative even when the app starts in a subdirectory.
+Both `.chezmoiignore` and `.chezmoiignore.tmpl` are supported; patterns are refreshed when you press `r`.
+Negated patterns take precedence regardless of their order, as they do in chezmoi.
+Directories containing re-included files remain navigable instead of being hidden based on a sample descendant.
+
+If ignore rules cannot be read, rendered, or compiled, the other lists still refresh and an error notice warns that the Unmanaged tree may show ignored files.
+Template rendering uses the same timeout and output limits as other chezmoi commands.
+Resolve the reported error and refresh before adding files that should be ignored.
+
 ## Keybindings
 
 Global:

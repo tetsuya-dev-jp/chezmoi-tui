@@ -1,3 +1,37 @@
+# Release Notes: v0.2.2
+
+## Highlights
+
+This patch fixes ignored files reappearing when the Unmanaged tree expands or its list filter scans descendants.
+It includes the original fix from [PR #23](https://github.com/tetsuya-dev-jp/chezmoi-tui/pull/23), contributed by @brosu, with compatibility and command-safety corrections found during review.
+
+## Fixes
+
+- Re-apply rendered ignore rules during unmanaged tree descent and filtering.
+- Support zero-directory globstars, character classes, alternatives, escaped literals, and inline comments.
+- Preserve chezmoi's order-independent negation precedence and keep re-included files reachable.
+- Read `.chezmoiignore.tmpl` as well as `.chezmoiignore`, including active nested source directories.
+- Skip ignore templates inside source subtrees that chezmoi ignores or treats as external.
+- Bound template execution with the existing timeout and output limits.
+- Warn when ignore filtering is unavailable or patterns are invalid, without discarding the other refreshed lists.
+
+## Verification
+
+Release preparation uses:
+
+```text
+cargo fmt --all -- --check
+cargo check --all-targets --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --all --locked
+cargo publish --dry-run --locked
+```
+
+Ignore behavior is also compared with an isolated chezmoi v2.73.0 installation.
+Publishing is handled by the tag-based GitHub Actions workflow using crates.io Trusted Publishing.
+
+---
+
 # Release Notes: v0.2.1
 
 ## Highlights

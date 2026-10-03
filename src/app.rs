@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use crate::domain::{
     Action, ActionRequest, ChangeKind, CommandResult, DiffText, ListView, StatusEntry,
 };
+use crate::ignored_scan::IgnoreMatcher;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -230,6 +231,8 @@ pub enum BackendEvent {
         unmanaged: Vec<PathBuf>,
         source_dir: Option<PathBuf>,
         source: Vec<PathBuf>,
+        /// Rendered `.chezmoiignore` lines, or the reason they are unavailable.
+        ignore_patterns: Result<Vec<String>, String>,
     },
     DiffLoaded {
         request_id: u64,
@@ -331,6 +334,10 @@ pub struct App {
     batch_queue: VecDeque<ActionRequest>,
     visible_entries: Vec<VisibleEntry>,
     unmanaged_filter_cache: UnmanagedFilterCache,
+    /// Rules used to keep `.chezmoiignore`d paths out of the Unmanaged view
+    /// when its tree descends into a directory. `None` until the first refresh
+    /// delivers them (or if rendering them failed, which surfaces as a notice).
+    ignore_matcher: Option<IgnoreMatcher>,
 }
 
 impl App {
@@ -391,6 +398,7 @@ impl App {
             batch_queue: VecDeque::new(),
             visible_entries: Vec::new(),
             unmanaged_filter_cache: UnmanagedFilterCache::default(),
+            ignore_matcher: None,
         };
 
         app.rebuild_visible_entries_reset();
@@ -488,6 +496,31 @@ impl App {
         self.managed_entries = managed;
         self.unmanaged_entries = unmanaged;
         self.source_entries = source;
+        self.invalidate_unmanaged_filter_index();
+    }
+
+    /// Install the `.chezmoiignore` rules used when the Unmanaged tree descends
+    /// below the entries chezmoi reported. Rebuilt on every refresh because the
+    /// chezmoi source is a live repository that can change mid-session.
+    /// Compilation errors clear stale rules and the cached index; the caller
+    /// must report that ignore filtering is unavailable.
+    pub fn set_ignore_patterns(&mut self, patterns: Vec<String>) -> anyhow::Result<()> {
+        let matcher = match IgnoreMatcher::from_patterns(patterns) {
+            Ok(matcher) => matcher,
+            Err(error) => {
+                self.clear_ignore_patterns();
+                return Err(error);
+            }
+        };
+        self.ignore_matcher = Some(matcher);
+        self.invalidate_unmanaged_filter_index();
+        Ok(())
+    }
+
+    /// Drop the ignore rules; the Unmanaged view keeps working, but its tree
+    /// descent can no longer re-apply `.chezmoiignore`.
+    pub fn clear_ignore_patterns(&mut self) {
+        self.ignore_matcher = None;
         self.invalidate_unmanaged_filter_index();
     }
 
@@ -2275,7 +2308,34 @@ impl App {
 
     fn is_excluded_unmanaged_path(&self, path: &Path) -> bool {
         let abs = Self::resolve_with_base(path, &self.working_dir);
-        self.is_exact_managed_path_in_working_dir(&abs)
+        self.is_exact_managed_path_in_working_dir(&abs) || self.is_ignored_by_chezmoi(&abs)
+    }
+
+    /// `chezmoi unmanaged` already applies `.chezmoiignore`, but the tree in the
+    /// Unmanaged view descends with a raw directory read. Re-apply the rules
+    /// here so ignored paths (which include deliberately hidden secrets) never
+    /// appear below an expanded node or in the filter index.
+    fn is_ignored_by_chezmoi(&self, absolute: &Path) -> bool {
+        let Some(matcher) = &self.ignore_matcher else {
+            return false;
+        };
+        // Ignore patterns are relative to the destination directory, while the
+        // Unmanaged view is relative to the working directory; the two differ
+        // whenever chezmoi-tui is launched below the destination.
+        let Ok(rel) = absolute.strip_prefix(&self.home_dir) else {
+            return false;
+        };
+        let rel = rel
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if rel.is_empty() {
+            return false;
+        }
+        // Match the actual entry only. A synthetic child cannot prove that all
+        // descendants are ignored and can hide explicitly re-included files.
+        matcher.is_ignored(&rel)
     }
 
     fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
@@ -2739,6 +2799,192 @@ mod tests {
         let items = app.current_items();
         assert!(items.iter().any(|line| line.contains("local.lua")));
         assert!(!items.iter().any(|line| line.contains("managed.lua")));
+    }
+
+    #[test]
+    fn unmanaged_tree_excludes_ignored_children_on_expand() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
+        let dir = temp_root.join(".claude");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join(".credentials.json"), "secret").expect("write ignored");
+        fs::write(dir.join("settings.json"), "settings").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".claude")];
+        app.set_ignore_patterns(vec![".claude/.credentials.json".to_string()])
+            .unwrap();
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("settings.json")));
+        assert!(!items.iter().any(|line| line.contains(".credentials.json")));
+    }
+
+    #[test]
+    fn unmanaged_ignore_filter_uses_home_relative_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
+        let work = temp_root.join("dev/project");
+        let dir = work.join("cache");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("secret.token"), "secret").expect("write ignored");
+        fs::write(dir.join("notes.md"), "notes").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = work.clone();
+        app.unmanaged_entries = vec![PathBuf::from("cache")];
+        // Pattern is destination-relative, while the view is working-dir relative.
+        app.set_ignore_patterns(vec!["dev/project/cache/*.token".to_string()])
+            .unwrap();
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("notes.md")));
+        assert!(!items.iter().any(|line| line.contains("secret.token")));
+    }
+
+    #[test]
+    fn unmanaged_filter_index_excludes_ignored_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
+        let dir = temp_root.join(".claude");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join(".credentials.json"), "secret").expect("write ignored");
+        fs::write(dir.join("settings.json"), "settings").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".claude")];
+        app.set_ignore_patterns(vec![".claude/.credentials.json".to_string()])
+            .unwrap();
+        app.switch_view(ListView::Unmanaged);
+
+        let matches = app.unmanaged_filter_source_paths("credentials");
+        assert!(
+            !matches
+                .iter()
+                .any(|path| path.to_string_lossy().contains(".credentials.json"))
+        );
+    }
+
+    #[test]
+    fn unmanaged_ignored_directory_is_hidden_with_its_contents() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
+        let dir = temp_root.join(".config/secrets");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("token"), "secret").expect("write ignored");
+        fs::write(temp_root.join(".config/keep.toml"), "keep").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.set_ignore_patterns(vec![".config/secrets".to_string()])
+            .unwrap();
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("keep.toml")));
+        assert!(!items.iter().any(|line| line.contains("secrets")));
+    }
+
+    #[test]
+    fn unmanaged_recursively_ignored_directory_is_hidden() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let temp_root = temp.path().to_path_buf();
+        let dir = temp_root.join(".config/secrets");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("token"), "secret").expect("write ignored");
+        fs::write(temp_root.join(".config/keep.toml"), "keep").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp_root.clone();
+        app.working_dir = temp_root.clone();
+        app.unmanaged_entries = vec![PathBuf::from(".config")];
+        // doublestar's `Foo/**` matches the directory itself too.
+        app.set_ignore_patterns(vec![".config/secrets/**".to_string()])
+            .unwrap();
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("keep.toml")));
+        assert!(!items.iter().any(|line| line.contains("secrets")));
+    }
+
+    #[test]
+    fn invalid_ignore_rules_clear_stale_matcher_and_filter_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("Foo")).unwrap();
+        fs::write(temp.path().join("Foo/secret"), "secret").unwrap();
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp.path().to_path_buf();
+        app.working_dir = temp.path().to_path_buf();
+        app.unmanaged_entries = vec![PathBuf::from("Foo")];
+        app.set_ignore_patterns(vec!["Foo/secret".to_string()])
+            .unwrap();
+        app.switch_view(ListView::Unmanaged);
+        assert!(
+            !app.unmanaged_filter_source_paths("secret")
+                .contains(&PathBuf::from("Foo/secret"))
+        );
+        assert!(app.set_ignore_patterns(vec!["[".to_string()]).is_err());
+        assert!(app.ignore_matcher.is_none());
+        assert!(
+            app.unmanaged_filter_source_paths("secret")
+                .contains(&PathBuf::from("Foo/secret"))
+        );
+    }
+
+    #[test]
+    fn unmanaged_tree_does_not_prune_a_partially_ignored_subtree() {
+        assert_unmanaged_keep_is_reachable(vec![".config/Foo/*/*".to_string()]);
+    }
+
+    #[test]
+    fn unmanaged_tree_and_filter_preserve_reincluded_children() {
+        for patterns in [
+            vec![".config/Foo/**", "!.config/Foo", "!.config/Foo/keep"],
+            vec!["!.config/Foo", "!.config/Foo/keep", ".config/Foo/**"],
+        ] {
+            assert_unmanaged_keep_is_reachable(patterns.into_iter().map(String::from).collect());
+        }
+    }
+
+    fn assert_unmanaged_keep_is_reachable(patterns: Vec<String>) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join(".config/Foo/nested")).unwrap();
+        fs::write(temp.path().join(".config/Foo/keep"), "keep").unwrap();
+        fs::write(temp.path().join(".config/Foo/nested/secret"), "secret").unwrap();
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp.path().to_path_buf();
+        app.working_dir = temp.path().to_path_buf();
+        app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.set_ignore_patterns(patterns).unwrap();
+        app.switch_view(ListView::Unmanaged);
+        assert!(app.expand_selected_directory());
+        assert!(app.current_items().iter().any(|line| line.contains("Foo")));
+        let matches = app.unmanaged_filter_source_paths("keep");
+        assert!(
+            matches.contains(&PathBuf::from(".config/Foo/keep")),
+            "{matches:?}"
+        );
+        assert!(
+            !app.unmanaged_filter_source_paths("secret")
+                .contains(&PathBuf::from(".config/Foo/nested/secret"))
+        );
+        app.select_next();
+        assert!(app.expand_selected_directory());
+        assert!(app.current_items().iter().any(|line| line.contains("keep")));
     }
 
     #[test]
