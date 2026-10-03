@@ -26,7 +26,7 @@ jobs:
 
       - name: Verify tag matches Cargo.toml version
         run: |
-          crate_version="$(cargo pkgid | sed 's/.*#//')"
+          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "chezmoi-tui"))')"
           tag_version="${GITHUB_REF_NAME#v}"
 
           if [ "$crate_version" != "$tag_version" ]; then
