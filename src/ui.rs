@@ -2779,7 +2779,7 @@ mod tests {
         ActionMenuRow, ActionMenuSection, SELECTION_BG, action_menu_rows, action_menu_text,
         action_preflight_commands, action_preflight_impact, action_preflight_mode,
         build_action_menu_rows, clear_buffer_styles, draw, draw_styled, ensure_dark_canvas,
-        log_scroll_offset,
+        log_scroll_offset, modal_rect,
     };
     use crate::app::{
         App, ApplyPlan, ApplyPlanSnapshot, ConfirmStep, InputKind, ModalState, PaneFocus,
@@ -2829,26 +2829,39 @@ mod tests {
     }
 
     fn buffer_text(buffer: &Buffer) -> String {
-        buffer
-            .content()
-            .chunks(buffer.area().width as usize)
-            .map(|row| {
+        buffer_rect_text(buffer, *buffer.area())
+    }
+
+    fn buffer_rect_text(buffer: &Buffer, area: Rect) -> String {
+        (area.top()..area.bottom())
+            .map(|y| {
                 let mut text = String::new();
                 let mut hidden_cells = 0usize;
-                for cell in row {
+                for x in area.left()..area.right() {
                     if hidden_cells > 0 {
                         hidden_cells -= 1;
                         continue;
                     }
-                    text.push_str(cell.symbol());
-                    hidden_cells = ratatui::text::Span::raw(cell.symbol())
-                        .width()
-                        .saturating_sub(1);
+                    let symbol = buffer[(x, y)].symbol();
+                    text.push_str(symbol);
+                    hidden_cells = ratatui::text::Span::raw(symbol).width().saturating_sub(1);
                 }
                 text
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn apply_plan_content_text(app: &mut App, width: u16, height: u16) -> String {
+        let buffer = render_buffer(app, width, height);
+        let modal = modal_rect(*buffer.area(), 80, 22);
+        let content = Rect::new(
+            modal.x.saturating_add(1),
+            modal.y.saturating_add(1),
+            modal.width.saturating_sub(2),
+            modal.height.saturating_sub(2),
+        );
+        buffer_rect_text(&buffer, content)
     }
 
     fn request(action: Action) -> ActionRequest {
@@ -3308,7 +3321,10 @@ mod tests {
     #[test]
     fn apply_plan_shows_targets_and_all_affected_path_groups() {
         let root = tempfile::tempdir().expect("temp root");
-        let target = root.path().to_path_buf();
+        let target = root.path().join(
+            "deliberately-long-target-root/for-wrapped-path-rendering-across-terminals/日本語",
+        );
+        std::fs::create_dir_all(&target).expect("target root");
         let affected = (0..20)
             .map(|index| target.join(format!("nested/日本語/file-{index:02}.txt")))
             .collect::<Vec<_>>();
@@ -3336,30 +3352,64 @@ mod tests {
             scroll: 0,
         };
 
-        let rendered = render_text(&mut app, 64, 24);
-        let compact = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(target.is_dir());
+        let initial = apply_plan_content_text(&mut app, 64, 24);
+        let compact = initial.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(compact.contains("scope: selected targets - 1 target root(s)"));
         assert!(compact.contains("target roots: 1 selected"));
         assert!(
             compact.contains("directory roots include every affected descendant"),
-            "{rendered}"
+            "{initial}"
         );
-        assert!(compact.contains("recursively"), "{rendered}");
-        assert!(compact.contains(&target.display().to_string()));
+        assert!(compact.contains("recursively"), "{initial}");
+        let target_text = target.display().to_string();
+        assert!(
+            initial
+                .lines()
+                .all(|line| !line.contains(target_text.as_str())),
+            "fixture target did not wrap:\n{initial}"
+        );
+        assert!(
+            initial
+                .split_whitespace()
+                .collect::<String>()
+                .contains(&target_text),
+            "{initial}"
+        );
         assert!(compact.contains("changes: 23 total"));
-        assert!(compact.contains("Warning: apply may run 1 script(s)."));
-        assert!(compact.contains("Warning: 1 path(s) will be deleted."));
 
-        let ModalState::ApplyPlan { scroll, .. } = &mut app.modal else {
-            panic!("apply plan modal");
-        };
-        *scroll = usize::MAX;
-        let bottom = render_text(&mut app, 64, 24);
-        let compact = bottom.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(compact.contains("Unknown (1)"), "{bottom}");
-        assert!(compact.contains("Enter: continue to confirmation"));
-        assert!(compact.contains("Esc: cancel"));
+        let required = [
+            "Added (1)",
+            "Modified (19)",
+            "Deleted (1)",
+            "Run scripts (1)",
+            "Unknown (1)",
+            "Warning: apply may run 1 script(s).",
+            "Warning: 1 path(s) will be deleted.",
+            "Warning: unknown status entries need manual review.",
+        ];
+        let mut reached = [false; 8];
+        let mut reached_footer = false;
+        for _ in 0..100 {
+            let visible = apply_plan_content_text(&mut app, 64, 24);
+            let compact = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+            for (found, text) in reached.iter_mut().zip(required) {
+                *found |= compact.contains(text);
+            }
+            if compact.contains("Enter: continue to confirmation")
+                && compact.contains("Esc: cancel")
+            {
+                reached_footer = true;
+                break;
+            }
+
+            let ModalState::ApplyPlan { scroll, .. } = &mut app.modal else {
+                panic!("apply plan modal");
+            };
+            *scroll = scroll.saturating_add(10);
+        }
+
+        assert_eq!(reached, [true; 8]);
+        assert!(reached_footer, "apply plan footer was not reachable");
     }
 
     #[test]

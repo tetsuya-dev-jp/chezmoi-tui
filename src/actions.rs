@@ -1245,7 +1245,7 @@ mod tests {
         write_script(
             &pager,
             &format!(
-                "#!/bin/sh\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nexec /bin/false\n",
+                "#!/bin/sh\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nexit 1\n",
                 pid_file.display()
             ),
         );
