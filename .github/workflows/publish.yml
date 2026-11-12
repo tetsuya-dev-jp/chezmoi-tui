@@ -113,7 +113,7 @@ jobs:
 
       - name: Authenticate to crates.io (Trusted Publishing)
         id: auth
-        uses: rust-lang/crates-io-auth-action@v1.0.4
+        uses: rust-lang/crates-io-auth-action@v1.0.6
 
       - name: Publish crate
         env:
