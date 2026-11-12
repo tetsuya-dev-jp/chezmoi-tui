@@ -11,12 +11,10 @@ use std::time::{Duration, Instant};
 const MAX_LOG_LINES: usize = 500;
 const MAX_NOTICE_HISTORY: usize = 50;
 const LIST_FILTER_DEBOUNCE_MS: u64 = 120;
-const INITIAL_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 50_000;
-const UNMANAGED_FILTER_INDEX_STEP: usize = 50_000;
+const AUTO_DETAIL_DEBOUNCE_MS: u64 = 100;
+const UNMANAGED_FILTER_SCAN_BUDGET: Duration = Duration::from_millis(8);
+const UNMANAGED_FILTER_SCAN_ENTRY_CAP: usize = 4_096;
 const MAX_UNMANAGED_FILTER_INDEX_ENTRIES: usize = 200_000;
-const LIVE_FILTER_INITIAL_UNMANAGED_INDEX_ENTRIES: usize = 2_000;
-const LIVE_FILTER_UNMANAGED_INDEX_STEP: usize = 2_000;
-const LIVE_FILTER_MAX_UNMANAGED_INDEX_ENTRIES: usize = 20_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneFocus {
@@ -31,6 +29,14 @@ impl PaneFocus {
             Self::List => Self::Detail,
             Self::Detail => Self::Log,
             Self::Log => Self::List,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::List => Self::Log,
+            Self::Detail => Self::List,
+            Self::Log => Self::Detail,
         }
     }
 }
@@ -85,14 +91,42 @@ impl ApplyPlan {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplyPlanMode {
-    OpenPlan,
-    ValidateBeforeExecute,
+pub(crate) fn build_apply_plan(
+    status: &[StatusEntry],
+    destination: &Path,
+    targets: &[PathBuf],
+) -> ApplyPlan {
+    let mut plan = ApplyPlan::default();
+    for entry in status {
+        if !targets.is_empty()
+            && !targets.iter().any(|target| {
+                let absolute = if entry.path.is_absolute() {
+                    entry.path.clone()
+                } else {
+                    destination.join(&entry.path)
+                };
+                target == &entry.path || target == &absolute || absolute.starts_with(target)
+            })
+        {
+            continue;
+        }
+
+        match entry.actual_vs_target {
+            ChangeKind::Added => plan.added.push(entry.path.clone()),
+            ChangeKind::Modified => plan.modified.push(entry.path.clone()),
+            ChangeKind::Deleted => plan.deleted.push(entry.path.clone()),
+            ChangeKind::Run => plan.run.push(entry.path.clone()),
+            ChangeKind::Unknown(_) => plan.unknown.push(entry.path.clone()),
+            ChangeKind::None => {}
+        }
+    }
+    plan.sort_groups();
+    plan
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyPlanSnapshot {
+    pub targets: Vec<PathBuf>,
     pub plan: ApplyPlan,
     pub diff_fingerprint: u64,
 }
@@ -156,6 +190,7 @@ pub enum ModalState {
     Ignore {
         requests: Vec<ActionRequest>,
         selected: usize,
+        global_only: bool,
     },
     AddOptions {
         requests: Vec<ActionRequest>,
@@ -188,6 +223,10 @@ pub enum ModalState {
         step: ConfirmStep,
         typed: String,
     },
+    ConfirmApply {
+        request: ActionRequest,
+        snapshot: ApplyPlanSnapshot,
+    },
     ApplyPlan {
         request: ActionRequest,
         snapshot: ApplyPlanSnapshot,
@@ -216,23 +255,36 @@ pub enum BackendTask {
     RunAction {
         request: ActionRequest,
     },
-    PrepareApplyPlan {
+    Inspect {
+        request_id: u64,
         request: ActionRequest,
-        expected_snapshot: Option<ApplyPlanSnapshot>,
-        mode: ApplyPlanMode,
+    },
+    PrepareApplyPlan {
+        request_id: u64,
+        request: ActionRequest,
+        destination: PathBuf,
+    },
+    ApplyReviewed {
+        request_id: u64,
+        request: ActionRequest,
+        destination: PathBuf,
+        expected_snapshot: ApplyPlanSnapshot,
     },
 }
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    Refreshed {
-        status: Vec<StatusEntry>,
-        managed: Vec<PathBuf>,
-        unmanaged: Vec<PathBuf>,
-        source_dir: Option<PathBuf>,
-        source: Vec<PathBuf>,
-        /// Rendered `.chezmoiignore` lines, or the reason they are unavailable.
-        ignore_patterns: Result<Vec<String>, String>,
+    RefreshStarted,
+    StatusLoaded(Result<Vec<StatusEntry>, String>),
+    ManagedLoaded(Result<Vec<PathBuf>, String>),
+    UnmanagedLoaded(Result<Vec<PathBuf>, String>),
+    SourceLoaded(Result<(PathBuf, Vec<PathBuf>), String>),
+    /// Rendered `.chezmoiignore` lines, or the reason they are unavailable.
+    IgnoreLoaded(Result<Vec<String>, String>),
+    RefreshFinished,
+    RefreshCoalesced,
+    DetailCoalesced {
+        request_id: u64,
     },
     DiffLoaded {
         request_id: u64,
@@ -249,16 +301,32 @@ pub enum BackendEvent {
         request: ActionRequest,
         result: CommandResult,
     },
+    InspectionFinished {
+        request_id: u64,
+        request: ActionRequest,
+        result: CommandResult,
+    },
     ApplyPlanPrepared {
+        request_id: u64,
         request: ActionRequest,
         status: Vec<StatusEntry>,
-        diff_fingerprint: u64,
-        expected_snapshot: Option<ApplyPlanSnapshot>,
-        mode: ApplyPlanMode,
+        snapshot: ApplyPlanSnapshot,
+    },
+    ApplyPlanChanged {
+        request_id: u64,
+        request: ActionRequest,
+        status: Vec<StatusEntry>,
+        snapshot: ApplyPlanSnapshot,
+    },
+    DetailError {
+        request_id: u64,
+        context: String,
+        message: String,
     },
     Error {
         context: String,
         message: String,
+        mutation: bool,
     },
 }
 
@@ -285,6 +353,21 @@ struct UnmanagedFilterCache {
     frontier: VecDeque<PathBuf>,
     initialized: bool,
     scan_complete: bool,
+    limited: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetailRequest {
+    pub(crate) target: PathBuf,
+    pub(crate) absolute: PathBuf,
+    pub(crate) kind: DetailKind,
+    pub(crate) origin: PreviewOrigin,
+}
+
+#[derive(Debug, Clone)]
+struct PendingDetail {
+    request: DetailRequest,
+    due_at: Instant,
 }
 
 pub struct App {
@@ -295,6 +378,7 @@ pub struct App {
     pub managed_entries: Vec<PathBuf>,
     pub unmanaged_entries: Vec<PathBuf>,
     pub source_entries: Vec<PathBuf>,
+    effective_source_dir: Option<PathBuf>,
     pub selected_index: usize,
     list_scroll: usize,
     pub detail_kind: DetailKind,
@@ -312,6 +396,9 @@ pub struct App {
     staged_list_filter: Option<String>,
     staged_filter_updated_at: Option<Instant>,
     busy_tasks: usize,
+    busy_read_tasks: usize,
+    busy_mutation_tasks: usize,
+    refresh_errors: Vec<String>,
     latest_notice: Option<Notice>,
     notice_history: Vec<Notice>,
     busy_message: Option<String>,
@@ -324,9 +411,14 @@ pub struct App {
     pub should_quit: bool,
     detail_request_seq: u64,
     latest_detail_request_id: Option<u64>,
+    apply_plan_request_seq: u64,
+    latest_apply_plan_request_id: Option<u64>,
+    pending_detail: Option<PendingDetail>,
     pub home_dir: PathBuf,
     working_dir: PathBuf,
+    selected_paths: [Option<PathBuf>; 4],
     expanded_dirs: BTreeSet<PathBuf>,
+    expanded_dirs_by_view: [BTreeSet<PathBuf>; 4],
     marked_entries: BTreeSet<PathBuf>,
     batch_action: Option<Action>,
     batch_total: usize,
@@ -359,6 +451,7 @@ impl App {
             managed_entries: Vec::new(),
             unmanaged_entries: Vec::new(),
             source_entries: Vec::new(),
+            effective_source_dir: None,
             selected_index: 0,
             list_scroll: 0,
             detail_kind: DetailKind::Diff,
@@ -376,6 +469,9 @@ impl App {
             staged_list_filter: None,
             staged_filter_updated_at: None,
             busy_tasks: 0,
+            busy_read_tasks: 0,
+            busy_mutation_tasks: 0,
+            refresh_errors: Vec::new(),
             latest_notice: None,
             notice_history: Vec::new(),
             busy_message: None,
@@ -388,9 +484,14 @@ impl App {
             should_quit: false,
             detail_request_seq: 0,
             latest_detail_request_id: None,
+            apply_plan_request_seq: 0,
+            latest_apply_plan_request_id: None,
+            pending_detail: None,
             home_dir,
             working_dir,
+            selected_paths: std::array::from_fn(|_| None),
             expanded_dirs: BTreeSet::new(),
+            expanded_dirs_by_view: std::array::from_fn(|_| BTreeSet::new()),
             marked_entries: BTreeSet::new(),
             batch_action: None,
             batch_total: 0,
@@ -406,25 +507,76 @@ impl App {
     }
 
     pub fn switch_view(&mut self, view: ListView) {
+        if self.view == view {
+            self.focus = PaneFocus::List;
+            self.rebuild_visible_entries_with_selection(
+                self.selected_paths[view_slot(view)].clone(),
+            );
+            return;
+        }
+        if let Some(selected) = self.selected_path() {
+            self.selected_paths[view_slot(self.view)] = Some(selected);
+        }
+        let previous_slot = view_slot(self.view);
+        self.expanded_dirs_by_view[previous_slot] = std::mem::take(&mut self.expanded_dirs);
         self.view = view;
+        self.focus = PaneFocus::List;
+        self.expanded_dirs = std::mem::take(&mut self.expanded_dirs_by_view[view_slot(view)]);
         self.list_filter.clear();
         self.clear_staged_list_filter();
         self.invalidate_unmanaged_filter_index();
+        self.cancel_pending_detail();
+        self.invalidate_detail();
         self.clear_marked_entries();
-        self.rebuild_visible_entries_reset();
+        let preferred = self.selected_paths[view_slot(view)].clone();
+        self.rebuild_visible_entries_with_selection(preferred);
     }
 
     pub fn begin_busy_task(&mut self) {
         self.busy_tasks = self.busy_tasks.saturating_add(1);
+        self.busy_read_tasks = self.busy_read_tasks.saturating_add(1);
     }
 
     pub fn begin_busy_task_with_message(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.busy_message = Some(message.clone());
+        self.busy_tasks = self.busy_tasks.saturating_add(1);
+        self.busy_read_tasks = self.busy_read_tasks.saturating_add(1);
+    }
+
+    pub fn begin_read_task_with_message(&mut self, message: impl Into<String>) {
         self.busy_message = Some(message.into());
-        self.begin_busy_task();
+        self.busy_tasks = self.busy_tasks.saturating_add(1);
+        self.busy_read_tasks = self.busy_read_tasks.saturating_add(1);
+    }
+
+    pub fn begin_mutation_task_with_message(&mut self, message: impl Into<String>) {
+        self.busy_message = Some(message.into());
+        self.busy_tasks = self.busy_tasks.saturating_add(1);
+        self.busy_mutation_tasks = self.busy_mutation_tasks.saturating_add(1);
     }
 
     pub fn finish_busy_task(&mut self) {
+        if self.busy_mutation_tasks > 0 {
+            self.finish_mutation_task();
+        } else {
+            self.finish_read_task();
+        }
+    }
+
+    pub fn finish_read_task(&mut self) {
         self.busy_tasks = self.busy_tasks.saturating_sub(1);
+        self.busy_read_tasks = self.busy_read_tasks.saturating_sub(1);
+        self.refresh_busy_message();
+    }
+
+    pub fn finish_mutation_task(&mut self) {
+        self.busy_tasks = self.busy_tasks.saturating_sub(1);
+        self.busy_mutation_tasks = self.busy_mutation_tasks.saturating_sub(1);
+        self.refresh_busy_message();
+    }
+
+    fn refresh_busy_message(&mut self) {
         if self.busy_tasks == 0 {
             self.busy_message = None;
         }
@@ -441,6 +593,36 @@ impl App {
 
     pub fn busy_message(&self) -> Option<&str> {
         self.busy_message.as_deref()
+    }
+
+    pub fn has_mutating_work(&self) -> bool {
+        self.batch_in_progress()
+            || self
+                .pending_foreground
+                .as_ref()
+                .is_some_and(|request| !request.action.is_read_only())
+            || self.busy_mutation_tasks > 0
+    }
+
+    pub fn begin_refresh(&mut self) {
+        self.refresh_errors.clear();
+    }
+
+    pub fn note_refresh_error(&mut self, message: String) {
+        self.refresh_errors.push(message);
+    }
+
+    pub fn finish_refresh(&mut self) -> bool {
+        if self.refresh_errors.is_empty() {
+            self.set_info_notice("refresh completed");
+            true
+        } else {
+            self.set_error_notice(format!(
+                "refresh partially completed: unavailable {}",
+                self.refresh_errors.join("; ")
+            ));
+            false
+        }
     }
 
     pub fn set_notice(&mut self, tone: NoticeTone, message: impl Into<String>) {
@@ -489,14 +671,46 @@ impl App {
         source_dir: Option<PathBuf>,
         source: Vec<PathBuf>,
     ) {
-        if self.config.source_dir.is_none() {
-            self.config.source_dir = source_dir;
-        }
+        self.effective_source_dir = source_dir;
         self.status_entries = status;
         self.managed_entries = managed;
         self.unmanaged_entries = unmanaged;
         self.source_entries = source;
         self.invalidate_unmanaged_filter_index();
+    }
+
+    pub fn apply_status_refresh(&mut self, status: Vec<StatusEntry>) {
+        self.status_entries = status;
+        if self.view == ListView::Status {
+            self.retain_marks_for_status_refresh();
+            self.rebuild_visible_entries_with_selection(self.selected_paths[0].clone());
+        }
+    }
+
+    pub fn apply_managed_refresh(&mut self, managed: Vec<PathBuf>) {
+        self.managed_entries = managed;
+        if self.view == ListView::Managed {
+            self.retain_marks_for_tree_refresh(ListView::Managed);
+            self.rebuild_visible_entries_with_selection(self.selected_paths[1].clone());
+        }
+    }
+
+    pub fn apply_unmanaged_refresh(&mut self, unmanaged: Vec<PathBuf>) {
+        self.unmanaged_entries = unmanaged;
+        self.invalidate_unmanaged_filter_index();
+        if self.view == ListView::Unmanaged {
+            self.retain_marks_for_tree_refresh(ListView::Unmanaged);
+            self.rebuild_visible_entries_with_selection(self.selected_paths[2].clone());
+        }
+    }
+
+    pub fn apply_source_refresh(&mut self, source_dir: Option<PathBuf>, source: Vec<PathBuf>) {
+        self.effective_source_dir = source_dir;
+        self.source_entries = source;
+        if self.view == ListView::Source {
+            self.retain_marks_for_tree_refresh(ListView::Source);
+            self.rebuild_visible_entries_with_selection(self.selected_paths[3].clone());
+        }
     }
 
     /// Install the `.chezmoiignore` rules used when the Unmanaged tree descends
@@ -530,7 +744,7 @@ impl App {
             self.selected_index = 0;
             return;
         }
-        self.selected_index = (self.selected_index + 1) % len;
+        self.selected_index = (self.selected_index + 1).min(len - 1);
     }
 
     pub fn select_prev(&mut self) {
@@ -539,11 +753,28 @@ impl App {
             self.selected_index = 0;
             return;
         }
-        if self.selected_index == 0 {
-            self.selected_index = len - 1;
-        } else {
-            self.selected_index -= 1;
+        self.selected_index = self.selected_index.saturating_sub(1);
+    }
+
+    pub fn select_first(&mut self) {
+        self.selected_index = 0;
+    }
+
+    pub fn select_last(&mut self) {
+        self.selected_index = self.current_len().saturating_sub(1);
+    }
+
+    pub fn select_page(&mut self, delta: isize, rows: usize) {
+        let len = self.current_len();
+        if len == 0 {
+            self.selected_index = 0;
+            return;
         }
+        let rows = rows.max(1);
+        self.selected_index = self
+            .selected_index
+            .saturating_add_signed(delta.saturating_mul(rows as isize))
+            .min(len - 1);
     }
 
     pub fn current_len(&self) -> usize {
@@ -575,9 +806,22 @@ impl App {
     }
 
     pub fn current_items(&self) -> Vec<String> {
-        self.visible_entries
+        self.current_items_window(0, self.visible_entries.len())
+    }
+
+    pub fn current_items_window(&self, offset: usize, count: usize) -> Vec<String> {
+        let end = offset.saturating_add(count).min(self.visible_entries.len());
+        if offset >= end {
+            return Vec::new();
+        }
+        let statuses: std::collections::HashMap<&Path, &StatusEntry> = self
+            .status_entries
             .iter()
-            .map(|entry| self.format_visible_entry(entry))
+            .map(|status| (status.path.as_path(), status))
+            .collect();
+        self.visible_entries[offset..end]
+            .iter()
+            .map(|entry| self.format_visible_entry(entry, &statuses))
             .collect()
     }
 
@@ -635,15 +879,69 @@ impl App {
         self.marked_entries.len()
     }
 
+    pub fn marked_visible_count(&self) -> usize {
+        self.visible_entries
+            .iter()
+            .filter(|entry| self.marked_entries.contains(&entry.path))
+            .count()
+    }
+
+    fn retain_marks_for_status_refresh(&mut self) {
+        let paths: BTreeSet<PathBuf> = self
+            .status_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.marked_entries
+            .retain(|path| paths.contains(path) || !path.is_relative());
+    }
+
+    fn retain_marks_for_tree_refresh(&mut self, view: ListView) {
+        let roots: Vec<PathBuf> = match view {
+            ListView::Managed => self.managed_entries.clone(),
+            ListView::Unmanaged => self.unmanaged_entries.clone(),
+            ListView::Source => self.source_entries.clone(),
+            ListView::Status => return,
+        };
+        let base = match view {
+            ListView::Managed => self.home_dir.clone(),
+            ListView::Unmanaged => self.working_dir.clone(),
+            ListView::Source => self
+                .effective_source_dir
+                .clone()
+                .unwrap_or_else(|| self.working_dir.clone()),
+            ListView::Status => return,
+        };
+        let expandable_roots: BTreeSet<PathBuf> = roots
+            .iter()
+            .filter(|root| Self::directory_state_with_base(root, &base).can_expand)
+            .cloned()
+            .collect();
+        let ignore_loaded = self.ignore_matcher.is_some();
+        self.marked_entries.retain(|marked| match view {
+            ListView::Managed | ListView::Source => roots.contains(marked),
+            ListView::Unmanaged => {
+                let absolute = Self::resolve_with_base(marked, &base);
+                fs::symlink_metadata(absolute).is_ok()
+                    && roots.iter().any(|root| {
+                        marked == root
+                            || ignore_loaded
+                                && marked.starts_with(root)
+                                && expandable_roots.contains(root)
+                    })
+            }
+            ListView::Status => false,
+        });
+    }
+
     pub fn selected_action_targets_absolute(&self) -> Vec<PathBuf> {
         if self.marked_entries.is_empty() {
             return self.selected_absolute_path().into_iter().collect();
         }
 
-        self.visible_entries
+        self.marked_entries
             .iter()
-            .filter(|entry| self.marked_entries.contains(&entry.path))
-            .map(|entry| self.resolve_path_for_view(&entry.path, self.view))
+            .map(|path| self.resolve_path_for_view(path, self.view))
             .collect()
     }
 
@@ -748,6 +1046,20 @@ impl App {
         false
     }
 
+    pub fn toggle_selected_directory(&mut self) -> bool {
+        let Some(entry) = self.visible_entries.get(self.selected_index) else {
+            return false;
+        };
+        if !entry.can_expand {
+            return false;
+        }
+        if self.expanded_dirs.contains(&entry.path) {
+            self.collapse_selected_directory_or_parent()
+        } else {
+            self.expand_selected_directory()
+        }
+    }
+
     pub fn open_action_menu(&mut self) {
         self.modal = ModalState::ActionMenu {
             selected: 0,
@@ -756,9 +1068,14 @@ impl App {
     }
 
     pub fn open_ignore_menu(&mut self, requests: Vec<ActionRequest>) {
+        let global_only = requests
+            .iter()
+            .flat_map(|request| &request.targets)
+            .any(|target| !target.starts_with(&self.home_dir));
         self.modal = ModalState::Ignore {
             requests,
-            selected: 0,
+            selected: if global_only { 4 } else { 0 },
+            global_only,
         };
     }
 
@@ -980,6 +1297,10 @@ impl App {
         };
     }
 
+    pub fn open_confirm_apply(&mut self, request: ActionRequest, snapshot: ApplyPlanSnapshot) {
+        self.modal = ModalState::ConfirmApply { request, snapshot };
+    }
+
     pub fn open_action_preflight(&mut self, requests: Vec<ActionRequest>) {
         self.modal = ModalState::ActionPreflight {
             requests,
@@ -1047,9 +1368,15 @@ impl App {
             return false;
         }
 
+        self.invalidate_detail();
         self.list_filter = value;
         self.rebuild_visible_entries();
         true
+    }
+
+    pub fn stage_list_filter(&mut self, value: String, now: Instant) {
+        self.staged_filter_updated_at = Some(now);
+        self.staged_list_filter = Some(value);
     }
 
     pub fn apply_list_filter_immediately(&mut self, value: String) {
@@ -1057,8 +1384,32 @@ impl App {
         if self.list_filter == value {
             return;
         }
+        self.invalidate_detail();
         self.list_filter = value;
         self.rebuild_visible_entries();
+    }
+
+    pub fn advance_unmanaged_filter_scan(&mut self, now: Instant) -> bool {
+        if self.view != ListView::Unmanaged
+            || self.list_filter.trim().is_empty()
+            || self.unmanaged_filter_cache.scan_complete
+            || self.unmanaged_filter_cache.limited
+        {
+            return false;
+        }
+        let before = self.unmanaged_filter_cache.entries.len();
+        self.scan_unmanaged_filter_index_bounded(now, false);
+        let changed = self.unmanaged_filter_cache.entries.len() != before;
+        if changed {
+            self.rebuild_visible_entries();
+        }
+        changed
+    }
+
+    pub fn unmanaged_filter_incomplete(&self) -> bool {
+        self.view == ListView::Unmanaged
+            && (self.unmanaged_filter_cache.limited || !self.unmanaged_filter_cache.scan_complete)
+            && !self.list_filter.trim().is_empty()
     }
 
     pub fn log(&mut self, line: String) {
@@ -1152,6 +1503,35 @@ impl App {
                     return Some("directory add is disabled; expand and select files".to_string());
                 }
             }
+            TargetPolicy::ExistingDirectory => {
+                if targets.iter().any(|path| !path.is_dir()) {
+                    return Some(format!("{} requires a directory", action.label()));
+                }
+                if action == Action::AddDirectory
+                    && targets.iter().any(|path| !path.starts_with(&self.home_dir))
+                {
+                    return Some(
+                        "outside destination; start with --destination ... to manage this tree"
+                            .to_string(),
+                    );
+                }
+            }
+            TargetPolicy::ExistingSourceFile => {
+                let source_root = self.effective_source_dir();
+                if self.view != ListView::Source
+                    || source_root.is_none()
+                    || targets.iter().any(|path| {
+                        !source_root.is_some_and(|root| path.starts_with(root))
+                            || fs::metadata(path).is_err()
+                            || fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
+                    })
+                {
+                    return Some(format!(
+                        "{} requires a regular source file or symlink-to-file under the effective source root",
+                        action.label()
+                    ));
+                }
+            }
             TargetPolicy::IgnoreEligible => {
                 if targets.is_empty() {
                     return Some("requires a selected target".to_string());
@@ -1166,7 +1546,7 @@ impl App {
         let query = filter.trim().to_ascii_lowercase();
         let danger_filter = query.strip_prefix("danger:");
         let effective_query = danger_filter.unwrap_or(&query);
-        let mut matches: Vec<(usize, u8, u8, String)> = Action::ALL
+        let mut matches: Vec<(usize, u8, crate::action_policy::ActionGroup, String)> = Action::ALL
             .iter()
             .enumerate()
             .filter_map(|(index, action)| {
@@ -1187,12 +1567,7 @@ impl App {
                     Self::action_filter_match_rank(&label, effective_query)?
                 };
 
-                Some((
-                    index,
-                    match_rank,
-                    Self::action_section_order(*action),
-                    label,
-                ))
+                Some((index, match_rank, action.group(), label))
             })
             .collect();
 
@@ -1234,13 +1609,12 @@ impl App {
                 .collect();
         }
 
-        self.visible_entries
+        self.marked_entries
             .iter()
-            .filter(|entry| self.marked_entries.contains(&entry.path))
-            .filter_map(|entry| {
+            .filter_map(|path| {
                 self.status_entries
                     .iter()
-                    .find(|status| status.path == entry.path)
+                    .find(|status| status.path == *path)
             })
             .collect()
     }
@@ -1251,14 +1625,6 @@ impl App {
         }
 
         Self::action_visible_in_view(self.view, action)
-    }
-
-    fn action_section_order(action: Action) -> u8 {
-        if action.is_dangerous() {
-            2
-        } else {
-            u8::from(action.needs_target())
-        }
     }
 
     fn action_visible_in_view(view: ListView, action: Action) -> bool {
@@ -1368,6 +1734,7 @@ impl App {
         self.detail_target = target.map(Path::to_path_buf);
         self.detail_scroll = 0;
         self.detail_hscroll = 0;
+        self.pending_detail = None;
     }
 
     pub fn set_detail_preview(&mut self, target: &Path, origin: PreviewOrigin, content: String) {
@@ -1377,18 +1744,23 @@ impl App {
         self.detail_target = Some(target.to_path_buf());
         self.detail_scroll = 0;
         self.detail_hscroll = 0;
+        self.pending_detail = None;
     }
 
     pub fn view_context_text(&self) -> String {
-        let (label, path) = match self.view {
-            ListView::Status | ListView::Managed => ("dest", &self.home_dir),
-            ListView::Unmanaged => ("cwd", &self.working_dir),
-            ListView::Source => (
-                "source",
-                self.config.source_dir.as_ref().unwrap_or(&self.working_dir),
+        match self.view {
+            ListView::Status | ListView::Managed => format!("dest={}", self.home_dir.display()),
+            ListView::Unmanaged => format!("cwd={}", self.working_dir.display()),
+            ListView::Source => self.effective_source_dir.as_ref().map_or_else(
+                || {
+                    self.config.source_dir.as_ref().map_or_else(
+                        || "source=(unresolved)".to_string(),
+                        |source| format!("source={} (unresolved)", source.display()),
+                    )
+                },
+                |source| format!("source={}", source.display()),
             ),
-        };
-        format!("{label}={}", path.display())
+        }
     }
 
     pub fn preview_origin_for_view(&self, view: ListView) -> PreviewOrigin {
@@ -1399,66 +1771,26 @@ impl App {
         }
     }
 
-    pub(crate) fn build_apply_plan_from_status(
-        &self,
-        status: &[StatusEntry],
-        target: Option<&Path>,
-    ) -> ApplyPlan {
-        let mut plan = ApplyPlan::default();
-        for entry in status {
-            if let Some(target) = target
-                && !self.status_entry_matches_apply_target(entry.path.as_path(), target)
-            {
-                continue;
-            }
-
-            match entry.actual_vs_target {
-                ChangeKind::Added => plan.added.push(entry.path.clone()),
-                ChangeKind::Modified => plan.modified.push(entry.path.clone()),
-                ChangeKind::Deleted => plan.deleted.push(entry.path.clone()),
-                ChangeKind::Run => plan.run.push(entry.path.clone()),
-                ChangeKind::Unknown(_) => plan.unknown.push(entry.path.clone()),
-                ChangeKind::None => {}
-            }
-        }
-        plan.sort_groups();
-        plan
+    pub fn effective_source_dir(&self) -> Option<&Path> {
+        self.effective_source_dir.as_deref()
     }
 
-    #[allow(dead_code)]
-    fn build_apply_plan_for_target(&self, target: Option<&Path>) -> ApplyPlan {
-        self.build_apply_plan_from_status(&self.status_entries, target)
+    pub fn original_source_dir(&self) -> Option<&Path> {
+        self.config.source_dir.as_deref()
     }
 
-    pub(crate) fn build_apply_plan_snapshot_from_status(
-        &self,
-        status: &[StatusEntry],
-        target: Option<&Path>,
-        diff_fingerprint: u64,
-    ) -> ApplyPlanSnapshot {
-        ApplyPlanSnapshot {
-            plan: self.build_apply_plan_from_status(status, target),
-            diff_fingerprint,
-        }
+    pub fn begin_apply_plan_request(&mut self) -> u64 {
+        self.apply_plan_request_seq = self.apply_plan_request_seq.wrapping_add(1).max(1);
+        self.latest_apply_plan_request_id = Some(self.apply_plan_request_seq);
+        self.apply_plan_request_seq
     }
 
-    fn status_entry_matches_apply_target(&self, entry_path: &Path, target: &Path) -> bool {
-        let absolute = self.resolve_path_for_view(entry_path, ListView::Status);
-        target == entry_path || target == absolute || absolute.starts_with(target)
+    pub fn accepts_apply_plan_request(&self, request_id: u64) -> bool {
+        self.latest_apply_plan_request_id == Some(request_id)
     }
 
-    #[allow(dead_code)]
-    pub fn open_apply_plan(&mut self, request: ActionRequest) {
-        let plan = self.build_apply_plan_for_target(request.target.as_deref());
-        let snapshot = ApplyPlanSnapshot {
-            plan,
-            diff_fingerprint: 0,
-        };
-        self.modal = ModalState::ApplyPlan {
-            request,
-            snapshot,
-            scroll: 0,
-        };
+    pub fn invalidate_apply_plan_request(&mut self) {
+        self.latest_apply_plan_request_id = None;
     }
 
     pub fn open_apply_plan_with_snapshot(
@@ -1478,6 +1810,70 @@ impl App {
         self.detail_text.clear();
         self.detail_target = None;
         self.detail_scroll = 0;
+        self.detail_hscroll = 0;
+    }
+
+    pub fn invalidate_detail(&mut self) {
+        self.cancel_pending_detail();
+        self.detail_request_seq = self.detail_request_seq.wrapping_add(1).max(1);
+        self.latest_detail_request_id = None;
+        self.clear_detail();
+    }
+
+    pub fn prepare_detail_for_selection(&mut self) {
+        self.invalidate_detail();
+        if let Some(target) = self.selected_path() {
+            self.detail_title = format!("Loading: {}", target.display());
+        }
+    }
+
+    pub(crate) fn stage_detail_request(&mut self, request: DetailRequest, now: Instant) {
+        if self.detail_kind == request.kind
+            && self.detail_target.as_ref() == Some(&request.target)
+            && self.pending_detail.is_none()
+        {
+            return;
+        }
+        if self
+            .pending_detail
+            .as_ref()
+            .is_some_and(|pending| pending.request == request)
+        {
+            return;
+        }
+        self.pending_detail = Some(PendingDetail {
+            request,
+            due_at: now + Duration::from_millis(AUTO_DETAIL_DEBOUNCE_MS),
+        });
+    }
+
+    pub(crate) fn cancel_pending_detail(&mut self) {
+        self.pending_detail = None;
+    }
+
+    pub fn pending_detail_due_at(&self) -> Option<Instant> {
+        self.pending_detail.as_ref().map(|pending| pending.due_at)
+    }
+
+    pub fn take_due_detail_task(&mut self, now: Instant) -> Option<BackendTask> {
+        let pending = self.pending_detail.as_ref()?;
+        if now < pending.due_at {
+            return None;
+        }
+        let request = self.pending_detail.take()?.request;
+        let request_id = self.begin_detail_request();
+        Some(match request.kind {
+            DetailKind::Diff => BackendTask::LoadDiff {
+                request_id,
+                target: Some(request.absolute),
+            },
+            DetailKind::Preview => BackendTask::LoadPreview {
+                request_id,
+                target: request.target,
+                absolute: request.absolute,
+                origin: request.origin,
+            },
+        })
     }
 
     pub fn begin_detail_request(&mut self) -> u64 {
@@ -1495,7 +1891,9 @@ impl App {
     }
 
     fn rebuild_visible_entries_with_selection(&mut self, preferred: Option<PathBuf>) {
-        let previous = preferred.or_else(|| self.selected_path());
+        let previous = preferred
+            .or_else(|| self.selected_path())
+            .or_else(|| self.selected_paths[view_slot(self.view)].clone());
         let filtering = !self.list_filter.trim().is_empty();
 
         let entries = if filtering {
@@ -1505,22 +1903,17 @@ impl App {
         };
 
         self.visible_entries = entries;
-        let visible_paths: HashSet<PathBuf> = self
-            .visible_entries
-            .iter()
-            .map(|entry| entry.path.clone())
-            .collect();
-        self.marked_entries
-            .retain(|path| visible_paths.contains(path));
 
         if let Some(target) = previous
             && let Some(idx) = self.visible_entries.iter().position(|e| e.path == target)
         {
             self.selected_index = idx;
+            self.selected_paths[view_slot(self.view)] = Some(target);
             return;
         }
 
         self.sync_selection_bounds();
+        self.selected_paths[view_slot(self.view)] = self.selected_path();
     }
 
     fn build_unfiltered_visible_entries(&self) -> Vec<VisibleEntry> {
@@ -1757,128 +2150,66 @@ impl App {
         }
     }
 
-    fn unmanaged_filter_source_paths(&mut self, query: &str) -> Vec<PathBuf> {
-        self.unmanaged_filter_source_paths_with_limits(
-            query,
-            INITIAL_UNMANAGED_FILTER_INDEX_ENTRIES,
-            UNMANAGED_FILTER_INDEX_STEP,
-            MAX_UNMANAGED_FILTER_INDEX_ENTRIES,
-        )
-    }
-
-    fn unmanaged_filter_source_paths_live(&mut self, query: &str) -> Vec<PathBuf> {
-        self.unmanaged_filter_source_paths_with_limits_and_options(
-            query,
-            LIVE_FILTER_INITIAL_UNMANAGED_INDEX_ENTRIES,
-            LIVE_FILTER_UNMANAGED_INDEX_STEP,
-            LIVE_FILTER_MAX_UNMANAGED_INDEX_ENTRIES,
-            1,
-            false,
-        )
-    }
-
-    fn unmanaged_filter_source_paths_with_limits(
-        &mut self,
-        query: &str,
-        initial_limit: usize,
-        step: usize,
-        max_limit: usize,
-    ) -> Vec<PathBuf> {
-        self.unmanaged_filter_source_paths_with_limits_and_options(
-            query,
-            initial_limit,
-            step,
-            max_limit,
-            usize::MAX,
-            true,
-        )
-    }
-
-    fn unmanaged_filter_source_paths_with_limits_and_options(
-        &mut self,
-        query: &str,
-        initial_limit: usize,
-        step: usize,
-        max_limit: usize,
-        scan_rounds: usize,
-        allow_fallback_scan: bool,
-    ) -> Vec<PathBuf> {
-        let initial = initial_limit.min(max_limit).max(1);
-        self.scan_unmanaged_filter_index_to(initial);
-
-        let normalized_query = query.trim().to_ascii_lowercase();
-        if normalized_query.is_empty() {
-            return self.unmanaged_filter_cache.entries.clone();
-        }
-
-        let mut current_limit = self.unmanaged_filter_cache.entries.len().max(initial);
-        let mut rounds = 0usize;
-        while !self.unmanaged_filter_cache.scan_complete
-            && !self.unmanaged_index_has_match(&normalized_query)
-            && current_limit < max_limit
-            && rounds < scan_rounds
-        {
-            current_limit = (current_limit + step).min(max_limit);
-            self.scan_unmanaged_filter_index_to(current_limit);
-            rounds += 1;
-        }
-
-        if self.unmanaged_filter_cache.scan_complete
-            || self.unmanaged_index_has_match(&normalized_query)
-        {
-            return self.unmanaged_filter_cache.entries.clone();
-        }
-
-        if allow_fallback_scan && current_limit >= max_limit {
-            let mut source_paths = self.unmanaged_filter_cache.entries.clone();
-            source_paths.extend(self.fallback_unmanaged_matches_outside_index(&normalized_query));
-            return source_paths;
-        }
-
+    fn unmanaged_filter_source_paths(&mut self, _query: &str) -> Vec<PathBuf> {
+        self.scan_unmanaged_filter_index_bounded(Instant::now(), false);
         self.unmanaged_filter_cache.entries.clone()
     }
 
-    fn unmanaged_index_has_match(&self, query: &str) -> bool {
-        self.unmanaged_filter_cache
-            .entries
-            .iter()
-            .any(|path| path.to_string_lossy().to_ascii_lowercase().contains(query))
+    fn unmanaged_filter_source_paths_live(&mut self, _query: &str) -> Vec<PathBuf> {
+        self.scan_unmanaged_filter_index_bounded(Instant::now(), false);
+        self.unmanaged_filter_cache.entries.clone()
     }
 
-    fn fallback_unmanaged_matches_outside_index(&self, query: &str) -> Vec<PathBuf> {
-        if query.is_empty() || self.unmanaged_filter_cache.scan_complete {
-            return Vec::new();
-        }
-
-        let mut frontier = self.unmanaged_filter_cache.frontier.clone();
-        let mut seen = self.unmanaged_filter_cache.seen.clone();
-        let mut matches = Vec::new();
-
-        while let Some(path) = frontier.pop_front() {
-            if !seen.insert(path.clone()) {
+    #[cfg(test)]
+    fn unmanaged_filter_source_paths_with_limits(
+        &mut self,
+        _query: &str,
+        scan_limit: usize,
+        _step: usize,
+        max_limit: usize,
+    ) -> Vec<PathBuf> {
+        self.ensure_unmanaged_filter_index_seeded();
+        let max_limit = max_limit.max(1);
+        let mut added = 0usize;
+        while added < scan_limit
+            && self.unmanaged_filter_cache.entries.len() < max_limit
+            && !self.unmanaged_filter_cache.scan_complete
+        {
+            let Some(path) = self.unmanaged_filter_cache.frontier.pop_front() else {
+                self.unmanaged_filter_cache.scan_complete = true;
+                break;
+            };
+            if !self.unmanaged_filter_cache.seen.insert(path.clone()) {
                 continue;
             }
-
-            if Self::tree_entry_name_matches_query(path.as_path(), query) {
-                matches.push(path.clone());
-            }
-
+            self.unmanaged_filter_cache.entries.push(path.clone());
+            added += 1;
             let directory = self.path_directory_state_for_view(&path, ListView::Unmanaged);
             if directory.can_expand {
-                frontier.extend(self.read_children(&path));
+                self.unmanaged_filter_cache
+                    .frontier
+                    .extend(self.read_children(&path));
             }
         }
-
-        matches
+        if self.unmanaged_filter_cache.frontier.is_empty() {
+            self.unmanaged_filter_cache.scan_complete = true;
+        } else if self.unmanaged_filter_cache.entries.len() >= max_limit {
+            self.unmanaged_filter_cache.limited = true;
+        }
+        self.unmanaged_filter_cache.entries.clone()
     }
 
-    fn scan_unmanaged_filter_index_to(&mut self, limit: usize) {
+    fn scan_unmanaged_filter_index_bounded(&mut self, started: Instant, rebuild: bool) {
         self.ensure_unmanaged_filter_index_seeded();
-        if self.unmanaged_filter_cache.scan_complete {
+        if self.unmanaged_filter_cache.scan_complete || self.unmanaged_filter_cache.limited {
             return;
         }
 
-        while self.unmanaged_filter_cache.entries.len() < limit {
+        let mut added = 0usize;
+        while added < UNMANAGED_FILTER_SCAN_ENTRY_CAP
+            && self.unmanaged_filter_cache.entries.len() < MAX_UNMANAGED_FILTER_INDEX_ENTRIES
+            && started.elapsed() < UNMANAGED_FILTER_SCAN_BUDGET
+        {
             let Some(path) = self.unmanaged_filter_cache.frontier.pop_front() else {
                 self.unmanaged_filter_cache.scan_complete = true;
                 break;
@@ -1888,6 +2219,7 @@ impl App {
             }
 
             self.unmanaged_filter_cache.entries.push(path.clone());
+            added += 1;
             let directory = self.path_directory_state_for_view(&path, ListView::Unmanaged);
             if directory.can_expand {
                 self.unmanaged_filter_cache
@@ -1898,6 +2230,11 @@ impl App {
 
         if self.unmanaged_filter_cache.frontier.is_empty() {
             self.unmanaged_filter_cache.scan_complete = true;
+        } else if self.unmanaged_filter_cache.entries.len() >= MAX_UNMANAGED_FILTER_INDEX_ENTRIES {
+            self.unmanaged_filter_cache.limited = true;
+        }
+        if rebuild {
+            self.rebuild_visible_entries();
         }
     }
 
@@ -2269,6 +2606,9 @@ impl App {
     }
 
     fn read_children(&self, parent: &Path) -> Vec<PathBuf> {
+        if self.view == ListView::Unmanaged && self.ignore_matcher.is_none() {
+            return Vec::new();
+        }
         let abs_parent = Self::resolve_with_base(parent, &self.working_dir);
         let Ok(read_dir) = fs::read_dir(abs_parent) else {
             return Vec::new();
@@ -2322,7 +2662,12 @@ impl App {
         // Ignore patterns are relative to the destination directory, while the
         // Unmanaged view is relative to the working directory; the two differ
         // whenever chezmoi-tui is launched below the destination.
-        let Ok(rel) = absolute.strip_prefix(&self.home_dir) else {
+        let ignore_base = if self.working_dir.starts_with(&self.home_dir) {
+            &self.home_dir
+        } else {
+            &self.working_dir
+        };
+        let Ok(rel) = absolute.strip_prefix(ignore_base) else {
             return false;
         };
         let rel = rel
@@ -2338,12 +2683,16 @@ impl App {
         matcher.is_ignored(&rel)
     }
 
-    fn format_visible_entry(&self, entry: &VisibleEntry) -> String {
+    fn format_visible_entry(
+        &self,
+        entry: &VisibleEntry,
+        statuses: &std::collections::HashMap<&Path, &StatusEntry>,
+    ) -> String {
         let marked = self.marked_entries.contains(&entry.path);
         if self.view == ListView::Status {
             let mut label = String::new();
             label.push_str(if marked { "* " } else { "  " });
-            if let Some(status) = self.status_entries.iter().find(|s| s.path == entry.path) {
+            if let Some(status) = statuses.get(entry.path.as_path()) {
                 label.push(status.actual_vs_state.as_symbol());
                 label.push(status.actual_vs_target.as_symbol());
             } else {
@@ -2457,7 +2806,10 @@ impl App {
         let base = match view {
             ListView::Status | ListView::Managed => &self.home_dir,
             ListView::Unmanaged => &self.working_dir,
-            ListView::Source => self.config.source_dir.as_ref().unwrap_or(&self.working_dir),
+            ListView::Source => self
+                .effective_source_dir
+                .as_ref()
+                .unwrap_or(&self.working_dir),
         };
         Self::resolve_with_base(path, base)
     }
@@ -2474,7 +2826,18 @@ impl App {
         if self.list_filter.trim().is_empty() {
             return None;
         }
-        Some(format!("{} matched", self.current_len()))
+        let restriction = if self.view == ListView::Unmanaged && self.ignore_matcher.is_none() {
+            Some("descendant search disabled")
+        } else if self.unmanaged_filter_incomplete() {
+            Some("search incomplete")
+        } else {
+            None
+        };
+        Some(format!(
+            "{} matched{}",
+            self.current_len(),
+            restriction.map_or_else(String::new, |reason| format!(", {reason}"))
+        ))
     }
 
     pub fn debug_context_text(&self) -> String {
@@ -2534,25 +2897,64 @@ impl App {
 }
 
 fn source_attr_markers(path: &Path) -> String {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
     let mut attrs = Vec::new();
-    if name.ends_with(".tmpl") {
-        attrs.push("tmpl");
-    }
     for component in path
         .components()
         .filter_map(|component| component.as_os_str().to_str())
     {
-        for part in component.split('_') {
-            match part {
-                "private" => attrs.push("priv"),
-                "executable" => attrs.push("exec"),
-                "encrypted" => attrs.push("enc"),
-                _ => {}
+        let mut name = component;
+        while !name.is_empty() {
+            let Some((prefix, abbreviation)) = [
+                ("after_", "after"),
+                ("before_", "before"),
+                ("create_", "create"),
+                ("dot_", "dot"),
+                ("empty_", "empty"),
+                ("encrypted_", "enc"),
+                ("external_", "external"),
+                ("exact_", "exact"),
+                ("executable_", "exec"),
+                ("literal_", "literal"),
+                ("modify_", "modify"),
+                ("once_", "once"),
+                ("onchange_", "onchange"),
+                ("private_", "priv"),
+                ("readonly_", "readonly"),
+                ("remove_", "remove"),
+                ("run_", "run"),
+                ("symlink_", "symlink"),
+            ]
+            .into_iter()
+            .find(|(prefix, _)| name.starts_with(prefix)) else {
+                break;
+            };
+            attrs.push(abbreviation);
+            name = &name[prefix.len()..];
+            if prefix == "literal_" {
+                break;
             }
+        }
+
+        let mut suffix_name = name;
+        loop {
+            if let Some(stripped) = suffix_name.strip_suffix(".tmpl") {
+                attrs.push("tmpl");
+                suffix_name = stripped;
+                continue;
+            }
+            if suffix_name.strip_suffix(".literal").is_some() {
+                attrs.push("literal");
+                break;
+            }
+            if let Some(stripped) = suffix_name
+                .strip_suffix(".age")
+                .or_else(|| suffix_name.strip_suffix(".asc"))
+            {
+                attrs.push("enc");
+                suffix_name = stripped;
+                continue;
+            }
+            break;
         }
     }
     attrs.sort_unstable();
@@ -2591,6 +2993,15 @@ fn compact_path_for_list(path: &Path) -> String {
         .rev()
         .collect();
     format!("{prefix}...{suffix}")
+}
+
+fn view_slot(view: ListView) -> usize {
+    match view {
+        ListView::Status => 0,
+        ListView::Managed => 1,
+        ListView::Unmanaged => 2,
+        ListView::Source => 3,
+    }
 }
 
 #[cfg(test)]
@@ -2710,6 +3121,8 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         assert!(
@@ -2793,6 +3206,8 @@ mod tests {
         app.working_dir = temp_root.clone();
         app.managed_entries = vec![PathBuf::from(".config/managed.lua")];
         app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         assert!(app.expand_selected_directory());
@@ -2939,8 +3354,9 @@ mod tests {
         );
         assert!(app.set_ignore_patterns(vec!["[".to_string()]).is_err());
         assert!(app.ignore_matcher.is_none());
+        assert!(app.current_items().iter().any(|line| line.contains("Foo/")));
         assert!(
-            app.unmanaged_filter_source_paths("secret")
+            !app.unmanaged_filter_source_paths("secret")
                 .contains(&PathBuf::from("Foo/secret"))
         );
     }
@@ -3035,6 +3451,8 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         let items = app.current_items();
@@ -3054,6 +3472,8 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".cache"), PathBuf::from(".codex")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         let items = app.current_items();
@@ -3077,6 +3497,8 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         let indexed = app.unmanaged_filter_source_paths_with_limits("", 3, 3, 9);
@@ -3086,7 +3508,7 @@ mod tests {
     }
 
     #[test]
-    fn unmanaged_filter_index_expands_limit_until_query_match() {
+    fn unmanaged_filter_index_scan_is_bounded_without_query_fallback() {
         let temp = tempfile::tempdir().expect("tempdir");
         let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("a")).expect("create a");
@@ -3099,18 +3521,23 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         let indexed = app.unmanaged_filter_source_paths_with_limits("target-skill", 2, 2, 8);
+        assert_eq!(indexed.len(), 2);
+        assert!(!app.unmanaged_filter_cache.limited);
+        assert!(!app.unmanaged_filter_cache.scan_complete);
         assert!(
-            indexed
+            !indexed
                 .iter()
                 .any(|path| path.ends_with(Path::new("c/target-skill.md")))
         );
     }
 
     #[test]
-    fn unmanaged_filter_index_falls_back_when_max_limit_is_reached() {
+    fn unmanaged_filter_index_reports_incomplete_at_scan_limit() {
         let temp = tempfile::tempdir().expect("tempdir");
         let temp_root = temp.path().to_path_buf();
         fs::create_dir_all(temp_root.join("a")).expect("create a");
@@ -3123,13 +3550,22 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
-        let indexed = app.unmanaged_filter_source_paths_with_limits("target-skill", 1, 1, 2);
+        let indexed = app.unmanaged_filter_source_paths_with_limits("target-skill", 1, 1, 1);
+        assert_eq!(indexed.len(), 1);
+        assert!(app.unmanaged_filter_cache.limited);
         assert!(
-            indexed
+            !indexed
                 .iter()
                 .any(|path| path.ends_with(Path::new("c/target-skill.md")))
+        );
+        app.apply_list_filter_immediately("target-skill".to_string());
+        assert!(
+            app.current_filter_summary()
+                .is_some_and(|summary| summary.contains("search incomplete"))
         );
     }
 
@@ -3161,6 +3597,8 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from("skills")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         app.apply_list_filter_immediately("skill.md".to_string());
@@ -3351,7 +3789,7 @@ mod tests {
         app.switch_view(ListView::Unmanaged);
         assert_eq!(app.view_context_text(), "cwd=/tmp/work");
         app.switch_view(ListView::Source);
-        assert_eq!(app.view_context_text(), "source=/tmp/source");
+        assert_eq!(app.view_context_text(), "source=/tmp/source (unresolved)");
     }
 
     #[test]
@@ -3396,11 +3834,17 @@ mod tests {
             },
         ];
 
-        app.open_apply_plan(ActionRequest {
+        let request = ActionRequest {
             action: Action::Apply,
-            target: None,
+            targets: Vec::new(),
             chattr_attrs: None,
-        });
+        };
+        let snapshot = ApplyPlanSnapshot {
+            targets: Vec::new(),
+            plan: build_apply_plan(&app.status_entries, &app.home_dir, &[]),
+            diff_fingerprint: 0,
+        };
+        app.open_apply_plan_with_snapshot(request, snapshot);
 
         let ModalState::ApplyPlan { snapshot, .. } = &app.modal else {
             panic!("expected apply plan modal");
@@ -3432,17 +3876,64 @@ mod tests {
             },
         ];
 
-        app.open_apply_plan(ActionRequest {
+        let targets = vec![temp_root.join(".a")];
+        let request = ActionRequest {
             action: Action::Apply,
-            target: Some(temp_root.join(".a")),
+            targets: targets.clone(),
             chattr_attrs: None,
-        });
+        };
+        let snapshot = ApplyPlanSnapshot {
+            targets: targets.clone(),
+            plan: build_apply_plan(&app.status_entries, &app.home_dir, &targets),
+            diff_fingerprint: 0,
+        };
+        app.open_apply_plan_with_snapshot(request, snapshot);
 
         let ModalState::ApplyPlan { snapshot, .. } = &app.modal else {
             panic!("expected apply plan modal");
         };
         assert_eq!(snapshot.plan.total(), 1);
         assert_eq!(snapshot.plan.modified, vec![PathBuf::from(".a")]);
+    }
+
+    #[test]
+    fn directory_apply_plan_includes_descendants_scripts_and_excludes_siblings() {
+        let destination = PathBuf::from("/tmp/home");
+        let status = vec![
+            StatusEntry {
+                path: PathBuf::from("config"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from("config/new"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Added,
+            },
+            StatusEntry {
+                path: PathBuf::from("config/deleted"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Deleted,
+            },
+            StatusEntry {
+                path: PathBuf::from("config/run_once"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Run,
+            },
+            StatusEntry {
+                path: PathBuf::from("config-other/file"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+
+        let plan = build_apply_plan(&status, &destination, &[destination.join("config")]);
+
+        assert_eq!(plan.modified, vec![PathBuf::from("config")]);
+        assert_eq!(plan.added, vec![PathBuf::from("config/new")]);
+        assert_eq!(plan.deleted, vec![PathBuf::from("config/deleted")]);
+        assert_eq!(plan.run, vec![PathBuf::from("config/run_once")]);
+        assert!(!plan.modified.contains(&PathBuf::from("config-other/file")));
     }
 
     #[test]
@@ -3502,7 +3993,7 @@ mod tests {
         let app = App::new(config);
         let request = ActionRequest {
             action: Action::Purge,
-            target: None,
+            targets: Vec::new(),
             chattr_attrs: None,
         };
 
@@ -3560,18 +4051,28 @@ mod tests {
             got,
             vec![
                 Action::Apply,
+                Action::Init,
+                Action::Update,
+                Action::Edit,
+                Action::Forget,
+                Action::GitDiff,
+                Action::GitLog,
+                Action::GitPull,
+                Action::GitStatus,
+                Action::Cat,
                 Action::Data,
                 Action::DebugContext,
+                Action::DiffAll,
                 Action::Doctor,
+                Action::DumpConfig,
+                Action::ExternalDiff,
+                Action::Ignored,
+                Action::Verify,
+                Action::Chattr,
                 Action::EditConfig,
                 Action::EditConfigTemplate,
                 Action::EditIgnore,
-                Action::ExternalDiff,
                 Action::OpenSourceDir,
-                Action::Update,
-                Action::Chattr,
-                Action::Edit,
-                Action::Forget,
                 Action::Destroy,
                 Action::Purge,
             ]
@@ -3812,6 +4313,8 @@ mod tests {
         let mut app = App::new(AppConfig::default());
         app.working_dir = temp_root.clone();
         app.unmanaged_entries = vec![PathBuf::from(".config")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
         app.switch_view(ListView::Unmanaged);
 
         app.apply_list_filter_immediately("init.lua".to_string());
@@ -3974,7 +4477,10 @@ mod tests {
             ..AppConfig::default()
         };
         let mut app = App::new(config);
-        app.source_entries = vec![PathBuf::from("dot_config/nvim/init.lua")];
+        app.apply_source_refresh(
+            Some(temp_root.clone()),
+            vec![PathBuf::from("dot_config/nvim/init.lua")],
+        );
         app.switch_view(ListView::Source);
 
         let items = app.current_items();
@@ -4016,5 +4522,323 @@ mod tests {
         app.selected_index = 5;
         app.sync_list_scroll(5);
         assert_eq!(app.list_scroll(), 5);
+    }
+
+    #[test]
+    fn source_refresh_keeps_original_and_effective_roots_separate() {
+        let original = PathBuf::from("/configured/source");
+        let effective = PathBuf::from("/configured/source/nested");
+        let config = AppConfig {
+            source_dir: Some(original.clone()),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+
+        app.apply_source_refresh(Some(effective.clone()), vec![PathBuf::from("private_file")]);
+        app.switch_view(ListView::Source);
+
+        assert_eq!(app.original_source_dir(), Some(original.as_path()));
+        assert_eq!(app.effective_source_dir(), Some(effective.as_path()));
+        assert_eq!(
+            app.view_context_text(),
+            format!("source={}", effective.display())
+        );
+    }
+
+    #[test]
+    fn current_items_window_only_returns_requested_slice() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![
+            PathBuf::from("alpha"),
+            PathBuf::from("beta"),
+            PathBuf::from("gamma"),
+        ];
+        app.switch_view(ListView::Managed);
+
+        let window = app.current_items_window(1, 1);
+        assert_eq!(window.len(), 1);
+        assert!(window[0].contains("beta"));
+        assert!(!window[0].contains("alpha"));
+        assert!(!window[0].contains("gamma"));
+        assert!(app.current_items_window(3, 4).is_empty());
+        assert!(app.current_items_window(1, 0).is_empty());
+    }
+
+    #[test]
+    fn marks_survive_filter_and_targets_include_hidden_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp.path().to_path_buf();
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".alpha"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".beta"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(ListView::Status);
+        app.toggle_selected_mark();
+        app.select_next();
+        app.toggle_selected_mark();
+
+        app.apply_list_filter_immediately("alpha".to_string());
+
+        assert_eq!(app.marked_count(), 2);
+        assert_eq!(app.marked_visible_count(), 1);
+        let targets = app.selected_action_targets_absolute();
+        assert!(targets.contains(&temp.path().join(".alpha")));
+        assert!(targets.contains(&temp.path().join(".beta")));
+    }
+
+    #[test]
+    fn marks_survive_collapse_until_current_view_refresh_removes_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("parent");
+        fs::create_dir_all(&parent).expect("create parent");
+        fs::write(parent.join("child"), "child").expect("write child");
+
+        let mut app = App::new(AppConfig::default());
+        app.home_dir = temp.path().to_path_buf();
+        app.managed_entries = vec![PathBuf::from("parent"), PathBuf::from("parent/child")];
+        app.switch_view(ListView::Managed);
+        assert!(app.expand_selected_directory());
+        app.select_next();
+        app.toggle_selected_mark();
+        assert!(app.collapse_selected_directory_or_parent());
+        assert_eq!(app.marked_count(), 1);
+
+        app.apply_managed_refresh(vec![PathBuf::from("other")]);
+        assert_eq!(app.marked_count(), 0);
+    }
+
+    #[test]
+    fn component_refresh_does_not_prune_marks_from_another_view() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".alpha"),
+            actual_vs_state: ChangeKind::None,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.switch_view(ListView::Status);
+        app.toggle_selected_mark();
+
+        app.apply_managed_refresh(vec![PathBuf::from("unrelated")]);
+
+        assert_eq!(app.marked_count(), 1);
+    }
+
+    #[test]
+    fn selected_path_is_preserved_per_view() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
+        app.status_entries = vec![
+            StatusEntry {
+                path: PathBuf::from(".x"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+            StatusEntry {
+                path: PathBuf::from(".y"),
+                actual_vs_state: ChangeKind::None,
+                actual_vs_target: ChangeKind::Modified,
+            },
+        ];
+        app.switch_view(ListView::Managed);
+        app.select_next();
+        assert_eq!(app.selected_path(), Some(PathBuf::from("b")));
+
+        app.switch_view(ListView::Status);
+        app.select_next();
+        assert_eq!(app.selected_path(), Some(PathBuf::from(".y")));
+
+        app.switch_view(ListView::Managed);
+        assert_eq!(app.selected_path(), Some(PathBuf::from("b")));
+    }
+
+    #[test]
+    fn source_attr_markers_cover_documented_attributes() {
+        let path = Path::new(
+            "external_exact_private_readonly_dot_dir/create_encrypted_private_readonly_empty_executable_dot_create.tmpl/encrypted_private_readonly_empty_executable_dot_file.tmpl/modify_encrypted_private_readonly_executable_dot_modify.tmpl/remove_dot_old/run_once_onchange_before_after_script.tmpl/symlink_dot_link.tmpl",
+        );
+
+        let markers = source_attr_markers(path);
+        for marker in [
+            "after", "before", "create", "dot", "empty", "enc", "exact", "exec", "external",
+            "modify", "once", "onchange", "priv", "readonly", "remove", "run", "symlink", "tmpl",
+        ] {
+            assert!(markers.contains(marker), "missing {marker} in {markers}");
+        }
+    }
+
+    #[test]
+    fn source_attr_markers_respect_literal_stops() {
+        assert_eq!(
+            source_attr_markers(Path::new("literal_private_dot_user.tmpl")),
+            "{literal,tmpl}"
+        );
+        assert_eq!(
+            source_attr_markers(Path::new("private_dot_user.tmpl.literal")),
+            "{dot,literal,priv}"
+        );
+    }
+
+    #[test]
+    fn source_attr_markers_ignore_attribute_substrings() {
+        assert_eq!(source_attr_markers(Path::new("my_private_notes")), "");
+        assert_eq!(source_attr_markers(Path::new("dotfiles.template")), "");
+    }
+
+    #[test]
+    fn unmanaged_without_ignore_rules_fails_closed_for_descendants() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("Foo")).expect("create Foo");
+        fs::write(temp.path().join("Foo/secret"), "secret").expect("write secret");
+
+        let mut app = App::new(AppConfig::default());
+        app.working_dir = temp.path().to_path_buf();
+        app.unmanaged_entries = vec![PathBuf::from("Foo")];
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.current_items().iter().any(|line| line.contains("Foo/")));
+        assert!(app.expand_selected_directory());
+        assert!(
+            !app.current_items()
+                .iter()
+                .any(|line| line.contains("secret"))
+        );
+        let search_paths = app.unmanaged_filter_source_paths("secret");
+        assert!(search_paths.contains(&PathBuf::from("Foo")));
+        assert!(!search_paths.contains(&PathBuf::from("Foo/secret")));
+
+        app.apply_list_filter_immediately("secret".to_string());
+        assert!(
+            app.current_filter_summary()
+                .is_some_and(|summary| summary.contains("descendant search disabled"))
+        );
+    }
+
+    #[test]
+    fn unmanaged_ignore_base_is_working_dir_outside_destination() {
+        let destination = tempfile::tempdir().expect("destination");
+        let working = tempfile::tempdir().expect("working");
+        fs::create_dir_all(working.path().join("cache")).expect("create cache");
+        fs::write(working.path().join("cache/token"), "secret").expect("write token");
+        fs::write(working.path().join("cache/notes"), "notes").expect("write notes");
+
+        let config = AppConfig {
+            destination_dir: Some(destination.path().to_path_buf()),
+            working_dir: working.path().to_path_buf(),
+            ..AppConfig::default()
+        };
+        let mut app = App::new(config);
+        app.unmanaged_entries = vec![PathBuf::from("cache")];
+        app.set_ignore_patterns(vec!["cache/token".to_string()])
+            .expect("valid ignore pattern");
+        app.switch_view(ListView::Unmanaged);
+
+        assert!(app.expand_selected_directory());
+        let items = app.current_items();
+        assert!(items.iter().any(|line| line.contains("notes")));
+        assert!(!items.iter().any(|line| line.contains("token")));
+    }
+
+    #[test]
+    fn detail_stage_dedupes_same_target_without_resetting_deadline() {
+        let mut app = App::new(AppConfig::default());
+        let started = Instant::now();
+        let request = DetailRequest {
+            target: PathBuf::from("a"),
+            absolute: PathBuf::from("/tmp/a"),
+            kind: DetailKind::Preview,
+            origin: PreviewOrigin::Destination,
+        };
+        app.stage_detail_request(request.clone(), started);
+        let first_due = app.pending_detail_due_at().expect("pending detail");
+
+        app.stage_detail_request(request, started + Duration::from_millis(50));
+
+        assert_eq!(app.pending_detail_due_at(), Some(first_due));
+        assert!(app.take_due_detail_task(first_due).is_some());
+        assert!(app.take_due_detail_task(first_due).is_none());
+    }
+
+    #[test]
+    fn pane_focus_reverses_in_opposite_order() {
+        assert_eq!(PaneFocus::List.prev(), PaneFocus::Log);
+        assert_eq!(PaneFocus::Detail.prev(), PaneFocus::List);
+        assert_eq!(PaneFocus::Log.prev(), PaneFocus::Detail);
+    }
+
+    #[test]
+    fn same_relative_directory_expansion_is_isolated_per_view() {
+        let home = tempfile::tempdir().expect("home");
+        let work = tempfile::tempdir().expect("work");
+        fs::create_dir_all(home.path().join("shared")).expect("create managed dir");
+        fs::write(home.path().join("shared/managed.txt"), "managed").expect("write managed");
+        fs::create_dir_all(work.path().join("shared")).expect("create unmanaged dir");
+        fs::write(work.path().join("shared/unmanaged.txt"), "unmanaged").expect("write unmanaged");
+
+        let mut app = App::new(AppConfig {
+            destination_dir: Some(home.path().to_path_buf()),
+            working_dir: work.path().to_path_buf(),
+            ..AppConfig::default()
+        });
+        app.managed_entries = vec![PathBuf::from("shared/managed.txt")];
+        app.unmanaged_entries = vec![PathBuf::from("shared")];
+        app.set_ignore_patterns(Vec::new())
+            .expect("loaded empty ignore rules");
+
+        app.switch_view(ListView::Managed);
+        assert!(app.expand_selected_directory());
+        assert!(
+            app.current_items()
+                .iter()
+                .any(|line| line.contains("managed.txt"))
+        );
+
+        app.switch_view(ListView::Unmanaged);
+        assert!(
+            !app.current_items()
+                .iter()
+                .any(|line| line.contains("unmanaged.txt"))
+        );
+        assert!(app.expand_selected_directory());
+        assert!(
+            app.current_items()
+                .iter()
+                .any(|line| line.contains("unmanaged.txt"))
+        );
+
+        app.switch_view(ListView::Managed);
+        assert!(
+            app.current_items()
+                .iter()
+                .any(|line| line.contains("managed.txt"))
+        );
+    }
+
+    #[test]
+    fn switching_view_restores_list_focus_without_clearing_same_view_state() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![PathBuf::from("a")];
+        app.switch_view(ListView::Managed);
+        app.toggle_selected_mark();
+        app.apply_list_filter_immediately("a".to_string());
+        app.focus = PaneFocus::Detail;
+
+        app.switch_view(ListView::Managed);
+
+        assert_eq!(app.focus, PaneFocus::List);
+        assert_eq!(app.marked_count(), 1);
+        assert_eq!(app.list_filter(), "a");
+
+        app.focus = PaneFocus::Detail;
+        app.switch_view(ListView::Status);
+        assert_eq!(app.focus, PaneFocus::List);
     }
 }

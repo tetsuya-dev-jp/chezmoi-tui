@@ -13,6 +13,14 @@ pub struct CliArgs {
     #[arg(long)]
     pub source: Option<PathBuf>,
 
+    /// Use this chezmoi binary instead of `chezmoi`
+    #[arg(long)]
+    pub chezmoi: Option<String>,
+
+    /// Pass this chezmoi configuration file to every chezmoi invocation
+    #[arg(long)]
+    pub chezmoi_config: Option<PathBuf>,
+
     /// Initial view to open
     #[arg(long, value_enum)]
     pub view: Option<CliView>,
@@ -66,6 +74,10 @@ mod tests {
             "/tmp/home",
             "--source",
             "/tmp/source",
+            "--chezmoi",
+            "/opt/bin/chezmoi",
+            "--chezmoi-config",
+            "/tmp/chezmoi.toml",
             "--view",
             "managed",
             "--log-file",
@@ -77,10 +89,23 @@ mod tests {
 
         assert_eq!(args.destination, Some(PathBuf::from("/tmp/home")));
         assert_eq!(args.source, Some(PathBuf::from("/tmp/source")));
+        assert_eq!(args.chezmoi.as_deref(), Some("/opt/bin/chezmoi"));
+        assert_eq!(
+            args.chezmoi_config,
+            Some(PathBuf::from("/tmp/chezmoi.toml"))
+        );
         assert_eq!(args.view, Some(CliView::Managed));
         assert_eq!(args.log_file, Some(PathBuf::from("/tmp/chezmoi-tui.log")));
         assert_eq!(args.config, Some(PathBuf::from("/tmp/chezmoi-tui.toml")));
         assert!(args.no_auto_preview);
+    }
+
+    #[test]
+    fn chezmoi_binary_and_config_default_to_none() {
+        let args = CliArgs::parse_from(["chezmoi-tui"]);
+
+        assert_eq!(args.chezmoi, None);
+        assert_eq!(args.chezmoi_config, None);
     }
 
     #[test]

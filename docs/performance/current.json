@@ -1,0 +1,49 @@
+{
+  "benchmark": "chezmoi-tui-pty-startup",
+  "binary": "chezmoi-tui",
+  "chezmoi": "chezmoi",
+  "failures": [],
+  "fixture": {
+    "git_objects": 5000,
+    "source_files": 3
+  },
+  "pty": {
+    "columns": 120,
+    "rows": 40
+  },
+  "results": {
+    "large-git": {
+      "first_frame": {
+        "max_seconds": 0.0037166669499129057,
+        "min_seconds": 0.0034051919355988503,
+        "p50_seconds": 0.0035323321353644133
+      },
+      "first_status": {
+        "max_seconds": 0.03673777310177684,
+        "min_seconds": 0.03637920995242894,
+        "p50_seconds": 0.036468940088525414
+      }
+    },
+    "small": {
+      "first_frame": {
+        "max_seconds": 0.003720504231750965,
+        "min_seconds": 0.0025797870475798845,
+        "p50_seconds": 0.0035371158737689257
+      },
+      "first_status": {
+        "max_seconds": 0.03658663295209408,
+        "min_seconds": 0.03528554108925164,
+        "p50_seconds": 0.036468125181272626
+      }
+    }
+  },
+  "runs_per_scenario": 7,
+  "timing": {
+    "first_frame": "reachability of ESC[?1049h followed by ESC[1;1H in PTY bytes",
+    "first_status": "reachability of selected row bytes 'M .zshrc'",
+    "idle_seconds": 1.0,
+    "origin": "immediately before fork; includes process launch/exec overhead",
+    "poll_interval_seconds": 0.005,
+    "quit_key": "q"
+  }
+}

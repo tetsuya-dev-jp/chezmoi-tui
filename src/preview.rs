@@ -1,11 +1,12 @@
 use crate::actions::send_task;
-use crate::app::{App, BackendTask, DetailKind};
+use crate::app::{App, BackendTask, DetailKind, DetailRequest};
 use crate::domain::ListView;
 use anyhow::{Context, Result};
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::path::Path;
+use std::time::Instant;
 use tokio::sync::mpsc::Sender;
 
 const PREVIEW_MAX_BYTES: usize = 64 * 1024;
@@ -27,6 +28,9 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
                         .to_string(),
                 );
             }
+            Ok(target) if !target.is_file() => {
+                return Ok("Cannot preview special file (FIFO, device, or socket).".to_string());
+            }
             Ok(_) => {}
             Err(err) if err.kind() == ErrorKind::NotFound => {
                 return Ok("Cannot preview broken symlink.".to_string());
@@ -37,6 +41,8 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
                 });
             }
         }
+    } else if !kind.is_file() {
+        return Ok("Cannot preview special file (FIFO, device, or socket).".to_string());
     }
 
     let file = File::open(path).with_context(|| format!("failed to read: {}", path.display()))?;
@@ -67,131 +73,48 @@ pub(crate) fn load_file_preview(path: &Path) -> Result<String> {
     Ok(text)
 }
 
-fn maybe_enqueue_unmanaged_preview(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
-    if app.view != ListView::Unmanaged {
-        return Ok(());
-    }
-    if app.selected_is_directory() {
-        app.clear_detail();
-        return Ok(());
-    }
-
-    let (Some(target), Some(absolute)) = (app.selected_path(), app.selected_absolute_path()) else {
-        return Ok(());
-    };
-
-    if app.detail_kind == DetailKind::Preview && app.detail_target.as_ref() == Some(&target) {
-        return Ok(());
-    }
-
-    let request_id = app.begin_detail_request();
-    send_task(
-        app,
-        task_tx,
-        BackendTask::LoadPreview {
-            request_id,
-            target,
-            absolute,
-            origin: app.preview_origin_for_view(ListView::Unmanaged),
-        },
-    )
-}
-
-fn maybe_enqueue_managed_preview(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
-    if app.view != ListView::Managed {
-        return Ok(());
-    }
-    if app.selected_is_directory() {
-        app.clear_detail();
-        return Ok(());
-    }
-
-    let (Some(target), Some(absolute)) = (app.selected_path(), app.selected_absolute_path()) else {
-        return Ok(());
-    };
-
-    if app.detail_kind == DetailKind::Preview && app.detail_target.as_ref() == Some(&target) {
-        return Ok(());
-    }
-
-    let request_id = app.begin_detail_request();
-    send_task(
-        app,
-        task_tx,
-        BackendTask::LoadPreview {
-            request_id,
-            target,
-            absolute,
-            origin: app.preview_origin_for_view(ListView::Managed),
-        },
-    )
-}
-
-fn maybe_enqueue_source_preview(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
-    if app.view != ListView::Source {
-        return Ok(());
-    }
-    if app.selected_is_directory() {
-        app.clear_detail();
-        return Ok(());
-    }
-
-    let (Some(target), Some(absolute)) = (app.selected_path(), app.selected_absolute_path()) else {
-        return Ok(());
-    };
-
-    if app.detail_kind == DetailKind::Preview && app.detail_target.as_ref() == Some(&target) {
-        return Ok(());
-    }
-
-    let request_id = app.begin_detail_request();
-    send_task(
-        app,
-        task_tx,
-        BackendTask::LoadPreview {
-            request_id,
-            target,
-            absolute,
-            origin: app.preview_origin_for_view(ListView::Source),
-        },
-    )
-}
-
-fn maybe_enqueue_status_diff(app: &mut App, task_tx: &Sender<BackendTask>) -> Result<()> {
-    if app.view != ListView::Status {
-        return Ok(());
-    }
-
-    let Some(target) = app.selected_absolute_path() else {
-        return Ok(());
-    };
-    if app.detail_kind == DetailKind::Diff && app.detail_target.as_ref() == Some(&target) {
-        return Ok(());
-    }
-
-    let request_id = app.begin_detail_request();
-    send_task(
-        app,
-        task_tx,
-        BackendTask::LoadDiff {
-            request_id,
-            target: Some(target),
-        },
-    )
-}
-
 pub(crate) fn maybe_enqueue_auto_detail(
     app: &mut App,
-    task_tx: &Sender<BackendTask>,
+    _task_tx: &Sender<BackendTask>,
 ) -> Result<()> {
     if !app.config.auto_preview {
+        app.cancel_pending_detail();
         return Ok(());
     }
+    if app.selected_is_directory() {
+        app.clear_detail();
+        app.cancel_pending_detail();
+        return Ok(());
+    }
+    let (Some(target), Some(absolute)) = (app.selected_path(), app.selected_absolute_path()) else {
+        app.cancel_pending_detail();
+        return Ok(());
+    };
+    let kind = if app.view == ListView::Status {
+        DetailKind::Diff
+    } else {
+        DetailKind::Preview
+    };
+    app.stage_detail_request(
+        DetailRequest {
+            target,
+            absolute,
+            kind,
+            origin: app.preview_origin_for_view(app.view),
+        },
+        Instant::now(),
+    );
+    Ok(())
+}
 
-    maybe_enqueue_status_diff(app, task_tx)?;
-    maybe_enqueue_managed_preview(app, task_tx)?;
-    maybe_enqueue_unmanaged_preview(app, task_tx)?;
-    maybe_enqueue_source_preview(app, task_tx)?;
+pub fn flush_pending_auto_detail(
+    app: &mut App,
+    task_tx: &Sender<BackendTask>,
+    now: Instant,
+) -> Result<()> {
+    if let Some(task) = app.take_due_detail_task(now) {
+        send_task(app, task_tx, task)?;
+    }
     Ok(())
 }
 
@@ -248,5 +171,53 @@ mod tests {
 
         let got = load_file_preview(&link).expect("preview");
         assert!(got.contains("broken symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_rejects_fifo_without_opening_it() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fifo = temp.path().join("events.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed: {status}");
+        assert!(
+            std::fs::symlink_metadata(&fifo)
+                .expect("fifo metadata")
+                .file_type()
+                .is_fifo()
+        );
+
+        let got = load_file_preview(&fifo).expect("reject fifo");
+        assert!(got.contains("special file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_rejects_symlink_to_fifo_without_opening_it() {
+        use std::os::unix::fs::{FileTypeExt, symlink};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fifo = temp.path().join("events.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed: {status}");
+        assert!(
+            std::fs::symlink_metadata(&fifo)
+                .expect("fifo metadata")
+                .file_type()
+                .is_fifo()
+        );
+        let link = temp.path().join("events-link");
+        symlink(&fifo, &link).expect("create fifo symlink");
+
+        let got = load_file_preview(&link).expect("reject fifo symlink");
+        assert!(got.contains("special file"));
     }
 }

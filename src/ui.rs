@@ -1,3 +1,4 @@
+use crate::action_policy::ActionGroup;
 use crate::app::{
     App, ConfirmStep, DetailKind, InputKind, LayoutMode, ModalState, NoticeTone, PaneFocus,
     SearchScope,
@@ -7,90 +8,149 @@ use crate::infra::action_to_args;
 use crate::ui_diff::colorized_diff_lines;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::prelude::{Alignment, Color, Line, Modifier, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::prelude::{Color, Line, Modifier, Span, Style};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use std::collections::HashSet;
 use std::path::Path;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let footer_height = if app.footer_help { 2 } else { 1 };
+    draw_styled(frame, app);
+    apply_no_color(frame);
+}
+
+fn draw_styled(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    if area.width < 24 || area.height < 6 {
+        draw_tiny(frame, app, area);
+        draw_modal(frame, app);
+        ensure_dark_canvas(frame.buffer_mut());
+        return;
+    }
+
+    let footer_height = if area.height >= 10 {
+        if app.footer_help { 3 } else { 2 }
+    } else {
+        1
+    };
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(footer_height)])
-        .split(frame.area());
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(footer_height),
+        ])
+        .split(area);
+    draw_header(frame, app, outer[0]);
 
-    match app.layout_mode {
-        LayoutMode::Normal => {
-            let list_ratio = app.config.list_ratio.min(90);
-            let detail_ratio = app.config.detail_ratio.min(90);
+    let single_pane = area.width < 90 || area.height < 18;
+
+    match (app.layout_mode, single_pane) {
+        (LayoutMode::DetailMax, _) => draw_detail(frame, app, outer[1]),
+        (LayoutMode::LogMax, _) => draw_logs(frame, app, outer[1]),
+        (LayoutMode::Normal, true) => match app.focus {
+            PaneFocus::List => draw_list(frame, app, outer[1]),
+            PaneFocus::Detail => draw_detail(frame, app, outer[1]),
+            PaneFocus::Log => draw_logs(frame, app, outer[1]),
+        },
+        (LayoutMode::Normal, false) => {
+            let list_ratio = app.config.list_ratio;
             let main = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
                     Constraint::Percentage(list_ratio),
                     Constraint::Percentage(100 - list_ratio),
                 ])
-                .split(outer[0]);
+                .split(outer[1]);
 
-            let right = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(detail_ratio),
-                    Constraint::Percentage(100 - detail_ratio),
-                ])
-                .split(main[1]);
+            let right = if app.focus == PaneFocus::Log {
+                let detail_ratio = app.config.detail_ratio.min(90);
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Percentage(detail_ratio),
+                        Constraint::Percentage(100 - detail_ratio),
+                    ])
+                    .split(main[1])
+            } else {
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(1), Constraint::Length(4)])
+                    .split(main[1])
+            };
 
             draw_list(frame, app, main[0]);
             draw_detail(frame, app, right[0]);
             draw_logs(frame, app, right[1]);
         }
-        LayoutMode::DetailMax => draw_detail(frame, app, outer[0]),
-        LayoutMode::LogMax => draw_logs(frame, app, outer[0]),
     }
-    draw_status_bar(frame, app, outer[1]);
+    draw_status_bar(frame, app, outer[2]);
     draw_modal(frame, app);
+    ensure_dark_canvas(frame.buffer_mut());
 }
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    let items: Vec<ListItem> = app.current_items().into_iter().map(ListItem::new).collect();
     let viewport_rows = area.height.saturating_sub(2) as usize;
     app.sync_list_scroll(viewport_rows);
+    let len = app.current_len();
+    let selected_ordinal = if len == 0 {
+        0
+    } else {
+        app.selected_index.min(len - 1) + 1
+    };
+    let list_title = match app.view {
+        ListView::Source => "Source (raw)",
+        _ => app.view.title(),
+    };
+    let title = format!(
+        "{} {} · {selected_ordinal}/{len}{}",
+        focus_marker(app.focus == PaneFocus::List),
+        list_title,
+        filter_title_suffix(app)
+    );
 
     let border_style = if app.focus == PaneFocus::List {
-        Style::default().fg(Color::Cyan)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
 
-    let title = if app.list_filter().trim().is_empty() {
-        format!(" {} ", app.view.title())
+    let row_width = area.width.saturating_sub(4) as usize;
+    let items: Vec<ListItem> = if len == 0 {
+        let message = empty_list_message(app);
+        vec![ListItem::new(Line::styled(
+            clip_text(&message, row_width),
+            Style::default().fg(Color::DarkGray),
+        ))]
     } else {
-        let summary = app.current_filter_summary().unwrap_or_default();
-        format!(
-            " {} /{} ({}) ",
-            app.view.title(),
-            app.list_filter(),
-            summary
-        )
+        let offset = app.list_scroll();
+        app.current_items_window(offset, viewport_rows)
+            .into_iter()
+            .map(|item| ListItem::new(Line::from(compact_path_row(&item, row_width))))
+            .collect()
     };
+    let has_rendered_items = !items.is_empty();
 
     let list = List::new(items)
         .block(
             Block::default()
-                .title(title)
+                .title(format!(
+                    " {} ",
+                    clip_title(&title, area.width.saturating_sub(4) as usize)
+                ))
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(border_style),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("▶ ");
+        .highlight_style(selection_style())
+        .highlight_symbol("› ");
 
-    let mut state = ListState::default().with_offset(app.list_scroll());
-    if app.current_len() > 0 {
-        state.select(Some(app.selected_index));
+    let mut state = ListState::default();
+    if len > 0 && has_rendered_items {
+        state.select(Some(app.selected_index.saturating_sub(app.list_scroll())));
     }
 
     frame.render_stateful_widget(list, area, &mut state);
@@ -98,79 +158,100 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_detail(frame: &mut Frame, app: &App, area: Rect) {
     let border_style = if app.focus == PaneFocus::Detail {
-        Style::default().fg(Color::Cyan)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
 
-    let lines = if app.detail_text.trim().is_empty() {
-        if matches!(app.view, ListView::Unmanaged | ListView::Source) && app.selected_is_directory()
-        {
-            vec![Line::from("")]
-        } else {
-            vec![
-                Line::from("Detail is not loaded yet."),
-                Line::from("Enter / d: diff, v: file preview"),
-            ]
-        }
+    let lines = if let Some(lines) = empty_detail_lines(app) {
+        lines
     } else if app.detail_kind == DetailKind::Diff {
         colorized_diff_lines(&app.detail_text)
     } else {
         colorized_preview_lines(app.detail_target.as_deref(), &app.detail_text)
     };
+    let title = format!(
+        "{} {} ",
+        focus_marker(app.focus == PaneFocus::Detail),
+        compact_middle(&app.detail_title, area.width.saturating_sub(6) as usize)
+    );
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(format!(" {} ", app.detail_title))
+                .title(title)
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(border_style),
         )
         .scroll((
             clamp_to_u16(app.detail_scroll),
             clamp_to_u16(app.detail_hscroll),
-        ))
-        .wrap(Wrap { trim: false });
+        ));
 
     frame.render_widget(paragraph, area);
 }
 
 fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
     let border_style = if app.focus == PaneFocus::Log {
-        Style::default().fg(Color::Cyan)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
 
     let lines: Vec<Line> = app.logs.iter().map(|line| styled_log_line(line)).collect();
     let scroll = log_scroll_offset(lines.len(), area.height, app.log_tail_offset);
+    let title = format!(
+        "{} Log · {}{} ",
+        focus_marker(app.focus == PaneFocus::Log),
+        app.logs.len(),
+        if app.log_tail_offset == 0 {
+            " · follow"
+        } else {
+            " · paused"
+        }
+    );
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(" Log ")
+                .title(clip_title(&title, area.width.saturating_sub(4) as usize))
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(border_style),
         )
-        .scroll((scroll, clamp_to_u16(app.log_hscroll)))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, clamp_to_u16(app.log_hscroll)));
 
     frame.render_widget(paragraph, area);
 }
 
 fn styled_log_line(line: &str) -> Line<'static> {
-    let style = if line.starts_with("hint:") {
+    let sanitized = sanitize_terminal_text(line);
+    let trimmed = sanitized.trim_start();
+    let style = if trimmed.starts_with("hint:") {
         Style::default().fg(Color::LightBlue)
-    } else if line.contains("error") || line.starts_with("stderr:") {
+    } else if trimmed.starts_with("error:")
+        || trimmed.starts_with("Error:")
+        || trimmed.starts_with("failed:")
+        || trimmed.starts_with("stderr:")
+        || trimmed.starts_with("ERR ")
+    {
         Style::default().fg(Color::LightRed)
-    } else if line.contains("completed") || line.contains("exit=0") {
+    } else if trimmed.starts_with("completed:")
+        || trimmed.starts_with("ok:")
+        || trimmed.starts_with("exit=0")
+    {
         Style::default().fg(Color::LightGreen)
-    } else if line.starts_with("action") || line.starts_with("foreground") {
-        Style::default().fg(Color::LightYellow)
+    } else if trimmed.starts_with("action:") || trimmed.starts_with("foreground:") {
+        Style::default().fg(Color::LightCyan)
     } else {
         Style::default().fg(Color::Gray)
     };
-    Line::styled(line.to_string(), style)
+    Line::styled(sanitized, style)
 }
 
 fn log_scroll_offset(total_lines: usize, area_height: u16, tail_offset: usize) -> u16 {
@@ -185,6 +266,248 @@ fn clamp_to_u16(value: usize) -> u16 {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     FooterBar::draw(frame, app, area);
+}
+
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    let width = area.width as usize;
+
+    let identity = Line::from(vec![
+        Span::styled(
+            " chezmoi-tui ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::Gray),
+        ),
+    ]);
+    let summary = Span::styled(
+        compact_middle(&header_summary(app), width.saturating_sub(30)),
+        Style::default().fg(Color::DarkGray),
+    );
+    let top = join_line_to_width(identity, summary, width);
+    frame.render_widget(
+        Paragraph::new(top).style(Style::default().fg(Color::Reset)),
+        rows[0],
+    );
+
+    let tabs = Line::from(tab_spans(app, app.view, width));
+    frame.render_widget(Paragraph::new(tabs), rows[1]);
+}
+
+fn tab_spans(app: &App, active: ListView, width: usize) -> Vec<Span<'static>> {
+    let tabs = [
+        ('1', ListView::Status, app.status_entries.len()),
+        ('2', ListView::Managed, app.managed_entries.len()),
+        ('3', ListView::Unmanaged, app.unmanaged_entries.len()),
+        ('4', ListView::Source, app.source_entries.len()),
+    ];
+    let mut spans = Vec::new();
+    for (index, (number, view, count)) in tabs.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let marker = if view == active { "▶ " } else { "  " };
+        let text = format!("{marker}{number} {} {count}", view.title());
+        let style = if view == active {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        spans.push(Span::styled(text, style));
+    }
+    clip_spans_to_width(spans, width)
+}
+
+fn header_summary(app: &App) -> String {
+    if let Some(notice) = display_notice(app)
+        && notice.tone == NoticeTone::Error
+    {
+        return format!("ERR {}", notice.message);
+    }
+    if app.is_busy() {
+        return app
+            .busy_message()
+            .map_or_else(|| "busy".to_string(), |message| format!("busy · {message}"));
+    }
+
+    let len = app.current_len();
+    let position = if len == 0 {
+        0
+    } else {
+        app.selected_index.min(len - 1) + 1
+    };
+    let mut parts = vec![format!("{position}/{len}")];
+    if let Some(path) = app.selected_path() {
+        parts.push(path.display().to_string());
+    } else {
+        parts.push(app.view_context_text());
+    }
+    if app.marked_count() > 0 {
+        parts.push(format!("{} marked", app.marked_count()));
+    }
+    if !app.list_filter().trim().is_empty() {
+        parts.push(format!("/{}", app.list_filter()));
+    }
+    parts.join(" · ")
+}
+
+fn display_notice(app: &App) -> Option<&crate::app::Notice> {
+    app.latest_notice()
+        .filter(|notice| notice.tone == NoticeTone::Error || app.config.show_notices)
+}
+
+fn filter_title_suffix(app: &App) -> String {
+    if app.list_filter().trim().is_empty() {
+        String::new()
+    } else {
+        format!(" /{}", compact_label(app.list_filter(), 18))
+    }
+}
+
+fn empty_list_message(app: &App) -> String {
+    if app.is_busy() {
+        return format!("Loading {}…", app.view.title().to_lowercase());
+    }
+    if !app.list_filter().trim().is_empty() {
+        return format!(
+            "No matches for /{}. Esc clears the filter.",
+            app.list_filter()
+        );
+    }
+    match app.view {
+        ListView::Status => "No pending changes.".to_string(),
+        ListView::Managed => "No managed files loaded. Press r to refresh.".to_string(),
+        ListView::Unmanaged => "No unmanaged files in the current directory.".to_string(),
+        ListView::Source => "No source files loaded. Press r to refresh.".to_string(),
+    }
+}
+
+fn empty_detail_lines(app: &App) -> Option<Vec<Line<'static>>> {
+    if !app.detail_text.trim().is_empty() {
+        return None;
+    }
+
+    let muted = Style::default().fg(Color::DarkGray);
+    let lines = if app.is_busy() {
+        vec![
+            Line::styled("Loading detail…", Style::default().fg(Color::Cyan)),
+            Line::styled("The selected item is being prepared.", muted),
+        ]
+    } else if app.selected_is_directory() {
+        vec![
+            Line::styled(
+                "Directory selected.",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::styled("Enter expands it; h/l folds and unfolds.", muted),
+        ]
+    } else if app.current_len() == 0 {
+        vec![Line::styled(empty_list_message(app), muted)]
+    } else {
+        vec![
+            Line::styled(
+                "No detail loaded for this selection.",
+                Style::default().fg(Color::Gray),
+            ),
+            Line::styled("d: diff   v: preview   /: filter list", muted),
+        ]
+    };
+    Some(lines)
+}
+
+fn draw_tiny(frame: &mut Frame, app: &App, area: Rect) {
+    let summary = if area.width < 24 {
+        "chezmoi-tui"
+    } else {
+        "chezmoi-tui · terminal too small"
+    };
+    let mut lines = vec![
+        Line::styled(
+            clip_text(summary, area.width as usize),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(
+            clip_text(
+                &format!("{}x{} · {}", area.width, area.height, app.view.title()),
+                area.width as usize,
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    if let Some(notice) = display_notice(app) {
+        lines.push(Line::styled(
+            clip_text(
+                &format!("{} {}", notice_tone_label(notice.tone), notice.message),
+                area.width as usize,
+            ),
+            notice_style(notice.tone),
+        ));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn apply_no_color(frame: &mut Frame) {
+    if std::env::var_os("NO_COLOR").is_some() {
+        clear_buffer_styles(frame.buffer_mut());
+    }
+}
+
+fn ensure_dark_canvas(buffer: &mut ratatui::buffer::Buffer) {
+    for cell in &mut buffer.content {
+        if cell.fg == Color::Reset {
+            cell.fg = Color::Gray;
+        }
+        if cell.bg == Color::Reset {
+            cell.bg = Color::Black;
+        }
+    }
+}
+
+fn clear_buffer_styles(buffer: &mut ratatui::buffer::Buffer) {
+    let area = *buffer.area();
+    buffer.set_style(area, Style::reset());
+}
+
+fn focus_marker(focused: bool) -> &'static str {
+    if focused { "▶" } else { " " }
+}
+
+fn selection_style() -> Style {
+    Style::default()
+        .fg(Color::White)
+        .bg(SELECTION_BG)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn clip_title(value: &str, width: usize) -> String {
+    compact_middle(value, width)
+}
+
+fn join_line_to_width(left: Line<'static>, right: Span<'static>, width: usize) -> Line<'static> {
+    let right_width = right.width();
+    let left_width = left.width();
+    let mut spans = left.spans;
+    if left_width + right_width < width {
+        spans.push(Span::raw(" ".repeat(width - left_width - right_width)));
+        spans.push(right);
+    } else {
+        spans.push(Span::raw(" "));
+        spans.push(right);
+    }
+    Line::from(clip_spans_to_width(spans, width))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,22 +551,10 @@ struct HintRendered {
     mandatory: bool,
 }
 
-#[derive(Debug, Clone)]
-struct CheatItem {
-    key: &'static str,
-    label: &'static str,
-}
-
-#[derive(Debug, Clone)]
-struct CheatGroup {
-    title: &'static str,
-    items: Vec<CheatItem>,
-    priority: u8,
-}
-
 struct FooterBar;
 
-const MIN_RIGHT_HINT_WIDTH: usize = 34;
+const SELECTION_BG: Color = Color::Rgb(42, 78, 102);
+const KEYCAP_BG: Color = Color::Rgb(32, 43, 51);
 const TARGET_HINT_COUNT: usize = 7;
 const TRUNCATED_HINT_LABEL_WIDTH: usize = 6;
 
@@ -253,10 +564,14 @@ impl FooterBar {
             return;
         }
 
-        let rows = if app.footer_help && area.height >= 2 {
+        let rows = if area.height >= 2 {
             Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(area.height.saturating_sub(2)),
+                ])
                 .split(area)
         } else {
             Layout::default()
@@ -269,68 +584,43 @@ impl FooterBar {
         if rows.len() > 1 {
             Self::draw_cheat_row(frame, app, rows[1]);
         }
+        if rows.len() > 2 && rows[2].height > 0 && app.footer_help {
+            draw_footer_line(frame, rows[2], footer_help_sheet());
+        }
     }
 
     fn draw_main_row(frame: &mut Frame, app: &App, area: Rect) {
-        let total_width = area.width as usize;
-        if total_width == 0 {
+        if area.width == 0 || area.height == 0 {
             return;
         }
 
-        let min_right = MIN_RIGHT_HINT_WIDTH.min(total_width.saturating_sub(1));
-        let left_max = total_width.saturating_sub(min_right + 1);
-        let (left_spans, left_width) = footer_left(app, left_max);
-
-        let right_budget = total_width
-            .saturating_sub(left_width)
-            .saturating_sub(usize::from(left_width > 0));
-        // Help ON でも 1行目は通常フッターの最重要ヒントだけを表示する。
-        // 追加説明キーは 2行目の Help シートにのみ集約する。
-        let rendered = layout_hints(right_budget, footer_hints(app));
-        let (right_spans, right_width) = render_hints(&rendered);
-
-        let gap = total_width.saturating_sub(left_width + right_width);
-
-        let mut line = Vec::new();
-        line.extend(left_spans);
-        if gap > 0 {
-            line.push(Span::raw(" ".repeat(gap)));
-        }
-        line.extend(right_spans);
-        let line = clip_spans_to_width(line, total_width);
-
-        let paragraph = Paragraph::new(Line::from(line))
-            .alignment(Alignment::Left)
-            .style(Style::default().bg(Color::Rgb(14, 16, 20)));
-        frame.render_widget(paragraph, area);
+        let (left, _) = footer_left(app, area.width as usize);
+        draw_footer_line(frame, area, Line::from(left));
     }
 
     fn draw_cheat_row(frame: &mut Frame, app: &App, area: Rect) {
-        let max_width = area.width as usize;
-        if max_width == 0 {
-            return;
-        }
-
-        let mut spans = vec![
-            Span::styled(
-                "Help:",
-                Style::default()
-                    .fg(Color::LightBlue)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-        ];
-        spans.extend(render_help_groups(
-            app,
-            max_width.saturating_sub(text_width("Help: ")),
-        ));
-        let spans = clip_spans_to_width(spans, max_width);
-        let line = Line::from(spans);
-        let paragraph = Paragraph::new(line)
-            .alignment(Alignment::Left)
-            .style(Style::default().bg(Color::Rgb(14, 16, 20)));
-        frame.render_widget(paragraph, area);
+        let hints = layout_hints(area.width as usize, footer_hints(app));
+        let (spans, _) = render_hints(&hints);
+        draw_footer_line(frame, area, Line::from(spans));
     }
+}
+
+fn footer_help_sheet() -> Line<'static> {
+    Line::from(vec![
+        Span::styled("More: ", Style::default().fg(Color::Cyan)),
+        Span::styled(
+            "m maximize   e edit   ! notices   n/N next   H/L horizontal   C-u/d half-page",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+fn draw_footer_line(frame: &mut Frame, area: Rect, line: Line<'static>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let clipped = Line::from(clip_spans_to_width(line.spans, area.width as usize));
+    frame.render_widget(Paragraph::new(clipped), area);
 }
 
 fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
@@ -348,8 +638,8 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
     let mut segments = vec![LeftSegment {
         text: app.view.title().to_string(),
         style: Style::default()
-            .bg(Color::Rgb(35, 118, 210))
-            .fg(Color::Black)
+            .bg(SELECTION_BG)
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD),
         essential: true,
         badge: true,
@@ -370,15 +660,13 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
             .map_or_else(|| "Busy".to_string(), |message| format!("Busy: {message}"));
         segments.push(LeftSegment {
             text: compact_label(&text, 48),
-            style: Style::default().fg(Color::LightYellow),
+            style: Style::default().fg(Color::LightCyan),
             essential: false,
             badge: false,
         });
     }
 
-    if app.config.show_notices
-        && let Some(notice) = app.latest_notice()
-    {
+    if let Some(notice) = display_notice(app) {
         segments.push(LeftSegment {
             text: compact_label(&notice.message, 48),
             style: notice_style(notice.tone),
@@ -406,7 +694,7 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
     if let Some(search) = app.active_search_label() {
         segments.push(LeftSegment {
             text: compact_label(&search, 24),
-            style: Style::default().fg(Color::LightYellow),
+            style: Style::default().fg(Color::LightCyan),
             essential: false,
             badge: false,
         });
@@ -444,7 +732,7 @@ fn footer_left(app: &App, max_width: usize) -> (Vec<Span<'static>>, usize) {
     if !app.list_filter().trim().is_empty() {
         segments.push(LeftSegment {
             text: format!("/{}", compact_label(app.list_filter(), 18)),
-            style: Style::default().fg(Color::LightYellow),
+            style: Style::default().fg(Color::LightCyan),
             essential: false,
             badge: false,
         });
@@ -524,16 +812,27 @@ fn footer_hints(app: &App) -> Vec<Hint> {
         PaneFocus::Detail | PaneFocus::Log => detail_focus_hints(),
     };
 
-    if app.footer_help {
-        hints.extend(help_only_global_hints());
-    }
     hints.extend(primary_global_hints());
 
     hints
 }
 
 fn list_focus_hints(app: &App) -> Vec<Hint> {
+    let enter_label = if app.selected_is_directory() {
+        "expand"
+    } else {
+        "open"
+    };
     vec![
+        hint(
+            "Enter",
+            enter_label,
+            Some("list"),
+            96,
+            HintTone::Secondary,
+            true,
+            false,
+        ),
         hint(
             "/",
             "Find",
@@ -559,7 +858,7 @@ fn list_focus_hints(app: &App) -> Vec<Hint> {
             90,
             HintTone::Secondary,
             true,
-            false,
+            true,
         ),
         hint(
             "d",
@@ -613,7 +912,7 @@ fn detail_focus_hints() -> Vec<Hint> {
             100,
             HintTone::Secondary,
             true,
-            false,
+            true,
         ),
         hint(
             "PgUp/PgDn",
@@ -636,43 +935,11 @@ fn detail_focus_hints() -> Vec<Hint> {
     ]
 }
 
-fn help_only_global_hints() -> [Hint; 3] {
-    [
-        hint(
-            "Tab",
-            "Pane",
-            Some("global"),
-            60,
-            HintTone::Muted,
-            true,
-            false,
-        ),
-        hint(
-            "1-4",
-            "Switch",
-            Some("global"),
-            58,
-            HintTone::Muted,
-            true,
-            false,
-        ),
-        hint(
-            "r",
-            "Refresh",
-            Some("global"),
-            55,
-            HintTone::Muted,
-            true,
-            false,
-        ),
-    ]
-}
-
 fn primary_global_hints() -> [Hint; 3] {
     [
         hint(
             "a",
-            "Actions",
+            "Actions (C-p)",
             Some("global"),
             89,
             HintTone::Primary,
@@ -879,10 +1146,10 @@ fn notice_style(tone: NoticeTone) -> Style {
 fn keycap_style(tone: HintTone) -> Style {
     match tone {
         HintTone::Primary => Style::default()
-            .bg(Color::Rgb(70, 160, 250))
-            .fg(Color::Black)
+            .bg(SELECTION_BG)
+            .fg(Color::White)
             .add_modifier(Modifier::BOLD),
-        HintTone::Secondary => Style::default().bg(Color::Rgb(34, 38, 46)).fg(Color::White),
+        HintTone::Secondary => Style::default().bg(KEYCAP_BG).fg(Color::Gray),
         HintTone::Muted => Style::default().fg(Color::DarkGray),
     }
 }
@@ -895,246 +1162,6 @@ fn hint_label_style(tone: HintTone) -> Style {
         HintTone::Secondary => Style::default().fg(Color::Gray),
         HintTone::Muted => Style::default().fg(Color::DarkGray),
     }
-}
-
-fn cheat_groups(app: &App) -> Vec<CheatGroup> {
-    let mut nav_items = Vec::new();
-    let mut view_items = Vec::new();
-    let mut global_items = vec![CheatItem {
-        key: "a",
-        label: "Actions",
-    }];
-    if !app.is_busy() {
-        global_items.push(CheatItem {
-            key: "r",
-            label: "Refresh",
-        });
-    }
-    global_items.extend([
-        CheatItem {
-            key: "?",
-            label: "Help",
-        },
-        CheatItem {
-            key: "q",
-            label: "Quit",
-        },
-    ]);
-
-    match app.focus {
-        PaneFocus::List => {
-            nav_items.extend([
-                CheatItem {
-                    key: "j/k",
-                    label: "Move",
-                },
-                CheatItem {
-                    key: "/",
-                    label: "Find",
-                },
-                CheatItem {
-                    key: "Space",
-                    label: "Mark",
-                },
-            ]);
-            if app.view == ListView::Status {
-                nav_items.push(CheatItem {
-                    key: "d",
-                    label: "Diff",
-                });
-            } else if !app.selected_is_directory() {
-                nav_items.push(CheatItem {
-                    key: "v",
-                    label: "View",
-                });
-            }
-            if app.marked_count() > 0 {
-                nav_items.push(CheatItem {
-                    key: "c",
-                    label: "Clear",
-                });
-            }
-
-            if matches!(
-                app.view,
-                ListView::Managed | ListView::Unmanaged | ListView::Source
-            ) {
-                view_items.push(CheatItem {
-                    key: "h/l",
-                    label: "Fold",
-                });
-            }
-        }
-        PaneFocus::Detail | PaneFocus::Log => {
-            nav_items.extend([
-                CheatItem {
-                    key: "j/k",
-                    label: "Scroll",
-                },
-                CheatItem {
-                    key: "PgUp/PgDn",
-                    label: "Page",
-                },
-                CheatItem {
-                    key: "C-u/d",
-                    label: "Jump",
-                },
-                CheatItem {
-                    key: "/ n/N",
-                    label: "Search",
-                },
-                CheatItem {
-                    key: "H/L",
-                    label: "Wide",
-                },
-            ]);
-        }
-    }
-
-    view_items.extend([
-        CheatItem {
-            key: "Tab",
-            label: "Pane",
-        },
-        CheatItem {
-            key: "m",
-            label: "Max",
-        },
-        CheatItem {
-            key: "1-4",
-            label: "Switch",
-        },
-    ]);
-
-    vec![
-        CheatGroup {
-            title: "Nav",
-            items: nav_items,
-            priority: 2,
-        },
-        CheatGroup {
-            title: "View",
-            items: view_items,
-            priority: 1,
-        },
-        CheatGroup {
-            title: "Global",
-            items: global_items,
-            priority: 3,
-        },
-    ]
-}
-
-fn render_help_groups(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    if max_width == 0 {
-        return Vec::new();
-    }
-
-    let groups = cheat_groups(app);
-    let (selected, omitted) = fit_cheat_groups(&groups, max_width);
-    let mut spans = Vec::new();
-
-    for (group, keep) in groups.iter().zip(selected.iter()) {
-        if !*keep {
-            continue;
-        }
-
-        if !spans.is_empty() {
-            spans.push(Span::raw("   "));
-        }
-
-        spans.push(Span::styled(
-            format!("{}:", group.title),
-            Style::default()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw(" "));
-
-        for (item_idx, item) in group.items.iter().enumerate() {
-            if item_idx > 0 {
-                spans.push(Span::raw("  "));
-            }
-            spans.push(Span::styled(
-                item.key.to_string(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                item.label.to_string(),
-                Style::default().fg(Color::Gray),
-            ));
-        }
-    }
-
-    if omitted {
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled("…", Style::default().fg(Color::DarkGray)));
-    }
-    spans
-}
-
-fn fit_cheat_groups(groups: &[CheatGroup], max_width: usize) -> (Vec<bool>, bool) {
-    if groups.is_empty() {
-        return (Vec::new(), false);
-    }
-
-    let mut selected = vec![true; groups.len()];
-    let mut omitted = false;
-
-    while cheat_groups_width(groups, &selected, omitted) > max_width {
-        let next_drop = (0..groups.len())
-            .filter(|&idx| selected[idx] && groups[idx].priority < 3)
-            .min_by_key(|&idx| groups[idx].priority);
-        if let Some(idx) = next_drop {
-            selected[idx] = false;
-            omitted = true;
-        } else {
-            break;
-        }
-    }
-
-    (selected, omitted)
-}
-
-fn cheat_groups_width(groups: &[CheatGroup], selected: &[bool], omitted: bool) -> usize {
-    let mut width = 0usize;
-    let mut kept = 0usize;
-
-    for (group, keep) in groups.iter().zip(selected.iter()) {
-        if !*keep {
-            continue;
-        }
-        if kept > 0 {
-            width += text_width("   ");
-        }
-        width += cheat_group_width(group);
-        kept += 1;
-    }
-
-    if omitted {
-        if kept > 0 {
-            width += text_width("  ");
-        }
-        width += text_width("…");
-    }
-
-    width
-}
-
-fn cheat_group_width(group: &CheatGroup) -> usize {
-    let mut width = text_width(group.title) + text_width(": ");
-    for (idx, item) in group.items.iter().enumerate() {
-        if idx > 0 {
-            width += text_width("  ");
-        }
-        width += text_width(item.key) + text_width(" ") + text_width(item.label);
-    }
-    width
 }
 
 fn clip_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
@@ -1163,7 +1190,16 @@ fn clip_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<
             break;
         }
 
-        let truncated: String = content.chars().take(remain).collect();
+        let mut truncated = String::new();
+        let mut truncated_width = 0usize;
+        for ch in content.chars() {
+            let char_width = Span::raw(ch.to_string()).width();
+            if truncated_width + char_width > remain {
+                break;
+            }
+            truncated.push(ch);
+            truncated_width += char_width;
+        }
         if !truncated.is_empty() {
             clipped.push(Span::styled(truncated, span.style));
         }
@@ -1174,7 +1210,7 @@ fn clip_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<
 }
 
 fn text_width(text: &str) -> usize {
-    text.chars().count()
+    Span::raw(text).width()
 }
 
 fn keycap_width(key: &str) -> usize {
@@ -1194,16 +1230,111 @@ fn focus_label(focus: PaneFocus) -> &'static str {
 }
 
 fn compact_label(value: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    if chars.len() <= max_chars {
+    if text_width(value) <= max_chars {
         return value.to_string();
     }
     if max_chars == 0 {
         return String::new();
     }
-    let keep = max_chars.saturating_sub(1);
-    let mut out: String = chars.into_iter().take(keep).collect();
-    out.push('~');
+    let keep = max_chars.saturating_sub(Span::raw("…").width());
+    format!("{}…", clip_text(value, keep))
+}
+
+fn compact_middle(value: &str, max_width: usize) -> String {
+    if text_width(value) <= max_width {
+        return value.to_string();
+    }
+    if max_width <= Span::raw("…").width() {
+        return clip_text("…", max_width);
+    }
+
+    let ellipsis_width = Span::raw("…").width();
+    let keep = max_width.saturating_sub(ellipsis_width);
+    let left = keep / 2;
+    let right = keep.saturating_sub(left);
+    format!("{}…{}", clip_text(value, left), tail_text(value, right))
+}
+
+fn compact_path_row(value: &str, max_width: usize) -> String {
+    if text_width(value) <= max_width {
+        return value.to_string();
+    }
+    if max_width <= Span::raw("…").width() + 1 {
+        return tail_text(value, max_width);
+    }
+
+    let prefix_width = max_width.min(4);
+    let prefix = clip_text(value, prefix_width);
+    let prefix_width = text_width(&prefix);
+    let remaining = max_width
+        .saturating_sub(prefix_width)
+        .saturating_sub(Span::raw("…").width());
+    format!("{prefix}…{}", tail_text(value, remaining))
+}
+
+fn clip_text(value: &str, max_width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in value.chars() {
+        let width = Span::raw(ch.to_string()).width();
+        if used + width > max_width {
+            break;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out
+}
+
+fn tail_text(value: &str, max_width: usize) -> String {
+    let mut chars = Vec::new();
+    let mut used = 0usize;
+    for ch in value.chars().rev() {
+        let width = Span::raw(ch.to_string()).width();
+        if used + width > max_width {
+            break;
+        }
+        chars.push(ch);
+        used += width;
+    }
+    chars.into_iter().rev().collect()
+}
+
+fn sanitize_terminal_text(value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.peek().copied() {
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+        } else if ch == '\t' || !ch.is_control() {
+            out.push(ch);
+        }
+    }
     out
 }
 
@@ -1211,7 +1342,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
     match &app.modal {
         ModalState::None => {}
         ModalState::ListFilter { value, .. } => {
-            let area = centered_rect(62, 22, frame.area());
+            let area = modal_rect(frame.area(), 76, 12);
             frame.render_widget(Clear, area);
 
             let shown = if value.is_empty() {
@@ -1225,7 +1356,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("query: ", Style::default().fg(Color::Gray)),
-                    Span::styled(shown, Style::default().fg(Color::Yellow)),
+                    Span::styled(shown, Style::default().fg(Color::LightCyan)),
                 ]),
                 Line::from(""),
                 Line::from("Enter: apply and close  Esc: cancel  Backspace: delete"),
@@ -1236,19 +1367,26 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(" List Filter ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
                 .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
+            set_input_cursor(frame, area, 2, 7, value);
         }
-        ModalState::Ignore { requests, selected } => {
-            let area = centered_rect(70, 42, frame.area());
+        ModalState::Ignore {
+            requests,
+            selected,
+            global_only,
+        } => {
+            let area = modal_rect(frame.area(), 76, 20);
             frame.render_widget(Clear, area);
 
-            let target_text = requests
+            let raw_target = requests
                 .first()
-                .and_then(|request| request.target.as_ref())
+                .and_then(|request| request.targets.first())
                 .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
+            let target_text = compact_middle(&raw_target, area.width.saturating_sub(30) as usize);
             let count = requests.len();
             let options = [
                 ("Auto (recommended)", "file => exact, directory => /**"),
@@ -1261,21 +1399,25 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             let mut lines = vec![
                 Line::from(format!("targets: {count}")),
                 Line::from(format!("sample target: {target_text}")),
-                Line::from("scope: home-relative + global-by-name"),
+                Line::from(if *global_only {
+                    "scope: outside destination; global-by-name only"
+                } else {
+                    "scope: home-relative + global-by-name"
+                }),
                 Line::from(""),
                 Line::from("Select ignore rule mode:"),
             ];
 
             for (index, (label, description)) in options.into_iter().enumerate() {
+                let disabled = *global_only && index != 4;
                 let prefix = if index == *selected { "▶" } else { " " };
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{prefix} {label}"),
-                        if index == *selected {
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(Color::LightYellow)
-                                .add_modifier(Modifier::BOLD)
+                        if disabled {
+                            Style::default().fg(Color::DarkGray)
+                        } else if index == *selected {
+                            selection_style()
                         } else {
                             Style::default().fg(Color::White)
                         },
@@ -1291,7 +1433,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
             lines.push(Line::from(format!(
                 "preview pattern: {}",
-                ignore_pattern_preview(&target_text, *selected)
+                ignore_pattern_preview(&raw_target, *selected)
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(
@@ -1303,9 +1445,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(" Ignore Rule ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
-                .wrap(Wrap { trim: false });
+                .wrap(Wrap { trim: true });
             frame.render_widget(p, area);
         }
         ModalState::AddOptions {
@@ -1316,13 +1459,14 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             executable,
             encrypted,
         } => {
-            let area = centered_rect(70, 42, frame.area());
+            let area = modal_rect(frame.area(), 76, 20);
             frame.render_widget(Clear, area);
 
             let target_text = requests
                 .first()
-                .and_then(|request| request.target.as_ref())
+                .and_then(|request| request.targets.first())
                 .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
+            let target_text = compact_middle(&target_text, area.width.saturating_sub(30) as usize);
             let count = requests.len();
             let options = [
                 ("template", *template, "mark source as a template"),
@@ -1345,10 +1489,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Span::styled(
                         format!("{prefix} {checkbox} {label}"),
                         if index == *selected {
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(Color::LightYellow)
-                                .add_modifier(Modifier::BOLD)
+                            selection_style()
                         } else {
                             Style::default().fg(Color::White)
                         },
@@ -1374,17 +1515,18 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(" Add Attributes ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
-                .wrap(Wrap { trim: false });
+                .wrap(Wrap { trim: true });
             frame.render_widget(p, area);
         }
         ModalState::ActionMenu { selected, filter } => {
-            let area = centered_rect(60, 70, frame.area());
+            let area = modal_rect(frame.area(), 76, 22);
             frame.render_widget(Clear, area);
             let sections = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .constraints([Constraint::Length(4), Constraint::Min(1)])
                 .split(area);
 
             let query = if filter.is_empty() {
@@ -1395,21 +1537,20 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             let query_style = if filter.is_empty() {
                 Style::default().fg(Color::DarkGray)
             } else {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(Color::LightCyan)
             };
             let filter_widget = Paragraph::new(vec![
                 Line::from(vec![
                     Span::styled("query: ", Style::default().fg(Color::Gray)),
                     Span::styled(query, query_style),
                 ]),
-                Line::from(
-                    "Backspace: delete  danger:<name>: reveal danger  Enter: run  Esc: close",
-                ),
+                Line::from("Backspace del  danger:<name> reveal  Enter run  Esc close"),
             ])
             .block(
                 Block::default()
                     .title(" Action Filter ")
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::LightBlue)),
             )
             .wrap(Wrap { trim: false });
@@ -1448,14 +1589,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(" Action Menu ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::Cyan)),
                 )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::LightYellow)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(selection_style())
                 .highlight_symbol("▶ ");
 
             let mut state = ListState::default();
@@ -1465,9 +1602,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 state.select(Some(row_index));
             }
             frame.render_stateful_widget(list, sections[1], &mut state);
+            set_input_cursor(frame, sections[0], 0, 7, filter);
         }
         ModalState::ActionPreflight { requests, scroll } => {
-            let area = centered_rect(76, 64, frame.area());
+            let area = modal_rect(frame.area(), 80, 22);
             frame.render_widget(Clear, area);
             let action = requests.first().map(|request| request.action);
             let mut lines = Vec::new();
@@ -1485,7 +1623,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 )));
                 lines.push(Line::from(format!(
                     "targets: {}",
-                    requests.iter().filter(|r| r.target.is_some()).count()
+                    requests
+                        .iter()
+                        .map(|request| request.targets.len())
+                        .sum::<usize>()
                 )));
                 lines.push(Line::from(""));
                 lines.push(Line::from("command preview:"));
@@ -1501,11 +1642,16 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 lines.push(Line::from(""));
                 lines.push(Line::from("targets:"));
                 for request in requests {
-                    let target = request
-                        .target
-                        .as_ref()
-                        .map_or_else(|| "(none)".to_string(), |path| path.display().to_string());
-                    lines.push(Line::from(format!("  {target}")));
+                    if request.targets.is_empty() {
+                        lines.push(Line::from("  (none)"));
+                    } else {
+                        lines.extend(
+                            request
+                                .targets
+                                .iter()
+                                .map(|path| Line::from(format!("  {}", path.display()))),
+                        );
+                    }
                 }
             }
             lines.push(Line::from(""));
@@ -1513,13 +1659,13 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 "Enter: continue  Esc: cancel  j/k/PgUp/PgDn: scroll",
             ));
 
-            let visible_rows = area.height.saturating_sub(2) as usize;
-            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let max_scroll = modal_max_scroll(&lines, area);
             let p = Paragraph::new(lines)
                 .block(
                     Block::default()
                         .title(" Action Preflight ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightYellow)),
                 )
                 .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
@@ -1531,7 +1677,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             step,
             typed,
         } => {
-            let area = centered_rect(70, 45, frame.area());
+            let area = modal_rect(frame.area(), 76, 22);
             frame.render_widget(Clear, area);
             let title = match step {
                 ConfirmStep::Primary => " Confirm Action ",
@@ -1542,10 +1688,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(format!("action: {}", request.action.label())),
                 Line::from(format!(
                     "target: {}",
-                    request
-                        .target
-                        .as_ref()
-                        .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
+                    compact_middle(
+                        &request_targets_text(request),
+                        area.width.saturating_sub(10) as usize
+                    )
                 )),
             ];
 
@@ -1578,6 +1724,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             }
 
             lines.push(Line::from(""));
+            let mut input_line = None;
             match step {
                 ConfirmStep::Primary => {
                     if request.requires_strict_confirmation() {
@@ -1600,15 +1747,21 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     ));
                     if let Some(phrase) = request.confirmation_phrase() {
                         lines.push(
-                            Line::from(format!("required: {phrase}")).style(
-                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                            ),
+                            Line::from(format!(
+                                "required: {}",
+                                compact_middle(&phrase, area.width.saturating_sub(18) as usize)
+                            ))
+                            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
                         );
                     }
                     lines.push(
-                        Line::from(format!("input: {typed}"))
-                            .style(Style::default().fg(Color::Yellow)),
+                        Line::from(format!(
+                            "input: {}",
+                            compact_middle(typed, area.width.saturating_sub(15) as usize)
+                        ))
+                        .style(Style::default().fg(Color::Yellow)),
                     );
+                    input_line = Some(lines.len().saturating_sub(1));
                 }
             }
 
@@ -1617,10 +1770,76 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(title)
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightRed)),
                 )
-                .wrap(Wrap { trim: false });
+                .wrap(Wrap { trim: true });
 
+            frame.render_widget(p, area);
+            if let Some(line) = input_line {
+                set_input_cursor(frame, area, clamp_to_u16(line), 7, typed);
+            }
+        }
+        ModalState::ConfirmApply { request, snapshot } => {
+            let area = modal_rect(frame.area(), 80, 22);
+            frame.render_widget(Clear, area);
+            let plan = &snapshot.plan;
+            let has_directory = apply_has_recursive_scope(&request.targets, plan, &app.home_dir);
+            let mut lines = vec![
+                Line::from(apply_scope_summary(&request.targets)),
+                Line::from(apply_plan_count_summary(plan)),
+                Line::from(apply_plan_secondary_summary(plan)),
+            ];
+
+            if request.targets.is_empty() {
+                lines.push(Line::from(
+                    "target roots: ALL pending changes (no target filter)",
+                ));
+            } else if has_directory {
+                lines.push(Line::from(
+                    "directory roots include every affected descendant recursively",
+                ));
+            }
+
+            let preview_count = request.targets.len().min(3);
+            if preview_count > 0 {
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(
+                    "target preview ({preview_count} of {}):",
+                    request.targets.len()
+                )));
+            }
+            for target in request.targets.iter().take(preview_count) {
+                lines.push(Line::from(format!(
+                    "  {}",
+                    compact_middle(
+                        &target.display().to_string(),
+                        area.width.saturating_sub(8) as usize
+                    )
+                )));
+            }
+            if request.targets.len() > preview_count {
+                lines.push(Line::from(format!(
+                    "  ... {} more targets - reviewed in the full Apply Plan",
+                    request.targets.len() - preview_count
+                )));
+            }
+            push_apply_warnings(&mut lines, plan);
+            lines.push(Line::from(
+                "Full roots and affected paths were shown in Apply Plan.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from("Enter: validate and apply  Esc: cancel"));
+
+            let p = Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(" Confirm Apply ")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(Color::LightYellow)),
+                )
+                .wrap(Wrap { trim: true });
             frame.render_widget(p, area);
         }
         ModalState::ApplyPlan {
@@ -1628,42 +1847,51 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             snapshot,
             scroll,
         } => {
-            let area = centered_rect(76, 64, frame.area());
+            let area = modal_rect(frame.area(), 80, 22);
             frame.render_widget(Clear, area);
 
             let plan = &snapshot.plan;
+            let has_directory = apply_has_recursive_scope(&request.targets, plan, &app.home_dir);
 
             let mut lines = vec![
                 Line::from(format!("action: {}", request.action.label())),
-                Line::from(format!("total changes: {}", plan.total())),
-                Line::from(""),
-                Line::from(format!("Added: {}", plan.added.len())),
-                Line::from(format!("Modified: {}", plan.modified.len())),
-                Line::from(format!("Deleted: {}", plan.deleted.len())),
-                Line::from(format!("Run scripts: {}", plan.run.len())),
-                Line::from(format!("Unknown: {}", plan.unknown.len())),
+                Line::from(apply_scope_summary(&request.targets)),
+                Line::from(apply_plan_count_summary(plan)),
+                Line::from(apply_plan_secondary_summary(plan)),
                 Line::from(""),
                 Line::from("This plan was generated from a fresh chezmoi status and diff."),
                 Line::from("It will be validated again before apply."),
             ];
 
+            if request.targets.is_empty() {
+                lines.push(Line::from(
+                    "target roots: ALL pending changes (no target filter)",
+                ));
+            } else {
+                lines.push(Line::from(format!(
+                    "target roots: {} selected",
+                    request.targets.len()
+                )));
+                if has_directory {
+                    lines.push(Line::from(
+                        "directory roots include every affected descendant recursively",
+                    ));
+                }
+                lines.extend(
+                    request
+                        .targets
+                        .iter()
+                        .map(|target| Line::from(format!("  {}", target.display()))),
+                );
+            }
+
             if plan.total() == 0 {
                 lines.push(Line::from(""));
                 lines.push(Line::from("No pending status entries were loaded."));
             }
-            if !plan.run.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(
-                    Line::from("Warning: apply may run scripts.")
-                        .style(Style::default().fg(Color::LightYellow)),
-                );
-            }
-            if !plan.unknown.is_empty() {
-                lines.push(
-                    Line::from("Warning: unknown status entries need manual review.")
-                        .style(Style::default().fg(Color::LightYellow)),
-                );
-            }
+            push_apply_warnings(&mut lines, plan);
+            lines.push(Line::from(""));
+            lines.push(Line::from("affected paths:"));
 
             push_apply_plan_group(
                 &mut lines,
@@ -1704,13 +1932,13 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 "Enter: continue to confirmation  d: diff  Esc: cancel  j/k/PgUp/PgDn: scroll",
             ));
 
-            let visible_rows = area.height.saturating_sub(2) as usize;
-            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let max_scroll = modal_max_scroll(&lines, area);
             let p = Paragraph::new(lines)
                 .block(
                     Block::default()
                         .title(" Apply Plan ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
                 .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
@@ -1718,16 +1946,16 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             frame.render_widget(p, area);
         }
         ModalState::Help { scroll } => {
-            let area = centered_rect(78, 78, frame.area());
+            let area = modal_rect(frame.area(), 80, 22);
             frame.render_widget(Clear, area);
             let lines = help_lines();
-            let visible_rows = area.height.saturating_sub(2) as usize;
-            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let max_scroll = modal_max_scroll(&lines, area);
             let p = Paragraph::new(lines)
                 .block(
                     Block::default()
                         .title(" Help / Legends ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
                 .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
@@ -1735,7 +1963,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             frame.render_widget(p, area);
         }
         ModalState::NoticeHistory { scroll } => {
-            let area = centered_rect(76, 64, frame.area());
+            let area = modal_rect(frame.area(), 80, 22);
             frame.render_widget(Clear, area);
             let mut lines = vec![Line::from("Recent notices and errors:"), Line::from("")];
             if app.notice_history().is_empty() {
@@ -1755,13 +1983,13 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             }
             lines.push(Line::from(""));
             lines.push(Line::from("Esc: close  j/k/PgUp/PgDn: scroll"));
-            let visible_rows = area.height.saturating_sub(2) as usize;
-            let max_scroll = lines.len().saturating_sub(visible_rows.max(1));
+            let max_scroll = modal_max_scroll(&lines, area);
             let p = Paragraph::new(lines)
                 .block(
                     Block::default()
                         .title(" Notice History ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
                 .scroll((clamp_to_u16((*scroll).min(max_scroll)), 0))
@@ -1769,7 +1997,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             frame.render_widget(p, area);
         }
         ModalState::Search { scope, value } => {
-            let area = centered_rect(62, 22, frame.area());
+            let area = modal_rect(frame.area(), 76, 12);
             frame.render_widget(Clear, area);
             let scope_label = match scope {
                 SearchScope::Detail => "Detail",
@@ -1781,7 +2009,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("query: ", Style::default().fg(Color::Gray)),
-                    Span::styled(shown.to_string(), Style::default().fg(Color::Yellow)),
+                    Span::styled(shown.to_string(), Style::default().fg(Color::LightCyan)),
                 ]),
                 Line::from(""),
                 Line::from("Enter: search/jump  Esc: cancel  Backspace: delete"),
@@ -1791,17 +2019,19 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(" Pane Search ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
                 .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
+            set_input_cursor(frame, area, 2, 7, value);
         }
         ModalState::Input {
             kind,
             request,
             value,
         } => {
-            let area = centered_rect(70, 35, frame.area());
+            let area = modal_rect(frame.area(), 76, 12);
             frame.render_widget(Clear, area);
 
             let prompt = match kind {
@@ -1812,15 +2042,15 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 Line::from(format!("action: {}", request.action.label())),
                 Line::from(format!(
                     "target: {}",
-                    request
-                        .target
-                        .as_ref()
-                        .map_or_else(|| "(none)".to_string(), |p| p.display().to_string())
+                    compact_middle(
+                        &request_targets_text(request),
+                        area.width.saturating_sub(10) as usize
+                    )
                 )),
                 Line::from(""),
                 Line::from(prompt),
-                Line::from(format!("> {value}")).style(Style::default().fg(Color::Yellow)),
-                Line::from("Enter: Confirm  Esc: Cancel"),
+                Line::from(format!("> {value}")).style(Style::default().fg(Color::LightCyan)),
+                Line::from("Enter: Confirm  Esc: Cancel  Ctrl+u: clear"),
             ];
 
             let p = Paragraph::new(lines)
@@ -1828,28 +2058,26 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .title(" Input ")
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(Color::LightBlue)),
                 )
                 .wrap(Wrap { trim: false });
             frame.render_widget(p, area);
+            set_input_cursor(frame, area, 4, 2, value);
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActionMenuSection {
-    Global,
-    SelectedItem,
-    Danger,
+    Group(ActionGroup),
     Unavailable,
 }
 
 impl ActionMenuSection {
     fn title(self) -> &'static str {
         match self {
-            Self::Global => "Global",
-            Self::SelectedItem => "Selected item",
-            Self::Danger => "Danger",
+            Self::Group(group) => group.title(),
             Self::Unavailable => "Unavailable",
         }
     }
@@ -1864,46 +2092,22 @@ enum ActionMenuRow {
     Disabled(Action, String),
 }
 
-fn action_menu_section(action: Action) -> ActionMenuSection {
-    if action.is_dangerous() {
-        ActionMenuSection::Danger
-    } else if action.needs_target() {
-        ActionMenuSection::SelectedItem
-    } else {
-        ActionMenuSection::Global
-    }
-}
-
 fn build_action_menu_rows(actions: &[Action]) -> Vec<ActionMenuRow> {
-    let mut global = Vec::new();
-    let mut selected = Vec::new();
-    let mut danger = Vec::new();
-
-    for action in actions {
-        match action_menu_section(*action) {
-            ActionMenuSection::Global => global.push(*action),
-            ActionMenuSection::SelectedItem => selected.push(*action),
-            ActionMenuSection::Danger => danger.push(*action),
-            ActionMenuSection::Unavailable => {}
-        }
-    }
-
-    let sections = [
-        (ActionMenuSection::Global, global),
-        (ActionMenuSection::SelectedItem, selected),
-        (ActionMenuSection::Danger, danger),
-    ];
-
     let mut rows = Vec::new();
-    for (section, actions) in sections {
-        if actions.is_empty() {
+    for group in ActionGroup::ALL {
+        let grouped = actions
+            .iter()
+            .copied()
+            .filter(|action| action.group() == group)
+            .collect::<Vec<_>>();
+        if grouped.is_empty() {
             continue;
         }
         if !rows.is_empty() {
             rows.push(ActionMenuRow::Spacer);
         }
-        rows.push(ActionMenuRow::Header(section));
-        rows.extend(actions.into_iter().map(ActionMenuRow::Action));
+        rows.push(ActionMenuRow::Header(ActionMenuSection::Group(group)));
+        rows.extend(grouped.into_iter().map(ActionMenuRow::Action));
     }
 
     rows
@@ -1957,12 +2161,12 @@ fn action_menu_rows_for_app(
 fn action_menu_text(action: Action) -> String {
     if action.is_dangerous() {
         format!(
-            "  {:<10} !! {} [danger]",
+            "  {:<20} !! {} [danger]",
             action.label(),
             action.description()
         )
     } else {
-        format!("  {:<10}    {}", action.label(), action.description())
+        format!("  {:<20}    {}", action.label(), action.description())
     }
 }
 
@@ -1983,6 +2187,7 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from("  2 Managed   files managed by chezmoi under destination/home"),
         Line::from("  3 Unmanaged files in current working directory not managed by chezmoi"),
         Line::from("  4 Source    chezmoi source directory"),
+        Line::from("     Source lists raw source files; use cat for rendered target content"),
         Line::from(""),
         Line::from("Status symbols"),
         Line::from("  Two columns are shown before each status path."),
@@ -2006,14 +2211,21 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::from("  / in List filters paths. / in Detail or Log searches that pane."),
         Line::from("  n/N jumps search matches; in diff without search, n/N jumps hunks."),
         Line::from("  H/L horizontally scroll Detail or Log. m maximizes/restores focused pane."),
+        Line::from("  Normal layout keeps Log in a 4-row drawer; focused Log uses detail_ratio."),
+        Line::from("  footer_help adds the More key sheet below the persistent footer rows."),
+        Line::from("  show_notices suppresses info/success text; errors always remain visible."),
         Line::from("  Source attributes: {tmpl,priv,exec,enc} when encoded in source names."),
         Line::from("  external-diff opens chezmoi diff in tools.external_diff (default delta)."),
         Line::from("  debug-context shows current view/selection/config summary."),
         Line::from("  ! opens notice history."),
         Line::from(""),
         Line::from("Keys"),
-        Line::from("  Tab focus panes   j/k or arrows move/scroll   r refresh   q quit"),
-        Line::from("  Esc closes modals. This help scrolls with j/k/PgUp/PgDn."),
+        Line::from("  Tab / Back Tab: next / previous pane"),
+        Line::from("  j/k: move or scroll   Home/End or g/G: list top/bottom"),
+        Line::from("  PgUp/PgDn: page   Enter: expand directory   /: filter or search"),
+        Line::from("  Esc: close modal or clear the active list filter"),
+        Line::from("  Ctrl+P: action palette   a: actions   r: refresh   q: quit"),
+        Line::from("  This help scrolls with j/k, PgUp/PgDn, Home/End."),
     ]
 }
 
@@ -2057,10 +2269,16 @@ fn action_preflight_impact(action: Action) -> &'static str {
         Action::Update => "updates source then applies changes",
         Action::MergeAll => "runs merge workflow for all changes",
         Action::Add => "imports selected files into chezmoi source state",
+        Action::AddDirectory => "imports the entire selected directory tree recursively",
         Action::Ignore => "appends ignore rules to .chezmoiignore",
         Action::ReAdd => "re-imports selected modified files",
+        Action::ReAddAll => "re-imports every eligible modified file",
         Action::Forget => "removes selected targets from chezmoi state",
         Action::Chattr => "changes source attributes for selected targets",
+        Action::GitPull => "updates the source repository without applying changes",
+        Action::GitPush => "pushes existing source repository commits",
+        Action::GitCommit => "commits only changes already staged in the source repository",
+        Action::Init => "initializes chezmoi source state for this destination",
         Action::Destroy => "deletes selected target from source/destination/state",
         Action::Purge => "removes chezmoi config and data for this environment",
         _ => action.description(),
@@ -2069,11 +2287,9 @@ fn action_preflight_impact(action: Action) -> &'static str {
 
 fn action_preflight_mode(action: Action) -> &'static str {
     match action {
-        Action::Edit | Action::Update | Action::Merge | Action::MergeAll | Action::ExternalDiff => {
-            "foreground command"
-        }
         Action::DebugContext => "internal detail view",
         Action::Ignore => "internal file update",
+        _ if action.runs_foreground() => "foreground command",
         _ => "background command",
     }
 }
@@ -2086,7 +2302,7 @@ fn action_preflight_commands(requests: &[ActionRequest], limit: usize) -> Vec<St
             Ok(args) => {
                 let args = args
                     .into_iter()
-                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .map(|arg| quote_preview_arg(&arg.to_string_lossy()))
                     .collect::<Vec<_>>()
                     .join(" ");
                 format!("chezmoi {args}")
@@ -2095,9 +2311,135 @@ fn action_preflight_commands(requests: &[ActionRequest], limit: usize) -> Vec<St
                 let mode = request.chattr_attrs.as_deref().unwrap_or("auto");
                 format!("internal ignore rule update ({mode})")
             }
+            Err(_) if request.action == Action::DebugContext => {
+                "internal debug-context detail".to_string()
+            }
+            Err(_) if request.action == Action::OpenSourceDir => {
+                "interactive shell: source directory".to_string()
+            }
+            Err(_) if request.action == Action::ExternalDiff => {
+                "external diff tool: chezmoi diff".to_string()
+            }
+            Err(_) if request.action == Action::EditIgnore => {
+                "external editor: .chezmoiignore".to_string()
+            }
+            Err(_) if request.action == Action::EditSource => format!(
+                "external editor: {}",
+                request.targets.first().map_or_else(
+                    || "(selected source file)".to_string(),
+                    |path| quote_preview_arg(&path.display().to_string())
+                )
+            ),
             Err(_) => format!("internal/foreground action: {}", request.action.label()),
         })
         .collect()
+}
+
+fn quote_preview_arg(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "_./:=@+-".contains(ch))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn request_targets_text(request: &ActionRequest) -> String {
+    match request.targets.as_slice() {
+        [] => "(none)".to_string(),
+        [target] => target.display().to_string(),
+        [first, rest @ ..] => format!("{} (+{} more)", first.display(), rest.len()),
+    }
+}
+
+fn apply_has_recursive_scope(
+    targets: &[std::path::PathBuf],
+    plan: &crate::app::ApplyPlan,
+    home_dir: &Path,
+) -> bool {
+    targets.iter().any(|target| {
+        let target = if target.is_absolute() {
+            target.clone()
+        } else {
+            home_dir.join(target)
+        };
+        target.is_dir()
+            || plan
+                .added
+                .iter()
+                .chain(&plan.modified)
+                .chain(&plan.deleted)
+                .chain(&plan.run)
+                .chain(&plan.unknown)
+                .any(|path| {
+                    let path = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        home_dir.join(path)
+                    };
+                    path != target && path.starts_with(&target)
+                })
+    })
+}
+
+fn apply_scope_summary(targets: &[std::path::PathBuf]) -> String {
+    if targets.is_empty() {
+        "scope: ALL pending changes - no target filter".to_string()
+    } else {
+        format!("scope: selected targets - {} target root(s)", targets.len())
+    }
+}
+
+fn apply_plan_count_summary(plan: &crate::app::ApplyPlan) -> String {
+    format!(
+        "changes: {} total | Added {} | Modified {} | Deleted {}",
+        plan.total(),
+        plan.added.len(),
+        plan.modified.len(),
+        plan.deleted.len()
+    )
+}
+
+fn apply_plan_secondary_summary(plan: &crate::app::ApplyPlan) -> String {
+    format!(
+        "plan groups: scripts {} | unknown {}",
+        plan.run.len(),
+        plan.unknown.len()
+    )
+}
+
+fn push_apply_warnings(lines: &mut Vec<Line<'static>>, plan: &crate::app::ApplyPlan) {
+    if plan.run.is_empty() && plan.deleted.is_empty() && plan.unknown.is_empty() {
+        return;
+    }
+
+    lines.push(Line::from(""));
+    if !plan.run.is_empty() {
+        lines.push(
+            Line::from(format!(
+                "Warning: apply may run {} script(s).",
+                plan.run.len()
+            ))
+            .style(Style::default().fg(Color::LightYellow)),
+        );
+    }
+    if !plan.deleted.is_empty() {
+        lines.push(
+            Line::from(format!(
+                "Warning: {} path(s) will be deleted.",
+                plan.deleted.len()
+            ))
+            .style(Style::default().fg(Color::LightRed)),
+        );
+    }
+    if !plan.unknown.is_empty() {
+        lines.push(
+            Line::from("Warning: unknown status entries need manual review.")
+                .style(Style::default().fg(Color::LightYellow)),
+        );
+    }
 }
 
 fn push_apply_plan_group(
@@ -2131,7 +2473,7 @@ fn action_menu_row_item(row: ActionMenuRow) -> ListItem<'static> {
         )),
         ActionMenuRow::Action(action) => action_menu_item(action),
         ActionMenuRow::Disabled(action, reason) => ListItem::new(Line::styled(
-            format!("  {:<10} -- disabled: {}", action.label(), reason),
+            format!("  {:<20} -- disabled: {}", action.label(), reason),
             Style::default().fg(Color::DarkGray),
         )),
     }
@@ -2185,7 +2527,8 @@ fn detect_preview_language(path: Option<&Path>) -> PreviewLanguage {
 }
 
 fn colorized_preview_line(line: &str, language: PreviewLanguage) -> Line<'static> {
-    let (code, comment) = split_comment(line, language);
+    let sanitized = sanitize_terminal_text(line);
+    let (code, comment) = split_comment(&sanitized, language);
     let mut spans = colorize_code_tokens(code, language);
 
     if let Some(comment) = comment {
@@ -2242,12 +2585,7 @@ fn colorize_code_tokens(code: &str, language: PreviewLanguage) -> Vec<Span<'stat
                 i += 1;
             }
             let token: String = chars[start..i].iter().collect();
-            let key_style = if is_object_key(&chars, i, language) {
-                Style::default().fg(Color::LightCyan)
-            } else {
-                Style::default().fg(Color::Yellow)
-            };
-            spans.push(Span::styled(token, key_style));
+            spans.push(Span::styled(token, Style::default().fg(Color::LightCyan)));
             continue;
         }
 
@@ -2311,21 +2649,6 @@ fn is_word(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_'
 }
 
-fn is_object_key(chars: &[char], from: usize, language: PreviewLanguage) -> bool {
-    if !matches!(
-        language,
-        PreviewLanguage::Json | PreviewLanguage::Toml | PreviewLanguage::Yaml
-    ) {
-        return false;
-    }
-
-    let mut i = from;
-    while i < chars.len() && chars[i].is_whitespace() {
-        i += 1;
-    }
-    i < chars.len() && chars[i] == ':'
-}
-
 fn preview_keywords(language: PreviewLanguage) -> &'static [&'static str] {
     match language {
         PreviewLanguage::Rust => &[
@@ -2371,46 +2694,169 @@ fn preview_keywords(language: PreviewLanguage) -> &'static [&'static str] {
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
+fn modal_rect(area: Rect, preferred_width: u16, preferred_height: u16) -> Rect {
+    let max_width = area.width.saturating_sub(2);
+    let max_height = area.height.saturating_sub(2);
+    let width = preferred_width.min(max_width).max(max_width.min(1));
+    let height = preferred_height.min(max_height).max(max_height.min(1));
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
+}
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
+fn modal_max_scroll(lines: &[Line<'static>], area: Rect) -> usize {
+    let width = area.width.saturating_sub(2).max(1);
+    let rendered_lines = lines
+        .iter()
+        .map(|line| wrapped_line_count(line, width as usize))
+        .sum::<usize>();
+    rendered_lines.saturating_sub(area.height.saturating_sub(2) as usize)
+}
+
+fn wrapped_line_count(line: &Line<'static>, width: usize) -> usize {
+    let text = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    if text.is_empty() {
+        return 1;
+    }
+
+    let mut rows = 1usize;
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let word_width = Span::raw(word).width();
+        if word_width > width {
+            if used > 0 {
+                rows += 1;
+            }
+            rows += word_width.div_ceil(width).saturating_sub(1);
+            used = word_width % width;
+            if used == 0 {
+                used = width;
+            }
+            continue;
+        }
+
+        let gap = usize::from(used > 0);
+        if used > 0 && used + gap + word_width > width {
+            rows += 1;
+            used = word_width;
+        } else {
+            used += gap + word_width;
+        }
+    }
+    rows
+}
+
+fn set_input_cursor(
+    frame: &mut Frame,
+    area: Rect,
+    line_index: u16,
+    prefix_width: usize,
+    value: &str,
+) {
+    if area.width <= 2 || area.height <= 2 {
+        return;
+    }
+    let y = area
+        .y
+        .saturating_add(1)
+        .saturating_add(line_index)
+        .min(area.bottom().saturating_sub(2));
+    let x = area
+        .x
+        .saturating_add(1)
+        .saturating_add(clamp_to_u16(prefix_width.saturating_add(text_width(value))))
+        .min(area.right().saturating_sub(2));
+    frame.set_cursor_position((x, y));
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionMenuRow, ActionMenuSection, action_menu_rows, action_menu_text,
-        build_action_menu_rows, cheat_groups, cheat_groups_width, fit_cheat_groups, footer_hints,
-        footer_left, hints_width, layout_hints, log_scroll_offset,
+        ActionMenuRow, ActionMenuSection, SELECTION_BG, action_menu_rows, action_menu_text,
+        action_preflight_commands, action_preflight_impact, action_preflight_mode,
+        build_action_menu_rows, clear_buffer_styles, draw, draw_styled, ensure_dark_canvas,
+        log_scroll_offset,
     };
-    use crate::app::{App, PaneFocus};
+    use crate::app::{
+        App, ApplyPlan, ApplyPlanSnapshot, ConfirmStep, InputKind, ModalState, PaneFocus,
+    };
     use crate::config::AppConfig;
-    use crate::domain::Action;
-    use crate::domain::ListView;
+    use crate::domain::{Action, ActionRequest, ChangeKind, ListView, StatusEntry};
     use crate::ui_diff::colorized_diff_lines;
-    use ratatui::style::Color;
+    use ratatui::Terminal;
+    use ratatui::backend::{Backend, TestBackend};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::{Color, Modifier};
     use ratatui::text::Line;
+    use std::path::PathBuf;
 
     fn render_line_text(line: &Line<'_>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    fn render_text(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, app))
+            .expect("draw succeeds");
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn render_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw_styled(frame, app))
+            .expect("draw succeeds");
+        terminal.backend().buffer().clone()
+    }
+
+    fn has_quiet_selection(buffer: &Buffer) -> bool {
+        buffer.content().iter().any(|cell| {
+            cell.bg == SELECTION_BG
+                && cell.fg == Color::White
+                && cell.modifier.contains(Modifier::BOLD)
+        })
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        buffer
+            .content()
+            .chunks(buffer.area().width as usize)
+            .map(|row| {
+                let mut text = String::new();
+                let mut hidden_cells = 0usize;
+                for cell in row {
+                    if hidden_cells > 0 {
+                        hidden_cells -= 1;
+                        continue;
+                    }
+                    text.push_str(cell.symbol());
+                    hidden_cells = ratatui::text::Span::raw(cell.symbol())
+                        .width()
+                        .saturating_sub(1);
+                }
+                text
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn request(action: Action) -> ActionRequest {
+        ActionRequest {
+            action,
+            targets: vec![PathBuf::from("日本語/設定/very-long-target-name")],
+            chattr_attrs: None,
+        }
     }
 
     #[test]
@@ -2432,8 +2878,10 @@ mod tests {
         assert_eq!(rendered[1], "--- a/.zshrc");
         assert_eq!(rendered[2], "+++ b/.zshrc");
         assert_eq!(rendered[3], "@@ -1,1 +1,1 @@");
-        assert_eq!(rendered[4], "-old");
-        assert_eq!(rendered[5], "+new");
+        assert!(rendered[4].contains("-old"));
+        assert!(rendered[4].starts_with("   1      │"));
+        assert!(rendered[5].contains("+new"));
+        assert!(rendered[5].starts_with("        1 │"));
     }
 
     #[test]
@@ -2460,37 +2908,504 @@ mod tests {
     }
 
     #[test]
-    fn footer_left_shows_selected_ordinal_with_total_items() {
+    fn header_keeps_identity_tabs_and_actual_counts_visible() {
         let mut app = App::new(AppConfig::default());
-        app.managed_entries = vec![
-            std::path::PathBuf::from("a"),
-            std::path::PathBuf::from("b"),
-            std::path::PathBuf::from("c"),
-        ];
-        app.switch_view(ListView::Managed);
-        app.selected_index = 1;
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from("changed"),
+            actual_vs_state: ChangeKind::Modified,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.managed_entries = vec![PathBuf::from("a"), PathBuf::from("b")];
+        app.unmanaged_entries = vec![PathBuf::from("loose")];
+        app.source_entries = vec![PathBuf::from("x"), PathBuf::from("y"), PathBuf::from("z")];
 
-        let (spans, _) = footer_left(&app, 120);
-        let rendered = spans
-            .into_iter()
-            .map(|span| span.content.to_string())
-            .collect::<String>();
+        let rendered = render_text(&mut app, 100, 24);
 
-        assert!(rendered.contains("2/3 items"));
+        assert!(rendered.contains("chezmoi-tui"));
+        assert!(rendered.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+        assert!(rendered.contains("▶ 1 Status 1"));
+        assert!(rendered.contains("2 Managed 2"));
+        assert!(rendered.contains("3 Unmanaged 1"));
+        assert!(rendered.contains("4 Source 3"));
     }
 
     #[test]
-    fn footer_left_shows_latest_notice() {
+    fn source_view_list_title_marks_raw_source_content() {
         let mut app = App::new(AppConfig::default());
-        app.set_error_notice("apply failed for dotfile");
+        app.source_entries = vec![PathBuf::from("dot_file")];
+        app.switch_view(ListView::Source);
+        app.focus = PaneFocus::List;
 
-        let (spans, _) = footer_left(&app, 120);
-        let rendered = spans
-            .into_iter()
-            .map(|span| span.content.to_string())
-            .collect::<String>();
+        let rendered = render_text(&mut app, 80, 24);
 
-        assert!(rendered.contains("apply failed for dotfile"));
+        assert!(rendered.contains("Source (raw)"), "{rendered}");
+        assert!(rendered.contains("4 Source 1"), "{rendered}");
+    }
+
+    #[test]
+    fn narrow_layout_shows_only_focused_pane_and_footer() {
+        let mut app = App::new(AppConfig::default());
+        app.status_entries = vec![StatusEntry {
+            path: PathBuf::from(".bashrc"),
+            actual_vs_state: ChangeKind::Modified,
+            actual_vs_target: ChangeKind::Modified,
+        }];
+        app.switch_view(ListView::Status);
+        app.focus = PaneFocus::List;
+
+        let rendered = render_text(&mut app, 64, 24);
+        let footer = rendered.lines().rev().take(2).collect::<Vec<_>>();
+        let key_row = footer[0].split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(rendered.contains("▶ Status"));
+        assert!(footer[1].contains("Status"), "{rendered}");
+        assert!(key_row.contains("j/k Move"), "{rendered}");
+        assert!(key_row.contains("a Actions"), "{rendered}");
+        assert!(key_row.contains("? Help"), "{rendered}");
+        assert!(key_row.contains("q Quit"), "{rendered}");
+        assert_eq!(key_row.matches("/ Find").count(), 1, "{rendered}");
+        assert!(!rendered.contains("▶ Detail"));
+
+        let wider = render_text(&mut app, 100, 24);
+        assert!(wider.contains("Enter  open"), "{wider}");
+    }
+
+    #[test]
+    fn normal_and_wizard_selections_use_one_quiet_style() {
+        let mut list = App::new(AppConfig::default());
+        list.managed_entries = vec![PathBuf::from("alpha"), PathBuf::from("beta")];
+        list.switch_view(ListView::Managed);
+        assert!(has_quiet_selection(&render_buffer(&mut list, 64, 24)));
+
+        let mut menu = App::new(AppConfig::default());
+        menu.open_action_menu();
+        assert!(has_quiet_selection(&render_buffer(&mut menu, 80, 24)));
+
+        let mut wizard = App::new(AppConfig::default());
+        wizard.modal = ModalState::Ignore {
+            requests: vec![request(Action::Ignore)],
+            selected: 0,
+            global_only: false,
+        };
+        assert!(has_quiet_selection(&render_buffer(&mut wizard, 80, 24)));
+    }
+
+    #[test]
+    fn tiny_terminal_degrades_without_panicking() {
+        let mut app = App::new(AppConfig::default());
+        let rendered = render_text(&mut app, 16, 4);
+        assert!(rendered.contains("chezmoi-tui"));
+    }
+
+    #[test]
+    fn long_unicode_path_preserves_the_visible_tail() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = vec![PathBuf::from("日本語のとても長い最終設定ファイル.txt")];
+        app.switch_view(ListView::Managed);
+
+        let rendered = render_text(&mut app, 64, 24);
+
+        assert!(rendered.contains("最終設定ファイル.txt"), "{rendered}");
+    }
+
+    #[test]
+    fn list_viewport_keeps_the_selected_row_visible() {
+        let mut app = App::new(AppConfig::default());
+        app.managed_entries = (0..40)
+            .map(|index| PathBuf::from(format!("item-{index:02}")))
+            .collect();
+        app.switch_view(ListView::Managed);
+        app.selected_index = 30;
+
+        let rendered = render_text(&mut app, 64, 14);
+
+        assert!(rendered.contains("item-30"));
+        assert!(!rendered.contains("item-00"));
+    }
+
+    #[test]
+    fn empty_states_distinguish_loading_and_no_filter_matches() {
+        let mut app = App::new(AppConfig::default());
+        app.begin_busy_task_with_message("refreshing");
+        let rendered = render_text(&mut app, 64, 24);
+        assert!(rendered.contains("Loading status"));
+        assert!(rendered.contains("refreshing"));
+
+        let mut app = App::new(AppConfig::default());
+        app.apply_list_filter_immediately("missing".to_string());
+        let rendered = render_text(&mut app, 64, 24);
+        assert!(rendered.contains("No matches for /missing"));
+        assert!(rendered.contains("Esc clears the filter"));
+    }
+
+    #[test]
+    fn footer_help_adds_a_third_key_sheet() {
+        let mut app = App::new(AppConfig::default());
+        let without_help = render_text(&mut app, 80, 24);
+        assert!(!without_help.contains("More:"));
+
+        app.footer_help = true;
+        let with_help = render_text(&mut app, 80, 24);
+        assert!(with_help.contains("More:"));
+    }
+
+    #[test]
+    fn errors_stay_visible_when_information_notices_are_disabled() {
+        let mut app = App::new(AppConfig::default());
+        app.config.show_notices = false;
+        app.set_error_notice("critical apply failure");
+        let rendered = render_text(&mut app, 80, 24);
+        assert!(rendered.contains("critical apply failure"));
+
+        let mut app = App::new(AppConfig::default());
+        app.config.show_notices = false;
+        app.set_info_notice("informational refresh complete");
+        let rendered = render_text(&mut app, 80, 24);
+        assert!(!rendered.contains("informational refresh complete"));
+
+        let mut app = App::new(AppConfig::default());
+        app.config.show_notices = false;
+        app.set_error_notice("critical apply failure");
+        let rendered = render_text(&mut app, 23, 4);
+        let compact = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(compact.contains("ERR critical"), "{rendered}");
+    }
+
+    #[test]
+    fn preflight_mode_uses_action_metadata() {
+        for action in Action::ALL {
+            let expected = match action {
+                Action::DebugContext => "internal detail view",
+                Action::Ignore => "internal file update",
+                _ if action.runs_foreground() => "foreground command",
+                _ => "background command",
+            };
+            assert_eq!(action_preflight_mode(action), expected);
+        }
+    }
+
+    #[test]
+    fn preflight_quotes_arguments_with_spaces() {
+        let request = ActionRequest {
+            action: Action::Cat,
+            targets: vec![PathBuf::from("/tmp/設定 files/profile")],
+            chattr_attrs: None,
+        };
+        let commands = action_preflight_commands(&[request], 1);
+        assert_eq!(commands[0], "chezmoi cat -- '/tmp/設定 files/profile'");
+    }
+
+    #[test]
+    fn preflight_calls_out_broad_action_scopes() {
+        for action in [
+            Action::AddDirectory,
+            Action::ReAddAll,
+            Action::Init,
+            Action::GitPull,
+            Action::GitPush,
+            Action::GitCommit,
+        ] {
+            let impact = action_preflight_impact(action);
+            assert!(
+                impact.contains("entire")
+                    || impact.contains("every")
+                    || impact.contains("source")
+                    || impact.contains("destination")
+                    || impact.contains("only"),
+                "{action:?}: {impact}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_modals_keep_required_content_visible() {
+        let cases = vec![
+            (
+                ModalState::Ignore {
+                    requests: vec![request(Action::Ignore)],
+                    selected: 4,
+                    global_only: false,
+                },
+                vec!["preview pattern:", "Global by name"],
+            ),
+            (
+                ModalState::AddOptions {
+                    requests: vec![request(Action::Add)],
+                    selected: 3,
+                    template: true,
+                    private: false,
+                    executable: false,
+                    encrypted: true,
+                },
+                vec!["attrs preview:", "encrypted"],
+            ),
+            (
+                ModalState::ActionMenu {
+                    selected: 0,
+                    filter: String::new(),
+                },
+                vec!["danger:<name>", "Enter run", "Esc close"],
+            ),
+            (
+                ModalState::ActionPreflight {
+                    requests: vec![request(Action::OpenSourceDir)],
+                    scroll: 0,
+                },
+                vec![
+                    "foreground command",
+                    "command preview:",
+                    "very-long-target-name",
+                ],
+            ),
+            (
+                ModalState::Input {
+                    kind: InputKind::ChattrAttrs,
+                    request: request(Action::Chattr),
+                    value: "private".to_string(),
+                },
+                vec!["chattr attributes", "Ctrl+u: clear"],
+            ),
+            (
+                ModalState::Confirm {
+                    request: request(Action::Purge),
+                    step: ConfirmStep::DangerPhrase,
+                    typed: "purge ALL".to_string(),
+                },
+                vec![
+                    "Dangerous Action",
+                    "required: PURGE ALL",
+                    "input: purge ALL",
+                ],
+            ),
+        ];
+
+        for width in [64, 80] {
+            for (modal, expected) in &cases {
+                let mut app = App::new(AppConfig::default());
+                app.modal = modal.clone();
+                let rendered = render_text(&mut app, width, 24);
+                for text in expected {
+                    assert!(
+                        rendered.contains(text),
+                        "width={width}, modal={modal:?}, missing={text:?}\n{rendered}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn confirm_apply_compacts_targets_but_keeps_safety_actions_visible() {
+        let targets = (0..20)
+            .map(|index| PathBuf::from(format!("/home/demo/日本語/target-{index:02}.txt")))
+            .collect::<Vec<_>>();
+        let plan = ApplyPlan {
+            modified: targets.clone(),
+            deleted: vec![PathBuf::from("/home/demo/old.txt")],
+            run: vec![PathBuf::from("/home/demo/run_once.sh")],
+            ..ApplyPlan::default()
+        };
+        let request = ActionRequest {
+            action: Action::Apply,
+            targets: targets.clone(),
+            chattr_attrs: None,
+        };
+        let snapshot = ApplyPlanSnapshot {
+            targets,
+            plan,
+            diff_fingerprint: 0,
+        };
+
+        for width in [64, 80] {
+            let mut app = App::new(AppConfig::default());
+            app.modal = ModalState::ConfirmApply {
+                request: request.clone(),
+                snapshot: snapshot.clone(),
+            };
+            let rendered = render_text(&mut app, width, 24);
+            let compact = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+            assert!(compact.contains("scope: selected targets - 20 target root(s)"));
+            assert!(compact.contains("target preview (3 of 20)"));
+            assert!(compact.contains("17 more targets - reviewed in the full Apply Plan"));
+            assert!(compact.contains("Warning: apply may run 1 script(s)."));
+            assert!(compact.contains("Warning: 1 path(s) will be deleted."));
+            assert!(compact.contains("Enter: validate and apply"));
+            assert!(compact.contains("Esc: cancel"));
+        }
+    }
+
+    #[test]
+    fn confirm_apply_empty_target_set_means_all_pending_changes() {
+        let request = ActionRequest {
+            action: Action::Apply,
+            targets: Vec::new(),
+            chattr_attrs: None,
+        };
+        let snapshot = ApplyPlanSnapshot {
+            targets: Vec::new(),
+            plan: ApplyPlan {
+                added: vec![PathBuf::from("/home/demo/new.txt")],
+                ..ApplyPlan::default()
+            },
+            diff_fingerprint: 0,
+        };
+        let mut app = App::new(AppConfig::default());
+        app.modal = ModalState::ConfirmApply { request, snapshot };
+
+        for width in [64, 80] {
+            let rendered = render_text(&mut app, width, 24);
+            let compact = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(compact.contains("scope: ALL pending changes - no target filter"));
+            assert!(compact.contains("target roots: ALL pending changes"));
+            assert!(compact.contains("Enter: validate and apply"));
+            assert!(compact.contains("Esc: cancel"));
+        }
+    }
+
+    #[test]
+    fn virtual_absent_directory_child_marks_recursive_scope_in_both_modals() {
+        let mut app = App::new(AppConfig::default());
+        let name = format!("chezmoi-virtual-scope-{}", std::process::id());
+        let relative_root = PathBuf::from(format!(".config/{name}"));
+        let relative_plan = relative_root.join("nested/settings.toml");
+        let target = app.home_dir.join(&relative_root);
+        assert!(!target.exists(), "fixture directory must be absent");
+
+        let request = ActionRequest {
+            action: Action::Apply,
+            targets: vec![target.clone()],
+            chattr_attrs: None,
+        };
+        let snapshot = ApplyPlanSnapshot {
+            targets: vec![target],
+            plan: ApplyPlan {
+                modified: vec![relative_plan],
+                ..ApplyPlan::default()
+            },
+            diff_fingerprint: 1,
+        };
+
+        for modal in [
+            ModalState::ApplyPlan {
+                request: request.clone(),
+                snapshot: snapshot.clone(),
+                scroll: 0,
+            },
+            ModalState::ConfirmApply { request, snapshot },
+        ] {
+            app.modal = modal;
+            let rendered = render_text(&mut app, 64, 24);
+            let compact = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                compact.contains("directory roots include every affected descendant"),
+                "{rendered}"
+            );
+            assert!(compact.contains("recursively"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn apply_plan_shows_targets_and_all_affected_path_groups() {
+        let root = tempfile::tempdir().expect("temp root");
+        let target = root.path().to_path_buf();
+        let affected = (0..20)
+            .map(|index| target.join(format!("nested/日本語/file-{index:02}.txt")))
+            .collect::<Vec<_>>();
+        let request = ActionRequest {
+            action: Action::Apply,
+            targets: vec![target.clone()],
+            chattr_attrs: None,
+        };
+        let plan = ApplyPlan {
+            added: vec![affected[0].clone()],
+            modified: affected[1..].to_vec(),
+            deleted: vec![target.join("removed.txt")],
+            run: vec![target.join("run_once.sh")],
+            unknown: vec![target.join("unknown.txt")],
+        };
+        let snapshot = ApplyPlanSnapshot {
+            targets: vec![target.clone()],
+            plan,
+            diff_fingerprint: 0,
+        };
+        let mut app = App::new(AppConfig::default());
+        app.modal = ModalState::ApplyPlan {
+            request,
+            snapshot,
+            scroll: 0,
+        };
+
+        let rendered = render_text(&mut app, 64, 24);
+        let compact = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(target.is_dir());
+        assert!(compact.contains("scope: selected targets - 1 target root(s)"));
+        assert!(compact.contains("target roots: 1 selected"));
+        assert!(
+            compact.contains("directory roots include every affected descendant"),
+            "{rendered}"
+        );
+        assert!(compact.contains("recursively"), "{rendered}");
+        assert!(compact.contains(&target.display().to_string()));
+        assert!(compact.contains("changes: 23 total"));
+        assert!(compact.contains("Warning: apply may run 1 script(s)."));
+        assert!(compact.contains("Warning: 1 path(s) will be deleted."));
+
+        let ModalState::ApplyPlan { scroll, .. } = &mut app.modal else {
+            panic!("apply plan modal");
+        };
+        *scroll = usize::MAX;
+        let bottom = render_text(&mut app, 64, 24);
+        let compact = bottom.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(compact.contains("Unknown (1)"), "{bottom}");
+        assert!(compact.contains("Enter: continue to confirmation"));
+        assert!(compact.contains("Esc: cancel"));
+    }
+
+    #[test]
+    fn input_modal_places_cursor_after_the_value() {
+        let mut app = App::new(AppConfig::default());
+        app.modal = ModalState::Input {
+            kind: InputKind::ChattrAttrs,
+            request: request(Action::Chattr),
+            value: "private".to_string(),
+        };
+        let backend = TestBackend::new(64, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw succeeds");
+        let cursor = terminal
+            .backend_mut()
+            .get_cursor_position()
+            .expect("cursor position");
+        assert_eq!(cursor.y, 11);
+        assert_eq!(cursor.x, 11);
+    }
+
+    #[test]
+    fn clearing_styles_preserves_no_color_text() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 8, 1));
+        buffer[(0, 0)]
+            .set_symbol("色")
+            .set_fg(Color::Red)
+            .set_bg(Color::Blue);
+        clear_buffer_styles(&mut buffer);
+        assert_eq!(buffer[(0, 0)].symbol(), "色");
+        assert_eq!(buffer[(0, 0)].style().fg, Some(Color::Reset));
+        assert_eq!(buffer[(0, 0)].style().bg, Some(Color::Reset));
+        assert_eq!(
+            buffer[(0, 0)].style().add_modifier,
+            ratatui::style::Modifier::empty()
+        );
+    }
+
+    #[test]
+    fn dark_canvas_sets_readable_default_colors() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
+        ensure_dark_canvas(&mut buffer);
+        assert_eq!(buffer[(0, 0)].fg, Color::Gray);
+        assert_eq!(buffer[(0, 0)].bg, Color::Black);
     }
 
     #[test]
@@ -2515,21 +3430,42 @@ mod tests {
             Action::Purge,
         ]);
 
-        let global_idx = rows
+        let apply_idx = rows
             .iter()
-            .position(|row| matches!(row, ActionMenuRow::Header(ActionMenuSection::Global)))
-            .expect("global header");
-        let selected_idx = rows
+            .position(|row| {
+                matches!(
+                    row,
+                    ActionMenuRow::Header(ActionMenuSection::Group(
+                        crate::action_policy::ActionGroup::ApplyAndSync
+                    ))
+                )
+            })
+            .expect("apply and sync header");
+        let files_idx = rows
             .iter()
-            .position(|row| matches!(row, ActionMenuRow::Header(ActionMenuSection::SelectedItem)))
-            .expect("selected header");
+            .position(|row| {
+                matches!(
+                    row,
+                    ActionMenuRow::Header(ActionMenuSection::Group(
+                        crate::action_policy::ActionGroup::Files
+                    ))
+                )
+            })
+            .expect("files header");
         let danger_idx = rows
             .iter()
-            .position(|row| matches!(row, ActionMenuRow::Header(ActionMenuSection::Danger)))
+            .position(|row| {
+                matches!(
+                    row,
+                    ActionMenuRow::Header(ActionMenuSection::Group(
+                        crate::action_policy::ActionGroup::Danger
+                    ))
+                )
+            })
             .expect("danger header");
 
-        assert!(global_idx < selected_idx);
-        assert!(selected_idx < danger_idx);
+        assert!(apply_idx < files_idx);
+        assert!(files_idx < danger_idx);
         assert!(rows.contains(&ActionMenuRow::Action(Action::Apply)));
         assert!(rows.contains(&ActionMenuRow::Action(Action::Edit)));
         assert!(rows.contains(&ActionMenuRow::Action(Action::Purge)));
@@ -2551,116 +3487,5 @@ mod tests {
                 .any(|row| matches!(row, ActionMenuRow::Header(_)))
         );
         assert!(!rows.iter().any(|row| matches!(row, ActionMenuRow::Spacer)));
-    }
-
-    #[test]
-    fn footer_hints_hide_diff_in_unmanaged_list_view() {
-        let mut app = App::new(AppConfig::default());
-        app.focus = PaneFocus::List;
-        app.view = ListView::Unmanaged;
-
-        let hints = footer_hints(&app);
-        let labels: Vec<&str> = hints
-            .iter()
-            .filter(|hint| hint.enabled)
-            .map(|hint| hint.label)
-            .collect();
-
-        assert!(!labels.contains(&"Diff"));
-        assert!(labels.contains(&"View"));
-        assert!(!labels.contains(&"Fold"));
-        assert!(!labels.contains(&"Pane"));
-    }
-
-    #[test]
-    fn footer_hints_show_scroll_only_for_detail_focus() {
-        let mut app = App::new(AppConfig::default());
-        app.focus = PaneFocus::Detail;
-        app.view = ListView::Managed;
-
-        let hints = footer_hints(&app);
-        let labels: Vec<&str> = hints
-            .iter()
-            .filter(|hint| hint.enabled)
-            .map(|hint| hint.label)
-            .collect();
-
-        assert!(labels.contains(&"Scroll"));
-        assert!(labels.contains(&"Page"));
-        assert!(labels.contains(&"Jump"));
-        assert!(!labels.contains(&"Diff"));
-        assert!(!labels.contains(&"Fold"));
-    }
-
-    #[test]
-    fn footer_hints_include_help_globally() {
-        let app = App::new(AppConfig::default());
-        let hints = footer_hints(&app);
-        let labels: Vec<&str> = hints
-            .iter()
-            .filter(|hint| hint.enabled)
-            .map(|hint| hint.label)
-            .collect();
-        assert!(labels.contains(&"Help"));
-        assert!(labels.contains(&"Actions"));
-        assert!(labels.contains(&"Quit"));
-    }
-
-    #[test]
-    fn footer_hints_fit_keeps_mandatory_on_narrow_width() {
-        let app = App::new(AppConfig::default());
-        let rendered = layout_hints(18, footer_hints(&app));
-        let keys: Vec<&str> = rendered.iter().map(|hint| hint.key).collect();
-        assert!(keys.contains(&"a"));
-        assert!(keys.contains(&"?"));
-        assert!(keys.contains(&"q"));
-        assert!(hints_width(&rendered) <= 18);
-    }
-
-    #[test]
-    fn footer_hints_fit_prefers_more_hints_on_wider_terminal() {
-        let app = App::new(AppConfig::default());
-        let narrow = layout_hints(40, footer_hints(&app));
-        let wide = layout_hints(80, footer_hints(&app));
-
-        assert!(hints_width(&wide) <= 80);
-        assert!(hints_width(&narrow) <= 40);
-        assert!(wide.len() >= narrow.len());
-    }
-
-    #[test]
-    fn layout_hints_never_shows_muted_entries() {
-        let mut app = App::new(AppConfig::default());
-        app.focus = PaneFocus::List;
-        let normal = layout_hints(120, footer_hints(&app));
-        let normal_keys: Vec<&str> = normal.iter().map(|hint| hint.key).collect();
-        assert!(!normal_keys.contains(&"Tab"));
-        assert!(!normal_keys.contains(&"1-4"));
-        assert!(!normal_keys.contains(&"h/l"));
-    }
-
-    #[test]
-    fn cheat_groups_are_ordered_nav_view_global() {
-        let app = App::new(AppConfig::default());
-        let groups = cheat_groups(&app);
-        let titles: Vec<&str> = groups.iter().map(|group| group.title).collect();
-        assert_eq!(titles, vec!["Nav", "View", "Global"]);
-    }
-
-    #[test]
-    fn cheat_groups_drop_view_first_when_narrow() {
-        let mut app = App::new(AppConfig::default());
-        app.view = ListView::Managed;
-        let groups = cheat_groups(&app);
-        let (selected, omitted) = fit_cheat_groups(&groups, 56);
-        let mut kept_titles = Vec::new();
-        for (group, keep) in groups.iter().zip(selected.iter()) {
-            if *keep {
-                kept_titles.push(group.title);
-            }
-        }
-        assert!(omitted);
-        assert!(kept_titles.contains(&"Global"));
-        assert!(cheat_groups_width(&groups, &selected, omitted) <= 56);
     }
 }

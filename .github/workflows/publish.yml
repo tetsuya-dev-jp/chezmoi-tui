@@ -5,10 +5,72 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  binaries:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+          - runner: ubuntu-22.04-arm
+            platform: linux-aarch64
+          - runner: macos-latest
+            platform: macos-aarch64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag and binary versions
+        shell: bash
+        run: |
+          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "chezmoi-tui"))')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$crate_version" = "$tag_version"
+          cargo build --locked --release
+          version_output="$(target/release/chezmoi-tui --version)"
+          test "${version_output%%$'\n'*}" = "chezmoi-tui $tag_version"
+
+      - name: Package
+        shell: bash
+        run: |
+          name="chezmoi-tui_${GITHUB_REF_NAME#v}_${{ matrix.platform }}"
+          mkdir -p "dist/$name"
+          cp target/release/chezmoi-tui "dist/$name/"
+          cp LICENSE README.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C "dist/$name" chezmoi-tui LICENSE README.md
+
+      - name: Upload binary archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish to crates.io
+    needs: binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: read
@@ -57,3 +119,58 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --locked
+
+  draft-release:
+    name: Create draft GitHub release
+    needs: [binaries, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download binary archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create or reuse matching draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          for platform in linux-x86_64 linux-aarch64 macos-aarch64 macos-x86_64; do
+            test -f "dist/chezmoi-tui_${version}_${platform}.tar.gz"
+          done
+          existing_state=dist/existing-release
+          expected_commit="$(git rev-parse "${tag}^{commit}")"
+          if gh release view "$tag" --json tagName,isDraft,targetCommitish \
+              --jq '[.tagName, .isDraft, .targetCommitish] | @tsv' \
+              > "$existing_state" 2>dist/gh-error; then
+            read -r existing_tag is_draft target_commitish < "$existing_state"
+            test "$existing_tag" = "$tag"
+            test "$is_draft" = "true"
+            existing_commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$target_commitish" --jq .sha 2>/dev/null)" || {
+              echo "Cannot resolve existing draft target: $target_commitish"
+              exit 1
+            }
+            test "$existing_commit" = "$expected_commit"
+          elif grep -qi 'release not found' dist/gh-error; then
+            gh release create "$tag" \
+              --draft \
+              --verify-tag \
+              --target "$expected_commit" \
+              --title "$tag" \
+              --notes-file RELEASE_NOTES.md
+          else
+            cat dist/gh-error >&2
+            exit 1
+          fi
+          gh release upload "$tag" dist/*.tar.gz --clobber

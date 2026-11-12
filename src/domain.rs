@@ -81,10 +81,27 @@ pub enum Action {
     Chattr,
     Destroy,
     Purge,
+    Verify,
+    Cat,
+    Ignored,
+    DumpConfig,
+    DiffAll,
+    GitStatus,
+    GitDiff,
+    GitLog,
+    GitPull,
+    GitPush,
+    GitCommit,
+    GitStage,
+    EditSource,
+    ReAddAll,
+    Init,
+    AddDirectory,
+    PreviewAddDirectory,
 }
 
 impl Action {
-    pub const ALL: [Action; 20] = [
+    pub const ALL: [Action; 37] = [
         Action::Apply,
         Action::Doctor,
         Action::Data,
@@ -105,6 +122,23 @@ impl Action {
         Action::Chattr,
         Action::Destroy,
         Action::Purge,
+        Action::Verify,
+        Action::Cat,
+        Action::Ignored,
+        Action::DumpConfig,
+        Action::DiffAll,
+        Action::GitStatus,
+        Action::GitDiff,
+        Action::GitLog,
+        Action::GitPull,
+        Action::GitPush,
+        Action::GitCommit,
+        Action::GitStage,
+        Action::EditSource,
+        Action::ReAddAll,
+        Action::Init,
+        Action::AddDirectory,
+        Action::PreviewAddDirectory,
     ];
 
     pub fn label(self) -> &'static str {
@@ -129,6 +163,23 @@ impl Action {
             Action::Chattr => "chattr",
             Action::Destroy => "destroy",
             Action::Purge => "purge",
+            Action::Verify => "verify",
+            Action::Cat => "cat",
+            Action::Ignored => "ignored",
+            Action::DumpConfig => "dump-config",
+            Action::DiffAll => "diff-all",
+            Action::GitStatus => "git-status",
+            Action::GitDiff => "git-diff",
+            Action::GitLog => "git-log",
+            Action::GitPull => "git-pull",
+            Action::GitPush => "git-push",
+            Action::GitCommit => "git-commit",
+            Action::GitStage => "git-stage",
+            Action::EditSource => "edit-source",
+            Action::ReAddAll => "re-add-all",
+            Action::Init => "init",
+            Action::AddDirectory => "add-directory",
+            Action::PreviewAddDirectory => "preview-add-directory",
         }
     }
 
@@ -154,11 +205,46 @@ impl Action {
             Action::Chattr => "change source attributes",
             Action::Destroy => "delete from source/destination/state",
             Action::Purge => "remove chezmoi config and data",
+            Action::Verify => {
+                "verify destination matches target state, or all when no target is selected"
+            }
+            Action::Cat => "render selected managed target contents on explicit request",
+            Action::Ignored => "list targets ignored by chezmoi",
+            Action::DumpConfig => "show effective chezmoi config as JSON on explicit request",
+            Action::DiffAll => "show the complete destination diff",
+            Action::GitStatus => "show source repository status",
+            Action::GitDiff => "show source repository diff",
+            Action::GitLog => "show source repository history",
+            Action::GitPull => "pull source changes without applying them",
+            Action::GitPush => "push existing commits from the source repository",
+            Action::GitCommit => "commit already staged source repository changes",
+            Action::GitStage => "stage selected source files",
+            Action::EditSource => "edit selected source file in an external editor",
+            Action::ReAddAll => "re-import all modified non-template files",
+            Action::Init => "initialize a missing chezmoi source",
+            Action::AddDirectory => "recursively add an unmanaged directory",
+            Action::PreviewAddDirectory => "preview a recursive unmanaged directory import",
         }
     }
 
     pub fn is_dangerous(self) -> bool {
         crate::action_policy::policy_for(self).dangerous
+    }
+
+    pub fn is_read_only(self) -> bool {
+        crate::action_policy::policy_for(self).read_only
+    }
+
+    pub fn runs_foreground(self) -> bool {
+        crate::action_policy::policy_for(self).runs_foreground
+    }
+
+    pub fn shows_output(self) -> bool {
+        crate::action_policy::policy_for(self).shows_output
+    }
+
+    pub fn group(self) -> crate::action_policy::ActionGroup {
+        crate::action_policy::policy_for(self).group
     }
 
     pub fn requires_confirmation(self) -> bool {
@@ -193,7 +279,7 @@ impl Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionRequest {
     pub action: Action,
-    pub target: Option<PathBuf>,
+    pub targets: Vec<PathBuf>,
     pub chattr_attrs: Option<String>,
 }
 
@@ -209,8 +295,8 @@ impl ActionRequest {
         let base = self.action.confirm_phrase()?;
         match self.action {
             Action::Destroy => self
-                .target
-                .as_ref()
+                .targets
+                .first()
                 .map(|target| format!("{base} {}", target.display())),
             Action::Purge => Some(format!("{base} ALL")),
             _ => Some(base.to_string()),
@@ -257,7 +343,7 @@ mod tests {
     fn action_request_confirmation_phrase_includes_target_for_destroy() {
         let req = ActionRequest {
             action: Action::Destroy,
-            target: Some(PathBuf::from("/tmp/demo.txt")),
+            targets: vec![PathBuf::from("/tmp/demo.txt")],
             chattr_attrs: None,
         };
         assert_eq!(
@@ -270,7 +356,7 @@ mod tests {
     fn action_request_confirmation_phrase_is_all_for_purge() {
         let req = ActionRequest {
             action: Action::Purge,
-            target: None,
+            targets: Vec::new(),
             chattr_attrs: None,
         };
         assert_eq!(req.confirmation_phrase(), Some("PURGE ALL".to_string()));
@@ -283,5 +369,25 @@ mod tests {
             Action::ReAdd.description(),
             "re-import selected modified file"
         );
+    }
+
+    #[test]
+    fn action_helpers_delegate_to_policy() {
+        for action in Action::ALL {
+            let policy = crate::action_policy::policy_for(action);
+            assert_eq!(action.is_read_only(), policy.read_only);
+            assert_eq!(action.runs_foreground(), policy.runs_foreground);
+            assert_eq!(action.shows_output(), policy.shows_output);
+        }
+    }
+
+    #[test]
+    fn interactive_shell_is_mutating_and_read_only_helpers_are_specific() {
+        assert!(!Action::OpenSourceDir.is_read_only());
+        assert!(Action::OpenSourceDir.runs_foreground());
+        assert!(Action::ExternalDiff.is_read_only());
+        assert!(Action::ExternalDiff.runs_foreground());
+        assert!(Action::GitStatus.is_read_only());
+        assert!(!Action::GitPull.is_read_only());
     }
 }

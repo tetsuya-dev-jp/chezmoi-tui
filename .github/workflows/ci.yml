@@ -25,6 +25,15 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --all --locked
+      - name: screenshot snapshots
+        if: runner.os == 'Linux'
+        run: |
+          test -f docs/images/overview.svg
+          test -f docs/images/managed.svg
+          test -f docs/images/actions.svg
+          test -f docs/images/narrow.svg
+          cargo run --locked --example screenshots
+          git --no-pager diff --no-ext-diff --exit-code -- docs/images/*.svg
 
   msrv:
     runs-on: ubuntu-latest
@@ -37,3 +46,33 @@ jobs:
         run: cargo check --all-targets --locked
       - name: test MSRV
         run: cargo test --all --locked
+
+  real-chezmoi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Download and validate chezmoi
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist/chezmoi
+          gh release download v2.74.1 \
+            --repo twpayne/chezmoi \
+            --pattern chezmoi_2.74.1_linux_amd64.tar.gz \
+            --dir dist/chezmoi
+          archive=dist/chezmoi/chezmoi_2.74.1_linux_amd64.tar.gz
+          tar -tzf "$archive" | grep -Fx chezmoi
+          tar -xzf "$archive" -C dist/chezmoi
+          test -x dist/chezmoi/chezmoi
+      - name: Build TUI
+        run: cargo build --locked
+      - name: Real chezmoi isolation smoke
+        run: |
+          python3 scripts/real_chezmoi_smoke.py \
+            --chezmoi dist/chezmoi/chezmoi \
+            --tui target/debug/chezmoi-tui
