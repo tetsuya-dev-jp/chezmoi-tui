@@ -9,8 +9,8 @@ with `--chezmoi`. Install it from the
 you use the Homebrew formula, which declares a runtime dependency, or the Nix
 flake, whose package wrapper includes `chezmoi`.
 
-Version `0.3.1` is a distribution-only release. Its application behavior,
-configuration, CLI, and public Rust API are unchanged from `0.3.0`.
+Version `0.3.1` adds distribution routes and fixes a process-output capture
+race. Its configuration, CLI, and public Rust API remain compatible with `0.3.0`.
 
 ## Supported routes
 

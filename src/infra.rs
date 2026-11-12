@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{
@@ -326,15 +326,42 @@ fn append_marker(text: &mut String, marker: &str) {
 }
 
 fn read_temp_file_limited(
-    mut file: File,
+    file: File,
     max_bytes: usize,
     strict_stdout_utf8: bool,
 ) -> Result<LimitedText> {
-    file.seek(SeekFrom::Start(0))?;
+    let read_limit = max_bytes.saturating_add(1);
 
-    let mut limited = file.take((max_bytes + 1) as u64);
-    let mut bytes = Vec::new();
-    limited.read_to_end(&mut bytes)?;
+    #[cfg(unix)]
+    let mut bytes = {
+        use std::io::ErrorKind;
+        use std::os::unix::fs::FileExt;
+
+        // Child clones share a file cursor until every descendant has stopped.
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 8192];
+        while bytes.len() < read_limit {
+            let length = (read_limit - bytes.len()).min(buffer.len());
+            match file.read_at(&mut buffer[..length], bytes.len() as u64) {
+                Ok(0) => break,
+                Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        bytes
+    };
+
+    #[cfg(not(unix))]
+    let mut bytes = {
+        use std::io::Read;
+
+        let mut file = file;
+        file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        file.take(read_limit as u64).read_to_end(&mut bytes)?;
+        bytes
+    };
 
     let truncated = bytes.len() > max_bytes;
     if truncated {
@@ -1183,6 +1210,7 @@ fn background_action_args(mut args: Vec<OsString>) -> Vec<OsString> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::io::Read;
 
     static SCRIPT_FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1767,6 +1795,27 @@ esac
 
         assert!(result.truncated);
         assert!(result.text.contains("output truncated"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_temp_file_limited_preserves_shared_writer_offset() {
+        let file = tempfile::tempfile().expect("temp file");
+        let mut writer = file.try_clone().expect("clone writer");
+        let prefix = vec![b'a'; 32];
+        writer.write_all(&prefix).expect("write prefix");
+
+        read_temp_file_limited(file, 10, false).expect("read limited");
+        writer.write_all(b"-suffix").expect("append suffix");
+        writer.seek(SeekFrom::Start(0)).expect("seek readback");
+        let mut contents = Vec::new();
+        writer.read_to_end(&mut contents).expect("read back");
+
+        assert_eq!(
+            contents,
+            [prefix.as_slice(), b"-suffix"].concat(),
+            "bounded reading must not move the shared writer offset"
+        );
     }
 
     #[test]

@@ -1,10 +1,17 @@
 # Release Notes
 
-## v0.3.1 — Distribution-only
+## v0.3.1 — Installation and output capture
 
-Version `0.3.1` changes packaging and distribution only. The application
-behavior, configuration, CLI, public Rust API, and test expectations are
-unchanged from `0.3.0`.
+Version `0.3.1` adds packaging and installation routes and fixes a
+process-output capture race. Configuration, CLI, and public Rust API remain
+compatible with `0.3.0`.
+
+### Output capture
+
+Bounded output reads no longer share a file cursor with child processes.
+This preserves captured bytes and truncation flags when a descendant is still
+stopping after its process group is killed. A file-backed regression checks
+that capturing output cannot overwrite a writer's subsequent append.
 
 ### Installation
 
