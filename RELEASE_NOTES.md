@@ -196,6 +196,10 @@ Binary users can install the archive for their platform from the
 The release workflow publishes Linux x86_64/aarch64 and macOS x86_64/aarch64
 archives.
 
+The macOS x86_64 archive is built natively on `macos-15-intel`, while the macOS
+aarch64 archive is cross-compiled on that Intel runner. CI validates the
+cross-built Mach-O architecture with `lipo`; ARM runtime execution is not tested.
+
 Existing TUI configuration keys documented for `v0.2.x` remain recognizable,
 including layout and safety settings. Unknown or misspelled keys are rejected
 instead of being ignored. Use `--config` for chezmoi-tui TOML and
@@ -215,8 +219,8 @@ The final local checks passed:
 - four regenerated synthetic SVG screenshots with privacy review; and
 - the final paired startup benchmark.
 
-The macOS result is a cross-compilation Clippy check. Repository CI is the
-runtime check for macOS rather than this Linux host.
+The local macOS result is a cross-compilation Clippy check. Repository CI covers
+macOS x86_64 runtime and ARM architecture/linkage; ARM runtime remains untested.
 
 The release workflow validates the tag/version relationship, builds four
 archives, runs the locked package dry-run as part of publishing, and creates a

@@ -250,7 +250,13 @@ CLI flags override file values. `--no-config` skips the TUI config file;
 Final local gates passed formatting, locked all-target check and Clippy, both
 Rust test suites, macOS aarch64 cross-Clippy, actionlint, real chezmoi
 `v2.74.1` release-binary PTY smoke, screenshots, and the paired benchmark. Both
-Rust runs reported 361 passing tests. macOS runtime is covered by remote CI.
+Rust runs reported 361 passing tests. macOS x86_64 runtime is covered by remote
+CI.
+
+The macOS x86_64 archive is built natively on `macos-15-intel`, while the macOS
+aarch64 archive is cross-compiled on that Intel runner. Main CI validates the
+cross-built Mach-O architecture with `lipo`, and the release workflow repeats
+that check; ARM runtime execution is not tested by CI.
 
 Publishing starts from a version tag: the workflow validates versions, builds
 four archives, dry-runs and publishes the crate, and creates a draft GitHub

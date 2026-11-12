@@ -1047,6 +1047,8 @@ fn shell_client_rejects_non_utf8_machine_paths_without_aliasing_fffd_neighbor() 
     let invalid_name = OsString::from_vec(b"bad\xff".to_vec());
     let invalid = fake.work.join(&invalid_name);
     let neighbor = fake.work.join("bad\u{fffd}");
+    // APFS rejects non-UTF-8 filenames, so the physical pair only exists on capable filesystems.
+    #[cfg(not(target_os = "macos"))]
     fs::write(&invalid, "invalid-byte file").expect("invalid-byte fixture");
     fs::write(&neighbor, "replacement-character file").expect("replacement fixture");
     let mut output = invalid.as_os_str().as_bytes().to_vec();
@@ -1059,6 +1061,7 @@ fn shell_client_rejects_non_utf8_machine_paths_without_aliasing_fffd_neighbor() 
         .expect_err("invalid path bytes must fail closed");
 
     assert!(error.to_string().contains("not valid UTF-8"));
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         fs::read_to_string(invalid).expect("invalid fixture"),
         "invalid-byte file"

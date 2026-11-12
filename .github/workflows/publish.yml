@@ -23,12 +23,16 @@ jobs:
         include:
           - runner: ubuntu-22.04
             platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             platform: linux-aarch64
-          - runner: macos-15
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-15-intel
             platform: macos-aarch64
+            target: aarch64-apple-darwin
           - runner: macos-15-intel
             platform: macos-x86_64
+            target: x86_64-apple-darwin
 
     steps:
       - name: Checkout
@@ -36,26 +40,37 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Verify tag and binary versions
+      - name: Verify tag, target, and binary versions
         shell: bash
         run: |
           crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "chezmoi-tui"))')"
           tag_version="${GITHUB_REF_NAME#v}"
           test "$crate_version" = "$tag_version"
-          cargo build --locked --release
-          version_output="$(target/release/chezmoi-tui --version)"
-          test "${version_output%%$'\n'*}" = "chezmoi-tui $tag_version"
+          cargo build --locked --release --target "${{ matrix.target }}"
+          binary="target/${{ matrix.target }}/release/chezmoi-tui"
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            cargo build --locked --release
+            host_version_output="$(target/release/chezmoi-tui --version)"
+            test "${host_version_output%%$'\n'*}" = "chezmoi-tui $tag_version"
+            test "$(lipo -archs "$binary")" = "arm64"
+            echo "Validated Mach-O arm64; ARM runtime execution is not tested."
+          else
+            version_output="$("$binary" --version)"
+            test "${version_output%%$'\n'*}" = "chezmoi-tui $tag_version"
+          fi
 
       - name: Package
         shell: bash
         run: |
           name="chezmoi-tui_${GITHUB_REF_NAME#v}_${{ matrix.platform }}"
           mkdir -p "dist/$name"
-          cp target/release/chezmoi-tui "dist/$name/"
+          cp "target/${{ matrix.target }}/release/chezmoi-tui" "dist/$name/"
           cp LICENSE README.md "dist/$name/"
           tar -czf "dist/$name.tar.gz" -C "dist/$name" chezmoi-tui LICENSE README.md
 

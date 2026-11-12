@@ -19,7 +19,7 @@ the distribution service metadata linked from the README.
 | Startup performance | Final measurement | Paired synthetic runs completed 14/14 for baseline and final; first-status median improved about 82.17%. |
 | Detail cancellation | Verified | Actual process regression canceled obsolete detail without stale error or mutation cancellation. |
 | Screenshot review | Verified | Four final synthetic SVG views were regenerated and reviewed without user identifiers. |
-| Distribution | Configured | Tag workflow builds four archives, dry-runs publishing, publishes the crate, and creates a draft GitHub release for maintainer verification and publication. |
+| Distribution | Configured | Main CI and the tag workflow cross-compile macOS ARM on `macos-15-intel` and validate Mach-O `arm64` with `lipo`; the tag workflow also builds four archives, dry-runs publishing, publishes the crate, and creates a draft GitHub release. ARM runtime execution is not tested. |
 
 ## Scope and baseline
 

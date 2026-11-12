@@ -25,6 +25,12 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --all --locked
+      - name: Cross-build macOS ARM
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin
+          cargo build --locked --release --target aarch64-apple-darwin
+          test "$(lipo -archs target/aarch64-apple-darwin/release/chezmoi-tui)" = "arm64"
       - name: screenshot snapshots
         if: runner.os == 'Linux'
         run: |
