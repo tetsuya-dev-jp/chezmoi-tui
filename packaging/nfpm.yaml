@@ -1,0 +1,29 @@
+name: chezmoi-tui
+arch: ${PACKAGE_ARCH}
+platform: linux
+version: ${PACKAGE_VERSION}
+section: utils
+priority: optional
+maintainer: Tetsuya.dev <256985235+tetsuya-dev-jp@users.noreply.github.com>
+description: A visual TUI wrapper around chezmoi
+vendor: Tetsuya.dev
+homepage: https://github.com/tetsuya-dev-jp/chezmoi-tui
+license: MIT
+depends: []
+
+contents:
+  - src: ${PACKAGE_ROOT}/chezmoi-tui
+    dst: /usr/bin/chezmoi-tui
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${PACKAGE_ROOT}/README.md
+    dst: /usr/share/doc/chezmoi-tui/README.md
+    expand: true
+    file_info:
+      mode: 0644
+  - src: ${PACKAGE_ROOT}/LICENSE
+    dst: /usr/share/licenses/chezmoi-tui/LICENSE
+    expand: true
+    file_info:
+      mode: 0644

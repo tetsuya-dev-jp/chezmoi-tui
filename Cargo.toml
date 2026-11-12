@@ -1,6 +1,6 @@
 [package]
 name = "chezmoi-tui"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -10,6 +10,35 @@ documentation = "https://docs.rs/chezmoi-tui"
 readme = "README.md"
 keywords = ["chezmoi", "dotfiles", "tui", "cli", "ratatui"]
 categories = ["command-line-utilities", "config"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_linux-x86_64.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_linux-aarch64.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_linux-x86_64-musl.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_linux-aarch64-musl.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_macos-aarch64.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }_{ version }_macos-x86_64.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
 
 [dependencies]
 anyhow = "1.0.103"

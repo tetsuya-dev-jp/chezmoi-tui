@@ -1,0 +1,14 @@
+name: chezmoi-tui
+version: "@VERSION@"
+summary: A visual TUI wrapper around chezmoi
+description: |
+  A keyboard-first terminal UI for inspecting and operating a chezmoi source
+  state. The chezmoi executable is a separate runtime prerequisite.
+base: core24
+grade: stable
+confinement: classic
+architectures:
+  - "@SNAP_ARCH@"
+apps:
+  chezmoi-tui:
+    command: bin/chezmoi-tui

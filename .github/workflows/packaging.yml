@@ -1,0 +1,84 @@
+name: packaging
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      homebrew_mode:
+        description: Install the local formula from HEAD or its stable URL
+        required: true
+        default: head
+        type: choice
+        options:
+          - head
+          - stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    name: Nix package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Installer regression tests
+        run: python3 scripts/test_installers.py
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check flake
+        run: nix flake check
+
+      - name: Build package
+        run: nix build --print-build-logs .#default
+
+      - name: Smoke test package
+        shell: bash
+        run: |
+          crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$(./result/bin/chezmoi-tui --version)" = "chezmoi-tui $crate_version"
+          ./result/bin/chezmoi-tui --help >/dev/null
+
+  homebrew:
+    name: Homebrew formula
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      HOMEBREW_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.homebrew_mode || 'head' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install local formula
+        shell: bash
+        run: |
+          brew tap tetsuya-dev-jp/chezmoi-tui "$GITHUB_WORKSPACE"
+          if [ "$HOMEBREW_MODE" = "stable" ]; then
+            brew install tetsuya-dev-jp/chezmoi-tui/chezmoi-tui
+          else
+            brew install --HEAD tetsuya-dev-jp/chezmoi-tui/chezmoi-tui
+          fi
+
+      - name: Test installed formula
+        shell: bash
+        run: |
+          crate_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          brew test tetsuya-dev-jp/chezmoi-tui/chezmoi-tui
+          test "$(chezmoi-tui --version | head -n 1)" = "chezmoi-tui $crate_version"

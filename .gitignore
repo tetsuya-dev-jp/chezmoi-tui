@@ -1,4 +1,8 @@
 /target
+/dist
+/result
+/result-*
+__pycache__/
 .env
 .env.*
 *.pem

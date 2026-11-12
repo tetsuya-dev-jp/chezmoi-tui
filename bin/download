@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=lib/utils.bash
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/utils.bash"
+
+asset_platform=
+
+validate_version
+resolve_asset_platform
+[[ -n "${ASDF_DOWNLOAD_PATH:-}" ]] || fail "ASDF_DOWNLOAD_PATH is required"
+[[ -n "${ASDF_INSTALL_PATH:-}" ]] || fail "ASDF_INSTALL_PATH is required"
+
+archive="chezmoi-tui_${ASDF_INSTALL_VERSION}_${asset_platform}.tar.gz"
+url="${REPO}/releases/download/v${ASDF_INSTALL_VERSION}/${archive}"
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+curl \
+  --fail \
+  --location \
+  --proto '=https' \
+  --proto-redir '=https' \
+  --silent \
+  --show-error \
+  --output "$tmpdir/$archive" \
+  "$url"
+
+validate_archive "$tmpdir/$archive"
+mkdir -p "$ASDF_DOWNLOAD_PATH"
+mv "$tmpdir/$archive" "$ASDF_DOWNLOAD_PATH/$archive"

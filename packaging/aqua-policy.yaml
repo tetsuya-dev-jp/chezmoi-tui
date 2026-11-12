@@ -1,0 +1,11 @@
+registries:
+  - name: chezmoi-tui
+    type: github_content
+    repo_owner: tetsuya-dev-jp
+    repo_name: chezmoi-tui
+    ref: v0.3.1
+    path: packaging/aqua-registry.yaml
+
+packages:
+  - name: tetsuya-dev-jp/chezmoi-tui
+    registry: chezmoi-tui

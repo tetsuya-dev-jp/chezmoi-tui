@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+read -r -a versions <<< "$("$script_dir/list-all")"
+filter="${1:-}"
+latest=
+
+for version in "${versions[@]}"; do
+  case "$version" in
+    "$filter"*) latest="$version" ;;
+  esac
+done
+
+if [[ -z "$latest" ]]; then
+  echo "chezmoi-tui: no matching stable release" >&2
+  exit 1
+fi
+
+printf '%s\n' "$latest"

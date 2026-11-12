@@ -1,6 +1,7 @@
 name: publish
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -27,6 +28,14 @@ jobs:
           - runner: ubuntu-22.04-arm
             platform: linux-aarch64
             target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-22.04
+            platform: linux-x86_64-musl
+            target: x86_64-unknown-linux-musl
+            musl: true
+          - runner: ubuntu-22.04-arm
+            platform: linux-aarch64-musl
+            target: aarch64-unknown-linux-musl
+            musl: true
           - runner: macos-15-intel
             platform: macos-aarch64
             target: aarch64-apple-darwin
@@ -38,6 +47,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Resolve release version
+        shell: bash
+        run: |
+          release_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$release_version"
+          echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -46,29 +62,41 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install musl toolchain
+        if: matrix.musl
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+
       - name: Verify tag, target, and binary versions
         shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
-          crate_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "chezmoi-tui"))')"
-          tag_version="${GITHUB_REF_NAME#v}"
-          test "$crate_version" = "$tag_version"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
+            test "$RELEASE_VERSION" = "${GITHUB_REF_NAME#v}"
+          fi
           cargo build --locked --release --target "${{ matrix.target }}"
           binary="target/${{ matrix.target }}/release/chezmoi-tui"
           if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
             cargo build --locked --release
             host_version_output="$(target/release/chezmoi-tui --version)"
-            test "${host_version_output%%$'\n'*}" = "chezmoi-tui $tag_version"
+            test "${host_version_output%%$'\n'*}" = "chezmoi-tui $RELEASE_VERSION"
             test "$(lipo -archs "$binary")" = "arm64"
             echo "Validated Mach-O arm64; ARM runtime execution is not tested."
           else
             version_output="$("$binary" --version)"
-            test "${version_output%%$'\n'*}" = "chezmoi-tui $tag_version"
+            test "${version_output%%$'\n'*}" = "chezmoi-tui $RELEASE_VERSION"
           fi
+      - name: Verify static musl binary
+        if: matrix.musl
+        run: file "target/${{ matrix.target }}/release/chezmoi-tui" | grep -Eq "statically linked|static-pie linked"
 
       - name: Package
         shell: bash
         run: |
-          name="chezmoi-tui_${GITHUB_REF_NAME#v}_${{ matrix.platform }}"
+          name="chezmoi-tui_${RELEASE_VERSION}_${{ matrix.platform }}"
           mkdir -p "dist/$name"
           cp "target/${{ matrix.target }}/release/chezmoi-tui" "dist/$name/"
           cp LICENSE README.md "dist/$name/"
@@ -81,9 +109,209 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  linux-packages:
+    name: Package and install ${{ matrix.platform }}
+    needs: binaries
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      NFPM_VERSION: "2.49.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64-musl
+            nfpm_arch: x86_64
+            file_arch: x86_64
+            package_arch: amd64
+            conda_platform: linux_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-aarch64-musl
+            nfpm_arch: arm64
+            file_arch: aarch64
+            package_arch: arm64
+            conda_platform: linux_aarch64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          release_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$release_version"
+          echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
+
+      - name: Download static musl archive
+        uses: actions/download-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist
+
+      - name: Install package validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            jq libarchive-tools rpm snapd squashfs-tools unzip zstd
+          sudo systemctl enable --now snapd.socket
+
+      - name: Install pinned nFPM
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/nfpm-download" "$RUNNER_TEMP/nfpm"
+          gh release download "v${NFPM_VERSION}" \
+            --repo goreleaser/nfpm \
+            --pattern "nfpm_${NFPM_VERSION}_Linux_${{ matrix.nfpm_arch }}.tar.gz" \
+            --dir "$RUNNER_TEMP/nfpm-download"
+          tar -xzf "$RUNNER_TEMP/nfpm-download/nfpm_${NFPM_VERSION}_Linux_${{ matrix.nfpm_arch }}.tar.gz" \
+            -C "$RUNNER_TEMP/nfpm"
+          version_output="$("$RUNNER_TEMP/nfpm/nfpm" --version)"
+          [[ "$version_output" == *"$NFPM_VERSION"* ]]
+
+      - name: Build deb, rpm, Arch, and APK packages
+        shell: bash
+        env:
+          NFPM: ${{ runner.temp }}/nfpm/nfpm
+        run: scripts/package_linux.sh "${{ matrix.platform }}"
+
+      - name: Build Conda/Pixi and Snap packages
+        run: scripts/package_extra.sh "${{ matrix.platform }}"
+
+      - name: Validate package metadata and installed paths
+        shell: bash
+        run: |
+          version="$RELEASE_VERSION"
+          arch="${{ matrix.package_arch }}"
+          deb="dist/chezmoi-tui_${version}_${arch}.deb"
+          test "$(dpkg-deb --field "$deb" Package)" = "chezmoi-tui"
+          test "$(dpkg-deb --field "$deb" Version)" = "$version"
+          test "$(dpkg-deb --field "$deb" Architecture)" = "$arch"
+          contents="$(dpkg-deb --contents "$deb")"
+          grep -q "usr/bin/chezmoi-tui" <<<"$contents"
+          grep -q "usr/share/doc/chezmoi-tui/README.md" <<<"$contents"
+          grep -q "usr/share/licenses/chezmoi-tui/LICENSE" <<<"$contents"
+
+          rpm_arch="${{ matrix.file_arch }}"
+          rpm="dist/chezmoi-tui_${version}_${rpm_arch}.rpm"
+          test "$(rpm -qp --qf '%{NAME}' "$rpm")" = "chezmoi-tui"
+          test "$(rpm -qp --qf '%{VERSION}' "$rpm")" = "$version"
+          test "$(rpm -qp --qf '%{ARCH}' "$rpm")" = "$rpm_arch"
+          rpm -qlp "$rpm" | grep -q "^/usr/bin/chezmoi-tui$"
+          rpm -qlp "$rpm" | grep -q "^/usr/share/doc/chezmoi-tui/README.md$"
+          rpm -qlp "$rpm" | grep -q "^/usr/share/licenses/chezmoi-tui/LICENSE$"
+
+          package="dist/chezmoi-tui_${version}_${rpm_arch}.pkg.tar.zst"
+          bsdtar -xOf "$package" .PKGINFO | grep -q "^pkgname = chezmoi-tui$"
+          bsdtar -xOf "$package" .PKGINFO | grep -q "^pkgver = ${version}-1$"
+          bsdtar -tf "$package" | grep -q "^usr/bin/chezmoi-tui$"
+          bsdtar -tf "$package" | grep -q "^usr/share/doc/chezmoi-tui/README.md$"
+          bsdtar -tf "$package" | grep -q "^usr/share/licenses/chezmoi-tui/LICENSE$"
+
+          conda_platform="${{ matrix.conda_platform }}"
+          conda="dist/chezmoi-tui-${version}-${conda_platform}_0.conda"
+          test -f "$conda"
+          info_archive="$(unzip -Z1 "$conda" 'info-*.tar.zst')"
+          payload_archive="$(unzip -Z1 "$conda" 'pkg-*.tar.zst')"
+          unzip -p "$conda" "$info_archive" | zstd -dc | tar -xOf - info/index.json \
+            | jq -e --arg version "$version" \
+              --arg subdir "${conda_platform/_/-}" \
+              '.name == "chezmoi-tui" and .version == $version and .subdir == $subdir' \
+              >/dev/null
+          conda_paths="$(unzip -p "$conda" "$payload_archive" | zstd -dc | tar -tf -)"
+          grep -qx "bin/chezmoi-tui" <<<"$conda_paths"
+          grep -qx "share/doc/chezmoi-tui/README.md" <<<"$conda_paths"
+          grep -qx "share/licenses/chezmoi-tui/LICENSE" <<<"$conda_paths"
+
+          snap="dist/chezmoi-tui_${version}_${{ matrix.package_arch }}.snap"
+          test -f "$snap"
+          snap_metadata="$(unsquashfs -cat "$snap" meta/snap.yaml)"
+          grep -qx "name: chezmoi-tui" <<<"$snap_metadata"
+          grep -qx "version: \"${version}\"" <<<"$snap_metadata"
+          snap_paths="$(unsquashfs -ll "$snap")"
+          grep -q "squashfs-root/bin/chezmoi-tui" <<<"$snap_paths"
+          grep -q "squashfs-root/share/doc/chezmoi-tui/README.md" <<<"$snap_paths"
+          grep -q "squashfs-root/share/licenses/chezmoi-tui/LICENSE" <<<"$snap_paths"
+
+      - name: Install Debian package and run binary
+        shell: bash
+        run: |
+          version="$RELEASE_VERSION"
+          docker run --rm -v "$PWD/dist:/dist:ro" -e "VERSION=$version" debian:bookworm-slim \
+            sh -ec '
+              dpkg -i "/dist/chezmoi-tui_${VERSION}_${{ matrix.package_arch }}.deb"
+              test "$(chezmoi-tui --version)" = "chezmoi-tui $VERSION"
+            '
+
+      - name: Install RPM package and run binary
+        shell: bash
+        run: |
+          version="$RELEASE_VERSION"
+          docker run --rm -v "$PWD/dist:/dist:ro" -e "VERSION=$version" fedora:44 \
+            sh -ec '
+              rpm -i "/dist/chezmoi-tui_${VERSION}_${{ matrix.file_arch }}.rpm"
+              test "$(chezmoi-tui --version)" = "chezmoi-tui $VERSION"
+            '
+
+      - name: Install unsigned local APK and run binary
+        shell: bash
+        run: |
+          version="$RELEASE_VERSION"
+          # This release workflow does not sign packages, so local APKs require --allow-untrusted.
+          docker run --rm -v "$PWD/dist:/dist:ro" -e "VERSION=$version" alpine:3.23 \
+            sh -ec '
+              apk add --allow-untrusted \
+                "/dist/chezmoi-tui_${VERSION}_${{ matrix.file_arch }}.apk"
+              test "$(chezmoi-tui --version)" = "chezmoi-tui $VERSION"
+            '
+
+      - name: Install Arch package and run binary
+        if: matrix.file_arch == 'x86_64'
+        shell: bash
+        run: |
+          version="$RELEASE_VERSION"
+          docker run --rm -v "$PWD/dist:/dist:ro" -e "VERSION=$version" archlinux:base \
+            sh -ec '
+              pacman -U --noconfirm \
+                "/dist/chezmoi-tui_${VERSION}_${{ matrix.file_arch }}.pkg.tar.zst"
+              test "$(chezmoi-tui --version)" = "chezmoi-tui $VERSION"
+            '
+
+      - name: Install unsigned local Snap and run binary
+        shell: bash
+        run: |
+          version="$RELEASE_VERSION"
+          snap="dist/chezmoi-tui_${version}_${{ matrix.package_arch }}.snap"
+          cleanup() {
+            sudo snap remove chezmoi-tui >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          # Unsigned local Snap builds require --dangerous.
+          sudo snap install --dangerous --classic "$snap"
+          test "$(/snap/bin/chezmoi-tui --version)" = "chezmoi-tui $version"
+          sudo snap remove chezmoi-tui
+          trap - EXIT
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ matrix.platform }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.apk
+            dist/*.conda
+            dist/*.snap
+          if-no-files-found: error
+
   publish:
     name: Publish to crates.io
-    needs: binaries
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [binaries, linux-packages]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
@@ -137,7 +365,8 @@ jobs:
 
   draft-release:
     name: Create draft GitHub release
-    needs: [binaries, publish]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [binaries, linux-packages, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -147,7 +376,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Download binary archives
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -161,9 +390,35 @@ jobs:
         run: |
           tag="$GITHUB_REF_NAME"
           version="${tag#v}"
-          for platform in linux-x86_64 linux-aarch64 macos-aarch64 macos-x86_64; do
+          for platform in \
+            linux-x86_64 \
+            linux-aarch64 \
+            linux-x86_64-musl \
+            linux-aarch64-musl \
+            macos-aarch64 \
+            macos-x86_64; do
             test -f "dist/chezmoi-tui_${version}_${platform}.tar.gz"
           done
+          for artifact in \
+            "chezmoi-tui_${version}_amd64.deb" \
+            "chezmoi-tui_${version}_arm64.deb" \
+            "chezmoi-tui_${version}_x86_64.rpm" \
+            "chezmoi-tui_${version}_aarch64.rpm" \
+            "chezmoi-tui_${version}_x86_64.pkg.tar.zst" \
+            "chezmoi-tui_${version}_aarch64.pkg.tar.zst" \
+            "chezmoi-tui_${version}_x86_64.apk" \
+            "chezmoi-tui_${version}_aarch64.apk" \
+            "chezmoi-tui-${version}-linux_64_0.conda" \
+            "chezmoi-tui-${version}-linux_aarch64_0.conda" \
+            "chezmoi-tui_${version}_amd64.snap" \
+            "chezmoi-tui_${version}_arm64.snap"; do
+            test -f "dist/$artifact"
+          done
+          asset_count="$(find dist -maxdepth 1 -type f \
+            \( -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' \
+            -o -name '*.pkg.tar.zst' -o -name '*.apk' \
+            -o -name '*.conda' -o -name '*.snap' \) | wc -l | tr -d ' ')"
+          test "$asset_count" -eq 18
           existing_state=dist/existing-release
           expected_commit="$(git rev-parse "${tag}^{commit}")"
           if gh release view "$tag" --json tagName,isDraft,targetCommitish \
@@ -188,4 +443,12 @@ jobs:
             cat dist/gh-error >&2
             exit 1
           fi
-          gh release upload "$tag" dist/*.tar.gz --clobber
+          gh release upload "$tag" \
+            dist/*.tar.gz \
+            dist/*.deb \
+            dist/*.rpm \
+            dist/*.pkg.tar.zst \
+            dist/*.apk \
+            dist/*.conda \
+            dist/*.snap \
+            --clobber

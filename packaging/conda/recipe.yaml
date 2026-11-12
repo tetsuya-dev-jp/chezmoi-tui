@@ -1,0 +1,33 @@
+schema_version: 1
+
+package:
+  name: chezmoi-tui
+  version: "@VERSION@"
+
+source:
+  path: source
+
+build:
+  number: 0
+  string: ${{ target_platform | replace("-", "_") }}_0
+  dynamic_linking:
+    binary_relocation: false
+  script:
+    - mkdir -p "$PREFIX/bin" "$PREFIX/share/doc/chezmoi-tui" "$PREFIX/share/licenses/chezmoi-tui"
+    - cp chezmoi-tui "$PREFIX/bin/chezmoi-tui"
+    - cp README.md "$PREFIX/share/doc/chezmoi-tui/README.md"
+    - cp LICENSE "$PREFIX/share/licenses/chezmoi-tui/LICENSE"
+
+tests:
+  - script:
+      - test "$(chezmoi-tui --version)" = "chezmoi-tui @VERSION@"
+
+about:
+  homepage: https://github.com/tetsuya-dev-jp/chezmoi-tui
+  repository: https://github.com/tetsuya-dev-jp/chezmoi-tui
+  license: MIT
+  license_file: LICENSE
+  summary: A visual TUI wrapper around chezmoi
+  description: |
+    A keyboard-first terminal UI for inspecting and operating a chezmoi source
+    state. The chezmoi executable is a separate runtime prerequisite.

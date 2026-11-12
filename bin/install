@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# shellcheck source=lib/utils.bash
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/utils.bash"
+
+asset_platform=
+
+validate_version
+resolve_asset_platform
+[[ -n "${ASDF_DOWNLOAD_PATH:-}" ]] || fail "ASDF_DOWNLOAD_PATH is required"
+[[ -n "${ASDF_INSTALL_PATH:-}" ]] || fail "ASDF_INSTALL_PATH is required"
+
+archive="$ASDF_DOWNLOAD_PATH/chezmoi-tui_${ASDF_INSTALL_VERSION}_${asset_platform}.tar.gz"
+[[ -f "$archive" ]] || fail "downloaded archive not found: $archive"
+validate_archive "$archive"
+
+install_parent="$(dirname "$ASDF_INSTALL_PATH")"
+mkdir -p "$install_parent"
+workdir="$(mktemp -d "$install_parent/.chezmoi-tui.XXXXXX")"
+trap 'rm -rf "$workdir"' EXIT
+
+mkdir "$workdir/extract" "$workdir/stage" "$workdir/stage/bin"
+tar -xzf "$archive" -C "$workdir/extract"
+binary="$workdir/extract/chezmoi-tui"
+[[ -f "$binary" && ! -L "$binary" ]] ||
+  fail "archive must contain a regular root-level chezmoi-tui binary"
+
+if [[ -e "$ASDF_INSTALL_PATH" || -L "$ASDF_INSTALL_PATH" ]]; then
+  [[ -d "$ASDF_INSTALL_PATH" && ! -L "$ASDF_INSTALL_PATH" ]] ||
+    fail "install path must be a real directory: $ASDF_INSTALL_PATH"
+  shopt -s nullglob dotglob
+  entries=("$ASDF_INSTALL_PATH"/*)
+  shopt -u nullglob dotglob
+  ((${#entries[@]} == 0)) ||
+    fail "install path must be empty: $ASDF_INSTALL_PATH"
+else
+  mkdir "$ASDF_INSTALL_PATH"
+fi
+
+mkdir "$ASDF_INSTALL_PATH/bin"
+install -m 0755 "$binary" "$ASDF_INSTALL_PATH/bin/chezmoi-tui"

@@ -1,4 +1,82 @@
-# Release Notes: v0.3.0
+# Release Notes
+
+## v0.3.1 — Distribution-only
+
+Version `0.3.1` changes packaging and distribution only. The application
+behavior, configuration, CLI, public Rust API, and test expectations are
+unchanged from `0.3.0`.
+
+### Installation
+
+- Added a direct mise GitHub-backend route:
+  `mise use -g github:tetsuya-dev-jp/chezmoi-tui@0.3.1`.
+- Added direct asdf plugin installation from this repository, with
+  `asdf set -u` for the current modern asdf user selection.
+- Added an Aqua custom registry and repository-local configuration under
+  `packaging/`.
+- Added a Homebrew source formula and repository-specific tap.
+- Added a Nix flake for Linux and macOS x86_64/aarch64 source builds.
+- Added cargo-binstall release metadata for the supported target archives.
+- Added local Conda packages for Conda and Pixi plus local classic-confinement
+  Snap packages.
+- Kept the crates.io source-build route with
+  `cargo install chezmoi-tui --version 0.3.1 --locked`.
+
+See [Installation](docs/INSTALLATION.md) for commands, update and uninstall
+steps, architecture selection, and manager limitations.
+
+### Release assets
+
+The `v0.3.1` release asset set adds six archives:
+
+- `chezmoi-tui_0.3.1_linux-x86_64.tar.gz`
+- `chezmoi-tui_0.3.1_linux-aarch64.tar.gz`
+- `chezmoi-tui_0.3.1_linux-x86_64-musl.tar.gz`
+- `chezmoi-tui_0.3.1_linux-aarch64-musl.tar.gz`
+- `chezmoi-tui_0.3.1_macos-x86_64.tar.gz`
+- `chezmoi-tui_0.3.1_macos-aarch64.tar.gz`
+
+It also adds Linux packages for x86_64 and aarch64:
+
+- Debian packages using the `amd64` and `arm64` architecture names.
+- RPM packages using the `x86_64` and `aarch64` architecture names.
+- Arch Linux `pkg.tar.zst` packages.
+- APK packages.
+- Conda packages named `chezmoi-tui-0.3.1-linux_64_0.conda` and
+  `chezmoi-tui-0.3.1-linux_aarch64_0.conda`.
+- Snap packages named `chezmoi-tui_0.3.1_amd64.snap` and
+  `chezmoi-tui_0.3.1_arm64.snap`.
+
+The `.deb`, `.rpm`, `.pkg.tar.zst`, `.apk`, `.conda`, and `.snap` files are
+produced from the static musl builds. They are downloaded and installed locally
+from the release; they are not published to distribution repositories,
+conda-forge, another Conda channel, or the Snap Store. The APK assets are local
+and unsigned by an Alpine repository, so the installation documentation uses
+`apk add --allow-untrusted`. The Snap assets are built locally and require
+`snap install --dangerous --classic`.
+
+Release CI is configured to install the generated Debian, RPM, and APK
+packages on native Linux x86_64 and aarch64 runners. Arch package installation
+is checked on x86_64 only; aarch64 package metadata and paths are still checked.
+The workflow also installs and runs the Snaps on native Ubuntu 24.04 x86_64 and
+aarch64 runners. The x86_64 `.conda` package was locally installed with
+micromamba `2.10.0` and Pixi `0.84.2`; its installed binary reported the
+expected version in both cases.
+
+### Availability boundaries
+
+The Homebrew formula is available through the project's custom tap, not
+Homebrew core. The Nix package is supplied by this repository's flake, not
+nixpkgs. The Aqua configuration uses a custom registry, not Aqua's standard
+registry. mise uses its explicit `github:` backend rather than a short-name
+registry entry.
+
+No AUR, Flatpak, conda-forge, Snap Store, MacPorts, Guix, winget, Chocolatey,
+or Scoop package is published for this release. Conda and Snap are available
+only as local files attached to the project release. Native Windows remains
+unsupported; WSL follows the Linux installation routes.
+
+## v0.3.0 — Historical release
 
 `0.3.0` completes the correctness, UI, action, dependency, and release-process
 modernization described here. Local verification passed on Linux for Rust
@@ -6,13 +84,13 @@ modernization described here. Local verification passed on Linux for Rust
 [crates.io package](https://crates.io/crates/chezmoi-tui/0.3.0) and
 [GitHub release](https://github.com/tetsuya-dev-jp/chezmoi-tui/releases/tag/v0.3.0).
 
-## Highlights
+### Highlights
 
 `0.3.0` modernizes the terminal workspace, extends the practical action set,
 and tightens the boundary between read-only inspection, scoped mutation,
 foreground tools, and destructive operations.
 
-### Interface
+#### Interface
 
 - Added a persistent two-row header with all four tabs and live item counts.
 - Reworked the wide layout into a List/Detail workspace with a compact four-row
@@ -28,7 +106,7 @@ foreground tools, and destructive operations.
 - Added four sanitized, reproducible SVG views generated from synthetic UI
   states and reviewed for identifiers.
 
-### Refresh and detail loading
+#### Refresh and detail loading
 
 - Refresh results are published per view, so Status, Managed, Unmanaged, Source,
   and ignore data can become usable independently.
@@ -44,7 +122,7 @@ foreground tools, and destructive operations.
 - Background subprocesses use null stdin, process-tree cancellation, command
   timeouts, and bounded stdout/stderr.
 
-### Actions
+#### Actions
 
 The action model now defines 37 workflow-grouped actions:
 
@@ -74,7 +152,7 @@ Important semantics:
 - Managed directories are supported with a complete recursive descendant plan
   and `chezmoi diff --recursive`.
 
-## Fixes and safety
+### Fixes and safety
 
 - Resolve the effective destination through chezmoi when `--destination` is not
   supplied, and keep Unmanaged browsing separate from mutation targeting.
@@ -103,7 +181,7 @@ Important semantics:
   selection or mutation cancels the obsolete process without leaving a stale
   error or canceling unrelated mutation work.
 
-## Configuration and CLI
+### Configuration and CLI
 
 - Added `--chezmoi` to select the chezmoi binary.
 - Added `--chezmoi-config` to pass chezmoi's own configuration file to every
@@ -121,7 +199,7 @@ Important semantics:
   accept quoted words, reject invalid quoting, and are not passed through a
   shell.
 
-## Rust library API migration
+### Rust library API migration
 
 `0.3.0` changes the public request API:
 
@@ -135,7 +213,7 @@ CLI command names and existing operational flags remain compatible. The
 documented exceptions are stricter errors for missing explicit TUI config files
 and rejection of unknown TUI configuration keys.
 
-## Security dependency updates
+### Security dependency updates
 
 The baseline [OSV querybatch](https://api.osv.dev/v1/querybatch) checked 211
 registry packages and found five advisory-matched crate versions:
@@ -157,7 +235,7 @@ Zero known matches is not proof that the graph has no unknown or future
 vulnerabilities. The scan covers the current lockfile and must be repeated if
 that lockfile changes before publication.
 
-## Performance
+### Performance
 
 The final shared PTY run completed 14 of 14 cases for both v0.2.2 and v0.3.0.
 Synthetic fixtures used three source files, 5,000 fake Git objects in the large
@@ -174,7 +252,7 @@ medians are approximately equal, so the result does not demonstrate a
 large-git-specific benefit. Method and host details are in
 [the performance method](docs/PERFORMANCE.md).
 
-## Known limitations
+### Known limitations
 
 - Non-UTF-8 path-bearing machine output is rejected before parsing. Managed names
   containing LF or CR also fail closed before status parsing because the status
@@ -183,7 +261,7 @@ large-git-specific benefit. Method and host details are in
   container, SSH, and upgrade workflows remain explicit foreground chezmoi shell
   operations. Their advanced options are intentionally not duplicated by forms.
 
-## Upgrade from v0.2.x
+### Upgrade from v0.2.x
 
 Upgrade with:
 
@@ -205,7 +283,7 @@ including layout and safety settings. Unknown or misspelled keys are rejected
 instead of being ignored. Use `--config` for chezmoi-tui TOML and
 `--chezmoi-config` for chezmoi's own config.
 
-## Local verification
+### Local verification
 
 The final local checks passed:
 

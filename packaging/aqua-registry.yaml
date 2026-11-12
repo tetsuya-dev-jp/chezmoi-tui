@@ -1,0 +1,20 @@
+packages:
+  - type: github_release
+    repo_owner: tetsuya-dev-jp
+    repo_name: chezmoi-tui
+    description: A visual TUI wrapper around chezmoi
+    asset: chezmoi-tui_{{trimV .Version}}_{{.OS}}-{{.Arch}}.tar.gz
+    replacements:
+      darwin: macos
+      amd64: x86_64
+      arm64: aarch64
+    overrides:
+      - goos: linux
+        asset: chezmoi-tui_{{trimV .Version}}_linux-{{.Arch}}-musl.tar.gz
+    files:
+      - name: chezmoi-tui
+    supported_envs:
+      - linux/amd64
+      - linux/arm64
+      - darwin/amd64
+      - darwin/arm64

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=https://github.com/tetsuya-dev-jp/chezmoi-tui.git
+
+versions="$(
+  git ls-remote --tags --refs "$repo" 'refs/tags/v*' |
+    sed -n 's#^[^[:space:]]*[[:space:]]*refs/tags/v##p' |
+    while IFS= read -r version; do
+      if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        printf '%s\n' "$version"
+      fi
+    done |
+    sort -t. -k1,1n -k2,2n -k3,3n
+)"
+
+if [[ -z "$versions" ]]; then
+  echo "chezmoi-tui: no stable release tags found" >&2
+  exit 1
+fi
+
+printf '%s' "${versions//$'\n'/ }"
