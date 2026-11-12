@@ -301,6 +301,9 @@ crate, and creates a draft GitHub release. It also checks the architecture of
 the macOS aarch64 cross-build; macOS ARM runtime execution is not tested by CI.
 Package-install smoke tests are configured on native Linux x86_64 and aarch64
 runners; the Arch package-install check is x86_64-only.
+Snap metadata, filesystem contents, and the native executable are required
+checks. Full Snap daemon installation is advisory because hosted runners have
+encountered Snap Store HTTP 408 and EOF errors while fetching prerequisites.
 
 The release asset set includes GNU and musl archives for Linux x86_64 and
 aarch64 plus archives for macOS x86_64 and aarch64. The `.deb`, `.rpm`,

@@ -382,11 +382,12 @@ sudo snap install --dangerous --classic ./chezmoi-tui_0.3.1_amd64.snap
 /snap/bin/chezmoi-tui --version
 ```
 
-The x86_64 Snap metadata identifies `core24` and classic confinement, and its
-installed paths were inspected on the build host. A real Snap installation
-requires a Snapd-enabled Linux system. Release CI is configured to install and
-run the Snap on native Ubuntu 24.04 x86_64 and aarch64 runners. Use the `arm64`
-file on aarch64.
+The Snap uses `core24` and classic confinement. CI requires correct metadata,
+filesystem contents, and execution of the unpacked native binary on both Linux
+architectures. Full daemon installation is an advisory check: hosted runners
+have encountered HTTP 408 and EOF responses from the Snap Store while fetching
+prerequisites. It requires a Snapd-enabled system with Store access or an
+already installed base. Use the `arm64` file on aarch64.
 
 Update a local Snap by removing the old installation and installing the newer
 matching file with the same command. Uninstall it with:

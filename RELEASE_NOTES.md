@@ -65,8 +65,11 @@ and unsigned by an Alpine repository, so the installation documentation uses
 Release CI is configured to install the generated Debian, RPM, and APK
 packages on native Linux x86_64 and aarch64 runners. Arch package installation
 is checked on x86_64 only; aarch64 package metadata and paths are still checked.
-The workflow also installs and runs the Snaps on native Ubuntu 24.04 x86_64 and
-aarch64 runners. The x86_64 `.conda` package was locally installed with
+Snap metadata, filesystem contents, and the unpacked native executable are
+required checks on both architectures. Full daemon installation is advisory
+because hosted runners have encountered Snap Store HTTP 408 and EOF errors
+while fetching prerequisites. The x86_64 `.conda` package was locally
+installed with
 micromamba `2.10.0` and Pixi `0.84.2`; its installed binary reported the
 expected version in both cases.
 
