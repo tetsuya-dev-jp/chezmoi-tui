@@ -103,7 +103,7 @@ jobs:
           tar -czf "dist/$name.tar.gz" -C "dist/$name" chezmoi-tui LICENSE README.md
 
       - name: Upload binary archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}
           path: dist/*.tar.gz
@@ -296,7 +296,7 @@ jobs:
           trap - EXIT
 
       - name: Upload Linux packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-packages-${{ matrix.platform }}
           path: |
