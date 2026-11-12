@@ -197,9 +197,10 @@ AQUA_POLICY_CONFIG="$PWD/packaging/aqua-policy.yaml" \
   chezmoi-tui,tetsuya-dev-jp/chezmoi-tui
 ```
 
-Change the pinned entry and rerun the install command above to move to another
-release. Do not expect a standard-registry command such as
-`aqua g chezmoi-tui` to work.
+When changing releases, update the package version and registry reference in
+`aqua.yaml` and the matching reference expression in `aqua-policy.yaml`, then
+rerun the install command above. Do not expect a standard-registry command
+such as `aqua g chezmoi-tui` to work.
 
 ## cargo-binstall and Cargo
 

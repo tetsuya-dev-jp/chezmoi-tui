@@ -291,6 +291,22 @@ jobs:
               test "$(chezmoi-tui --version)" = "chezmoi-tui $VERSION"
             '
 
+      - name: Prepare signed Snap prerequisites
+        shell: bash
+        run: |
+          prerequisite_dir="$RUNNER_TEMP/snap-prerequisites"
+          mkdir -p "$prerequisite_dir"
+          # Download signed prerequisites without the store refresh POST.
+          for prerequisite in snapd core24; do
+            if snap list "$prerequisite" >/dev/null 2>&1; then
+              continue
+            fi
+            snap download "$prerequisite" --basename "$prerequisite" \
+              --target-directory "$prerequisite_dir"
+            sudo snap ack "$prerequisite_dir/$prerequisite.assert"
+            sudo snap install "$prerequisite_dir/$prerequisite.snap"
+          done
+
       - name: Install unsigned local Snap and run binary
         shell: bash
         run: |
