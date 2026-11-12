@@ -62,17 +62,28 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install musl toolchain
+      - name: Configure Rust musl linker
         if: matrix.musl
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes musl-tools
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          linker="$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld"
+          test -x "$linker"
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$linker" >> "$GITHUB_ENV"
+              ;;
+            aarch64-unknown-linux-musl)
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$linker" >> "$GITHUB_ENV"
+              ;;
+            *)
+              echo "Unexpected musl target: ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Verify tag, target, and binary versions
         shell: bash
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
             test "$RELEASE_VERSION" = "${GITHUB_REF_NAME#v}"
