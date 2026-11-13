@@ -45,7 +45,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Resolve release version
         shell: bash
@@ -114,7 +114,7 @@ jobs:
           tar -czf "dist/$name.tar.gz" -C "dist/$name" chezmoi-tui LICENSE README.md
 
       - name: Upload binary archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}
           path: dist/*.tar.gz
@@ -146,7 +146,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Resolve release version
         shell: bash
@@ -156,7 +156,7 @@ jobs:
           echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
 
       - name: Download static musl archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-${{ matrix.platform }}
           path: dist
@@ -322,7 +322,7 @@ jobs:
           trap - EXIT
 
       - name: Upload Linux packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-packages-${{ matrix.platform }}
           path: |
@@ -347,7 +347,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -382,7 +382,7 @@ jobs:
 
       - name: Authenticate to crates.io (Trusted Publishing)
         id: auth
-        uses: rust-lang/crates-io-auth-action@v1.0.4
+        uses: rust-lang/crates-io-auth-action@v1.0.6
 
       - name: Publish crate
         env:
@@ -400,10 +400,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: dist

@@ -4,10 +4,26 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+      rust-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns: ["*"]
+      github-actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      # This version selects the promised MSRV, not an outdated action runtime.
+      - dependency-name: dtolnay/rust-toolchain
+        versions: ["*"]
